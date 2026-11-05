@@ -412,195 +412,203 @@ describe('worktreeRecentlyActive', () => {
   })
 })
 
-describe('wt-arc-watch liveness integration', () => {
-  it('emits each active idle registry record once and suppresses one closed by stop', async () => {
-    const idle = {
-      t: 'idle', name: 'pilot-idle', team: 'delivery', idleMin: 5,
-      qualified: true, reason: 'active mandate and open cards', at: '2026-09-12T07:00:00.000Z',
-    }
-    const active = await runIdleRegistryScenario([idle])
-    expect(active.match(/IDLE pilot-idle 5m — active mandate and open cards/g)).toHaveLength(1)
-
-    const closed = await runIdleRegistryScenario([idle, {
-      t: 'stop', name: 'pilot-idle', at: '2026-09-12T07:01:00.000Z',
-    }])
-    expect(closed).not.toContain('IDLE pilot-idle')
-    // Windows worst 22046 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 30000 ms).
-  }, 56_000)
-
-  it('Invariant 1: no liveness file behaves exactly like the old STALE path', async () => {
-    const out = await runWatchScenario({
-      metaName: 'pilot/needs-liveness',
-      livenessDir: path.join(tmpRoot('wt-no-liveness'), 'missing'),
-    })
-    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-    expect(out).not.toContain('IDLE-MID-MISSION:')
-  }, 12_000)
-
-  it('keeps a normally finished agent silent when its transcript ends with end_turn', async () => {
-    const out = await runWatchScenario({
-      transcriptRecords: [{
-        type: 'assistant',
-        timestamp: '2026-09-18T21:47:39.867Z',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'Report delivered.' }], stop_reason: 'end_turn' },
-      }, {
-        type: 'observer-ref',
-        timestamp: '2026-09-18T21:47:45.000Z',
-      }],
-      waitFor: null,
-    })
-    expect(out).toContain('ARC WATCH ARMED')
-    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
-    // Windows worst 7533 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
-  }, 19_000)
 
   // Sanitized from a real finished subagent transcript (Claude Code 2.1.312): after the final
   // end_turn the harness appends a SubagentStop hook attachment, and other out-of-band records
   // (cancelled hooks, api-request bookkeeping, system records, observer heartbeats) may follow.
-  const finalEndTurn = {
-    parentUuid: 'p-1', isSidechain: true, agentId: 'a0000000000000001', type: 'assistant',
-    uuid: 'u-assistant', timestamp: '2026-10-30T12:17:09.926Z',
-    message: { role: 'assistant', type: 'message', content: [{ type: 'text', text: 'Report delivered.' }], stop_reason: 'end_turn', stop_sequence: null },
+const finalEndTurn = {
+  parentUuid: 'p-1', isSidechain: true, agentId: 'a0000000000000001', type: 'assistant',
+  uuid: 'u-assistant', timestamp: '2026-10-30T12:17:09.926Z',
+  message: { role: 'assistant', type: 'message', content: [{ type: 'text', text: 'Report delivered.' }], stop_reason: 'end_turn', stop_sequence: null },
+}
+const subagentStopAttachment = (uuid: string, type = 'hook_success') => ({
+  parentUuid: 'u-assistant', isSidechain: true, agentId: 'a0000000000000001', type: 'attachment', uuid,
+  timestamp: '2026-10-30T12:17:10.380Z',
+  attachment: { type, hookName: 'SubagentStop', hookEvent: 'SubagentStop', content: '', stdout: '{}\n', stderr: '', exitCode: 0, durationMs: 432 },
+})
+
+async function caseEmitsEachActiveIdleRegistryRecordOnce() {
+  const idle = {
+    t: 'idle', name: 'pilot-idle', team: 'delivery', idleMin: 5,
+    qualified: true, reason: 'active mandate and open cards', at: '2026-09-12T07:00:00.000Z',
   }
-  const subagentStopAttachment = (uuid: string, type = 'hook_success') => ({
-    parentUuid: 'u-assistant', isSidechain: true, agentId: 'a0000000000000001', type: 'attachment', uuid,
-    timestamp: '2026-10-30T12:17:10.380Z',
-    attachment: { type, hookName: 'SubagentStop', hookEvent: 'SubagentStop', content: '', stdout: '{}\n', stderr: '', exitCode: 0, durationMs: 432 },
+  const active = await runIdleRegistryScenario([idle])
+  expect(active.match(/IDLE pilot-idle 5m — active mandate and open cards/g)).toHaveLength(1)
+
+  const closed = await runIdleRegistryScenario([idle, {
+    t: 'stop', name: 'pilot-idle', at: '2026-09-12T07:01:00.000Z',
+  }])
+  expect(closed).not.toContain('IDLE pilot-idle')
+  // Windows worst 22046 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 30000 ms).
+}
+
+
+async function caseInvariant1NoLivenessFileBehavesExactly() {
+  const out = await runWatchScenario({
+    metaName: 'pilot/needs-liveness',
+    livenessDir: path.join(tmpRoot('wt-no-liveness'), 'missing'),
   })
+  expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+  expect(out).not.toContain('IDLE-MID-MISSION:')
+}
 
-  it('keeps a finished agent silent when harness-appended records trail its final end_turn', async () => {
-    const out = await runWatchScenario({
-      transcriptRecords: [
-        finalEndTurn,
-        subagentStopAttachment('u-att-1'),
-        subagentStopAttachment('u-att-2', 'hook_cancelled'),
-        { type: 'api-request', agentId: 'a0000000000000001', id: 'r-1', timestamp: '2026-10-30T12:17:10.500Z' },
-        { type: 'system', subtype: 'turn_duration', timestamp: '2026-10-30T12:17:10.600Z' },
-        { type: 'observer-ref', timestamp: '2026-10-30T12:17:11.000Z' },
-      ],
-      waitFor: null,
-    })
-    expect(out).toContain('ARC WATCH ARMED')
-    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
-  }, 19_000)
 
-  it('still emits STALE when a user turn follows the end_turn, even behind trailing attachments', async () => {
-    // A Stop hook that blocks feeds the agent a meta user turn; an agent that never answers it is stuck.
-    const out = await runWatchScenario({
-      transcriptRecords: [
-        finalEndTurn,
-        subagentStopAttachment('u-att-1'),
-        { type: 'user', isMeta: true, timestamp: '2026-10-30T12:17:10.700Z', message: { role: 'user', content: 'Stop hook feedback' } },
-        subagentStopAttachment('u-att-3'),
-      ],
-    })
-    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-  }, 12_000)
+async function caseKeepsANormallyFinishedAgentSilentWhen() {
+  const out = await runWatchScenario({
+    transcriptRecords: [{
+      type: 'assistant',
+      timestamp: '2026-09-18T21:47:39.867Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Report delivered.' }], stop_reason: 'end_turn' },
+    }, {
+      type: 'observer-ref',
+      timestamp: '2026-09-18T21:47:45.000Z',
+    }],
+    waitFor: null,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
+  // Windows worst 7533 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+}
 
-  it.each([
-    ['an empty object', {}],
-    ['null', null],
-    ['an untyped record that carries a user message', { message: { role: 'user', content: 'continue' } }],
-  ])('still emits STALE when %s trails the end_turn (malformed record, fail loud)', async (_label, malformed) => {
-    const out = await runWatchScenario({
-      transcriptRecords: [finalEndTurn, subagentStopAttachment('u-att-1'), malformed],
-    })
-    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-  }, 12_000)
 
-  it('still emits STALE when only attachments trail an assistant record that requested a tool', async () => {
-    const out = await runWatchScenario({
-      transcriptRecords: [
-        { ...finalEndTurn, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use' } },
-        subagentStopAttachment('u-att-1'),
-      ],
-    })
-    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-  }, 12_000)
+async function caseKeepsAFinishedAgentSilentWhenHarness() {
+  const out = await runWatchScenario({
+    transcriptRecords: [
+      finalEndTurn,
+      subagentStopAttachment('u-att-1'),
+      subagentStopAttachment('u-att-2', 'hook_cancelled'),
+      { type: 'api-request', agentId: 'a0000000000000001', id: 'r-1', timestamp: '2026-10-30T12:17:10.500Z' },
+      { type: 'system', subtype: 'turn_duration', timestamp: '2026-10-30T12:17:10.600Z' },
+      { type: 'observer-ref', timestamp: '2026-10-30T12:17:11.000Z' },
+    ],
+    waitFor: null,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
+}
 
-  it('a clean end_turn never silences an agent whose liveness file says its mission is not complete', async () => {
-    // An agent that ends its turn waiting on a background task that never wakes it ends cleanly too;
-    // its own declaration outranks the transcript's end_turn.
-    const dir = tmpRoot('wt-liveness-endturn-idle')
-    const out = await runWatchScenario({
-      metaName: 'pilot/endturn-idle',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/endturn-idle',
-        agentIdSource: 'name',
-        scope: 'card:123',
-        complete: false,
-        waitingOn: 'none',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptRecords: [{
-        type: 'assistant',
-        timestamp: '2026-09-18T21:47:39.867Z',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'Waiting for my background job.' }], stop_reason: 'end_turn' },
-      }],
-    })
-    expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
-  }, 12_000)
 
-  it('still emits for a frozen agent whose last assistant record requests a tool', async () => {
-    const out = await runWatchScenario({
-      transcriptRecords: [{
-        type: 'assistant',
-        timestamp: '2026-09-18T21:47:39.867Z',
-        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use' },
-      }],
-    })
-    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-  }, 12_000)
+async function caseStillEmitsSTALEWhenAUserTurn() {
+  // A Stop hook that blocks feeds the agent a meta user turn; an agent that never answers it is stuck.
+  const out = await runWatchScenario({
+    transcriptRecords: [
+      finalEndTurn,
+      subagentStopAttachment('u-att-1'),
+      { type: 'user', isMeta: true, timestamp: '2026-10-30T12:17:10.700Z', message: { role: 'user', content: 'Stop hook feedback' } },
+      subagentStopAttachment('u-att-3'),
+    ],
+  })
+  expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+}
 
-  it('Invariant 2: declared not complete emits IDLE-MID-MISSION, never STALE', async () => {
-    const dir = tmpRoot('wt-liveness-idle')
-    const out = await runWatchScenario({
-      metaName: 'pilot/idle-mid-mission',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/idle-mid-mission',
-        agentIdSource: 'name',
-        scope: 'card:123',
-        complete: false,
-        waitingOn: 'none',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-    })
-    expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
-    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-  }, 12_000)
 
-  it('Invariant 3: malformed liveness JSON falls back to unchanged STALE, never silence', async () => {
-    const dir = tmpRoot('wt-liveness-malformed')
-    const out = await runWatchScenario({
-      metaName: 'pilot/malformed',
-      livenessDir: dir,
-      livenessRecord: '{bad json',
-    })
-    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
-    expect(out).not.toContain('IDLE-MID-MISSION:')
-  }, 12_000)
+async function caseStillEmitsSTALEWhenSTrailsThe(_label: string, malformed: unknown) {
+  const out = await runWatchScenario({
+    transcriptRecords: [finalEndTurn, subagentStopAttachment('u-att-1'), malformed],
+  })
+  expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+}
 
-  it('Invariant 3: waitingOn lane with a missing worktree fails toward alerting, not silence', async () => {
-    const dir = tmpRoot('wt-liveness-lane-missing')
-    const out = await runWatchScenario({
-      metaName: 'pilot/lane-missing',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/lane-missing',
-        agentIdSource: 'name',
-        scope: 'card:123',
-        complete: false,
-        waitingOn: 'lane',
-        worktree: path.join(dir, 'does-not-exist'),
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-    })
-    expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
-  }, 12_000)
+
+async function caseStillEmitsSTALEWhenOnlyAttachmentsTrail() {
+  const out = await runWatchScenario({
+    transcriptRecords: [
+      { ...finalEndTurn, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use' } },
+      subagentStopAttachment('u-att-1'),
+    ],
+  })
+  expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+}
+
+
+async function caseACleanEndTurnNeverSilencesAn() {
+  // An agent that ends its turn waiting on a background task that never wakes it ends cleanly too;
+  // its own declaration outranks the transcript's end_turn.
+  const dir = tmpRoot('wt-liveness-endturn-idle')
+  const out = await runWatchScenario({
+    metaName: 'pilot/endturn-idle',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/endturn-idle',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: false,
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    transcriptRecords: [{
+      type: 'assistant',
+      timestamp: '2026-09-18T21:47:39.867Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Waiting for my background job.' }], stop_reason: 'end_turn' },
+    }],
+  })
+  expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
+}
+
+
+async function caseStillEmitsForAFrozenAgentWhose() {
+  const out = await runWatchScenario({
+    transcriptRecords: [{
+      type: 'assistant',
+      timestamp: '2026-09-18T21:47:39.867Z',
+      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use' },
+    }],
+  })
+  expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+}
+
+
+async function caseInvariant2DeclaredNotCompleteEmitsIDLE() {
+  const dir = tmpRoot('wt-liveness-idle')
+  const out = await runWatchScenario({
+    metaName: 'pilot/idle-mid-mission',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/idle-mid-mission',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: false,
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+  })
+  expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
+  expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+}
+
+
+async function caseInvariant3MalformedLivenessJSONFallsBack() {
+  const dir = tmpRoot('wt-liveness-malformed')
+  const out = await runWatchScenario({
+    metaName: 'pilot/malformed',
+    livenessDir: dir,
+    livenessRecord: '{bad json',
+  })
+  expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+  expect(out).not.toContain('IDLE-MID-MISSION:')
+}
+
+
+async function caseInvariant3WaitingOnLaneWithAMissing() {
+  const dir = tmpRoot('wt-liveness-lane-missing')
+  const out = await runWatchScenario({
+    metaName: 'pilot/lane-missing',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/lane-missing',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: false,
+      waitingOn: 'lane',
+      worktree: path.join(dir, 'does-not-exist'),
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+  })
+  expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
+}
+
 
   // Review finding (opencode gpt-5.6-terra, card 1834979064838882934): a RELATIVE worktree path
   // is resolved by worktreeRecentlyActive() against the WATCHER PROCESS's own cwd, not the
@@ -614,37 +622,38 @@ describe('wt-arc-watch liveness integration', () => {
   // discriminate the guard from its absence: neither path finds anything "fresh enough" in time,
   // and the test would pass for the WRONG reason regardless of the fix — this shape is what
   // avoids that trap).
-  it('Invariant 3: waitingOn lane with a RELATIVE worktree path is neutralized, never trusted as recently active', async () => {
-    const dir = tmpRoot('wt-liveness-lane-relative')
-    const watcherCwd = tmpRoot('wt-liveness-lane-relative-cwd')
-    const freshFile = path.join(watcherCwd, 'freshly-touched.txt')
-    const out = await runWatchScenario({
-      metaName: 'pilot/lane-relative',
-      livenessDir: dir,
-      cwd: watcherCwd,
-      livenessRecord: {
-        agentId: 'pilot/lane-relative',
-        agentIdSource: 'name',
-        scope: 'card:123',
-        complete: false,
-        waitingOn: 'lane',
-        worktree: '.', // relative — must NOT be treated as a valid, checkable worktree
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 20_000,
-      staleMinutes: 0.2,
-      // Fired right after ARMED, exactly like the sibling "recent real activity" test — an
-      // UN-guarded relative resolution ('.' against the watcher's own cwd) would find this file
-      // comfortably inside the 12s window and wrongly conclude "recently active".
-      afterArmed: () => touchFile(freshFile, Date.now()),
-      waitFor: null,
-      runForMs: 11_000,
-    })
-    expect(out).toContain('ARC WATCH ARMED')
-    expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0.2+ min')
-    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
-    // Windows worst 11023 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
-  }, 28_000)
+async function caseInvariant3WaitingOnLaneWithARELATIVE() {
+  const dir = tmpRoot('wt-liveness-lane-relative')
+  const watcherCwd = tmpRoot('wt-liveness-lane-relative-cwd')
+  const freshFile = path.join(watcherCwd, 'freshly-touched.txt')
+  const out = await runWatchScenario({
+    metaName: 'pilot/lane-relative',
+    livenessDir: dir,
+    cwd: watcherCwd,
+    livenessRecord: {
+      agentId: 'pilot/lane-relative',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: false,
+      waitingOn: 'lane',
+      worktree: '.', // relative — must NOT be treated as a valid, checkable worktree
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    transcriptAgeMs: 20_000,
+    staleMinutes: 0.2,
+    // Fired right after ARMED, exactly like the sibling "recent real activity" test — an
+    // UN-guarded relative resolution ('.' against the watcher's own cwd) would find this file
+    // comfortably inside the 12s window and wrongly conclude "recently active".
+    afterArmed: () => touchFile(freshFile, Date.now()),
+    waitFor: null,
+    runForMs: 11_000,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0.2+ min')
+  expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
+  // Windows worst 11023 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+}
+
 
   // Review finding (same source): correlation by filename alone is not sufficient proof — the
   // record's OWN declared identity must agree with the candidate key it was looked up under.
@@ -654,353 +663,403 @@ describe('wt-arc-watch liveness integration', () => {
   // key regardless of its declared tier, so this record's complete:true would wrongly silence a
   // transcript that in fact has no usable liveness declaration at all (no meta.name exists here,
   // so the name-tier fallback is also impossible — the correct behavior is plain STALE).
-  it('a liveness record whose declared identity does not match the correlation candidate is never trusted, even when found under the right filename', async () => {
-    const dir = tmpRoot('wt-liveness-identity-mismatch')
-    const transcriptName = 'agent-a013def19e5877298.jsonl'
-    const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
-    const out = await runWatchScenario({
-      transcriptName,
-      metaName: null, // no declared name — the name-tier fallback must be unreachable too
-      livenessDir: dir,
-      livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
-      livenessRecord: {
-        agentId: 'some-other-agents-name', // wrong tier AND wrong identity for this raw-id file
-        agentIdSource: 'name',
-        scope: 'card:999',
-        complete: true, // if trusted, this would wrongly silence
-        waitingOn: 'none',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-    })
-    expect(out).toContain(`STALE: watch-session/${transcriptName} — no write for 0+ min`)
-    expect(out).not.toContain('IDLE-MID-MISSION:')
-  }, 12_000)
-
-  it('Invariant 4: explicit complete:true stays silent through the same watcher code path', async () => {
-    const dir = tmpRoot('wt-liveness-complete')
-    const out = await runWatchScenario({
-      metaName: 'pilot/complete',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/complete',
-        agentIdSource: 'name',
-        scope: 'card:123',
-        complete: true,
-        waitingOn: 'none',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      waitFor: null,
-    })
-    expect(out).toContain('ARC WATCH ARMED')
-    expect(out).not.toContain('STALE:')
-    expect(out).not.toContain('IDLE-MID-MISSION:')
-    // Windows worst 7526 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
-  }, 19_000)
-
-  it('silences legitimate lane waits only when the declared worktree shows recent real activity', async () => {
-    const dir = tmpRoot('wt-liveness-lane-active')
-    const worktree = tmpRoot('wt-lane-worktree')
-    const recentFile = path.join(worktree, 'recent.txt')
-    const out = await runWatchScenario({
-      metaName: 'pilot/lane-active',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/lane-active',
-        agentIdSource: 'name',
-        scope: 'card:123',
-        complete: false,
-        waitingOn: 'lane',
-        worktree,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 20_000,
-      staleMinutes: 0.2,
-      afterArmed: () => touchFile(recentFile, Date.now()),
-      waitFor: null,
-      runForMs: 11_000,
-    })
-    expect(out).toContain('ARC WATCH ARMED')
-    expect(out).not.toContain('STALE:')
-    expect(out).not.toContain('IDLE-MID-MISSION:')
-    // Windows worst 11029 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
-  }, 28_000)
-
-  it('correlates by transcript raw id when no declared name exists and emits IDLE-MID-MISSION', async () => {
-    const dir = tmpRoot('wt-liveness-raw-id')
-    const transcriptName = 'agent-a77d35c2be335f181.jsonl'
-    const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
-    expect(rawId).toBe('a77d35c2be335f181')
-    const out = await runWatchScenario({
-      transcriptName,
-      metaName: null,
-      livenessDir: dir,
-      livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
-      livenessRecord: {
-        agentId: rawId,
-        agentIdSource: 'brief',
-        scope: 'card:456',
-        complete: false,
-        waitingOn: 'none',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-    })
-    expect(out).toContain(`IDLE-MID-MISSION: watch-session/${transcriptName} — declared not complete, no write for 0+ min`)
-    expect(out).not.toContain(`STALE: watch-session/${transcriptName} — no write for 0+ min`)
-  }, 12_000)
-
-  it('emits WAITING-ON-SPAWNER without waiting for transcript staleness', async () => {
-    const dir = tmpRoot('wt-liveness-spawner')
-    const out = await runWatchScenario({
-      metaName: 'pilot/spawner',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/spawner',
-        agentIdSource: 'name',
-        scope: 'mission:keep waiting',
-        complete: false,
-        waitingOn: 'spawner',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 0,
-      waitFor: /WAITING-ON-SPAWNER: /,
-    })
-    expect(out).toContain('WAITING-ON-SPAWNER: pilot/spawner — mission:keep waiting')
-    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
-  }, 12_000)
-
-  it('labels WAITING-ON-SPAWNER records from other projects on the same line', async () => {
-    const dir = tmpRoot('wt-liveness-spawner-foreign')
-    const out = await runWatchScenario({
-      metaName: 'pilot/local-only',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/foreign-agent',
-        agentIdSource: 'name',
-        scope: 'card:foreign',
-        complete: false,
-        waitingOn: 'spawner',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 0,
-      transcriptAfterArm: false,
-      waitFor: /WAITING-ON-SPAWNER: /,
-    })
-    expect(out).toContain('WAITING-ON-SPAWNER: pilot/foreign-agent — card:foreign (foreign to this project)')
-  }, 12_000)
-
-  it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own delegates', async () => {
-    const dir = tmpRoot('wt-liveness-spawner-local')
-    const out = await runWatchScenario({
-      metaName: 'pilot/local-spawner',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/local-spawner',
-        agentIdSource: 'name',
-        scope: 'mission:local wait',
-        complete: false,
-        waitingOn: 'spawner',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 0,
-      transcriptAfterArm: false,
-      waitFor: /WAITING-ON-SPAWNER: /,
-    })
-    expect(out).toContain('WAITING-ON-SPAWNER: pilot/local-spawner — mission:local wait')
-    expect(out).not.toContain('WAITING-ON-SPAWNER: pilot/local-spawner — mission:local wait (foreign to this project)')
-  }, 12_000)
-
-  it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own brief-sourced delegates', async () => {
-    const dir = tmpRoot('wt-liveness-spawner-local-brief')
-    const transcriptName = 'agent-brieflocal123.jsonl'
-    const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
-    expect(rawId).toBe('brieflocal123')
-    const out = await runWatchScenario({
-      transcriptName,
-      metaName: null,
-      livenessDir: dir,
-      livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
-      livenessRecord: {
-        agentId: rawId,
-        agentIdSource: 'brief',
-        scope: 'mission:brief local wait',
-        complete: false,
-        waitingOn: 'spawner',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 0,
-      transcriptAfterArm: false,
-      waitFor: /WAITING-ON-SPAWNER: /,
-    })
-    expect(out).toContain(`WAITING-ON-SPAWNER: ${rawId} — mission:brief local wait`)
-    expect(out).not.toContain(`WAITING-ON-SPAWNER: ${rawId} — mission:brief local wait (foreign to this project)`)
-  }, 12_000)
-
-  it('labels WAITING-ON-SPAWNER brief-sourced records from other projects on the same line', async () => {
-    const dir = tmpRoot('wt-liveness-spawner-foreign-brief')
-    const transcriptName = 'agent-brieflocal123.jsonl'
-    const localRawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
-    expect(localRawId).toBe('brieflocal123')
-    const foreignRawId = 'briefforeign456'
-    const out = await runWatchScenario({
-      transcriptName,
-      metaName: null,
-      livenessDir: dir,
-      livenessFileName: `${sanitizeLivenessKey(foreignRawId)}.json`,
-      livenessRecord: {
-        agentId: foreignRawId,
-        agentIdSource: 'brief',
-        scope: 'card:brief foreign',
-        complete: false,
-        waitingOn: 'spawner',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 0,
-      transcriptAfterArm: false,
-      waitFor: /WAITING-ON-SPAWNER: /,
-    })
-    expect(out).toContain('WAITING-ON-SPAWNER: briefforeign456 — card:brief foreign (foreign to this project)')
-  }, 12_000)
-
-  it('refreshes the cached local transcript ids when a newly-seen project transcript becomes part of the baseline', async () => {
-    const dir = tmpRoot('wt-liveness-spawner-refresh')
-    const out = await runWatchScenario({
-      metaName: 'pilot/cached-refresh',
-      livenessDir: dir,
-      livenessRecord: {
-        agentId: 'pilot/cached-refresh',
-        agentIdSource: 'name',
-        scope: 'card:refresh',
-        complete: false,
-        waitingOn: 'spawner',
-        worktree: null,
-        updatedAt: '2026-08-05T00:00:00.000Z',
-      },
-      transcriptAgeMs: 0,
-      manualTranscript: true,
-      waitFor: null,
-      afterArmed: ({ transcriptPath, metaPath }) => {
-        setTimeout(() => {
-          touchFile(transcriptPath, Date.now())
-          writeFileSync(metaPath, JSON.stringify({ name: 'pilot/cached-refresh' }))
-        }, 1_000)
-        setTimeout(() => {
-          writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/cached-refresh')}.json`), JSON.stringify({
-            agentId: 'pilot/cached-refresh',
-            agentIdSource: 'name',
-            scope: 'card:refresh',
-            complete: false,
-            waitingOn: 'spawner',
-            worktree: null,
-            updatedAt: '2026-08-05T00:00:10.000Z',
-          }))
-        }, 6_000)
-      },
-      runForMs: 12_500,
-    })
-
-    const waitingLines = out.split('\n').filter((line) => line.startsWith('WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh'))
-    expect(waitingLines).toEqual([
-      'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh (foreign to this project)',
-      'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh',
-    ])
-    // Windows worst 12527 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
-  }, 32_000)
-
-  it('keeps the same emission count while labeling uncorrelatable records as project unknown', async () => {
-    const dir = tmpRoot('wt-liveness-emission-count')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/local-count')}.json`), JSON.stringify({
-      agentId: 'pilot/local-count',
+async function caseALivenessRecordWhoseDeclaredIdentityDoes() {
+  const dir = tmpRoot('wt-liveness-identity-mismatch')
+  const transcriptName = 'agent-a013def19e5877298.jsonl'
+  const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
+  const out = await runWatchScenario({
+    transcriptName,
+    metaName: null, // no declared name — the name-tier fallback must be unreachable too
+    livenessDir: dir,
+    livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
+    livenessRecord: {
+      agentId: 'some-other-agents-name', // wrong tier AND wrong identity for this raw-id file
       agentIdSource: 'name',
-      scope: 'mission:local count',
+      scope: 'card:999',
+      complete: true, // if trusted, this would wrongly silence
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+  })
+  expect(out).toContain(`STALE: watch-session/${transcriptName} — no write for 0+ min`)
+  expect(out).not.toContain('IDLE-MID-MISSION:')
+}
+
+
+async function caseInvariant4ExplicitCompleteTrueStaysSilent() {
+  const dir = tmpRoot('wt-liveness-complete')
+  const out = await runWatchScenario({
+    metaName: 'pilot/complete',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/complete',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: true,
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    waitFor: null,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).not.toContain('STALE:')
+  expect(out).not.toContain('IDLE-MID-MISSION:')
+  // Windows worst 7526 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+}
+
+
+async function caseSilencesLegitimateLaneWaitsOnlyWhenThe() {
+  const dir = tmpRoot('wt-liveness-lane-active')
+  const worktree = tmpRoot('wt-lane-worktree')
+  const recentFile = path.join(worktree, 'recent.txt')
+  const out = await runWatchScenario({
+    metaName: 'pilot/lane-active',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/lane-active',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: false,
+      waitingOn: 'lane',
+      worktree,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    transcriptAgeMs: 20_000,
+    staleMinutes: 0.2,
+    afterArmed: () => touchFile(recentFile, Date.now()),
+    waitFor: null,
+    runForMs: 11_000,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).not.toContain('STALE:')
+  expect(out).not.toContain('IDLE-MID-MISSION:')
+  // Windows worst 11029 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+}
+
+
+async function caseCorrelatesByTranscriptRawIdWhenNo() {
+  const dir = tmpRoot('wt-liveness-raw-id')
+  const transcriptName = 'agent-a77d35c2be335f181.jsonl'
+  const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
+  expect(rawId).toBe('a77d35c2be335f181')
+  const out = await runWatchScenario({
+    transcriptName,
+    metaName: null,
+    livenessDir: dir,
+    livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
+    livenessRecord: {
+      agentId: rawId,
+      agentIdSource: 'brief',
+      scope: 'card:456',
+      complete: false,
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+  })
+  expect(out).toContain(`IDLE-MID-MISSION: watch-session/${transcriptName} — declared not complete, no write for 0+ min`)
+  expect(out).not.toContain(`STALE: watch-session/${transcriptName} — no write for 0+ min`)
+}
+
+
+async function caseEmitsWAITINGONSPAWNERWithoutWaitingFor() {
+  const dir = tmpRoot('wt-liveness-spawner')
+  const out = await runWatchScenario({
+    metaName: 'pilot/spawner',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/spawner',
+      agentIdSource: 'name',
+      scope: 'mission:keep waiting',
       complete: false,
       waitingOn: 'spawner',
       worktree: null,
       updatedAt: '2026-08-05T00:00:00.000Z',
-    }))
-    writeFileSync(path.join(dir, 'orphan-count.json'), JSON.stringify({
-      agentId: null,
-      agentIdSource: 'none',
-      scope: 'mission:uncorrelated count',
+    },
+    transcriptAgeMs: 0,
+    waitFor: /WAITING-ON-SPAWNER: /,
+  })
+  expect(out).toContain('WAITING-ON-SPAWNER: pilot/spawner — mission:keep waiting')
+  expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
+}
+
+
+async function caseLabelsWAITINGONSPAWNERRecordsFromOther() {
+  const dir = tmpRoot('wt-liveness-spawner-foreign')
+  const out = await runWatchScenario({
+    metaName: 'pilot/local-only',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/foreign-agent',
+      agentIdSource: 'name',
+      scope: 'card:foreign',
       complete: false,
-      waitingOn: 'none',
+      waitingOn: 'spawner',
       worktree: null,
       updatedAt: '2026-08-05T00:00:00.000Z',
-    }))
+    },
+    transcriptAgeMs: 0,
+    transcriptAfterArm: false,
+    waitFor: /WAITING-ON-SPAWNER: /,
+  })
+  expect(out).toContain('WAITING-ON-SPAWNER: pilot/foreign-agent — card:foreign (foreign to this project)')
+}
 
-    const out = await runWatchScenario({
-      metaName: 'pilot/local-count',
-      livenessDir: dir,
-      transcriptAgeMs: 0,
-      transcriptAfterArm: false,
-      waitFor: null,
-      runForMs: 7_500,
-    })
 
-    const emissionCount = out.split('\n').filter((line) => /^(WAITING-ON-SPAWNER|UNCORRELATABLE): /.test(line)).length
-    expect(emissionCount).toBe(2)
-    expect(out).toContain('UNCORRELATABLE: mission:uncorrelated count — liveness file declares no correlation key, cannot be matched to a transcript (project unknown)')
-    // Windows worst 7521 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
-  }, 19_000)
-
-  it('emits UNCORRELATABLE once per distinct updatedAt for tier-none records', async () => {
-    const dir = tmpRoot('wt-liveness-uncorrelatable')
-    const file = path.join(dir, 'orphan-record.json')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(file, JSON.stringify({
-      agentId: null,
-      agentIdSource: 'none',
-      scope: 'mission:uncorrelated',
+async function caseKeepsLocalWAITINGONSPAWNERWordingUnchanged() {
+  const dir = tmpRoot('wt-liveness-spawner-local')
+  const out = await runWatchScenario({
+    metaName: 'pilot/local-spawner',
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/local-spawner',
+      agentIdSource: 'name',
+      scope: 'mission:local wait',
       complete: false,
-      waitingOn: 'none',
+      waitingOn: 'spawner',
       worktree: null,
       updatedAt: '2026-08-05T00:00:00.000Z',
-    }))
+    },
+    transcriptAgeMs: 0,
+    transcriptAfterArm: false,
+    waitFor: /WAITING-ON-SPAWNER: /,
+  })
+  expect(out).toContain('WAITING-ON-SPAWNER: pilot/local-spawner — mission:local wait')
+  expect(out).not.toContain('WAITING-ON-SPAWNER: pilot/local-spawner — mission:local wait (foreign to this project)')
+}
 
-    const out = await runWatchScenario({
-      metaName: 'pilot/unrelated-transcript',
-      livenessDir: dir,
-      transcriptAgeMs: 0,
-      waitFor: null,
-      afterArmed: () => {
-        setTimeout(() => {
-          writeFileSync(file, JSON.stringify({
-            agentId: null,
-            agentIdSource: 'none',
-            scope: 'mission:uncorrelated',
-            complete: false,
-            waitingOn: 'none',
-            worktree: null,
-            updatedAt: '2026-08-05T00:00:00.000Z',
-          }))
-        }, 1_000)
-        setTimeout(() => {
-          writeFileSync(file, JSON.stringify({
-            agentId: null,
-            agentIdSource: 'none',
-            scope: 'mission:uncorrelated',
-            complete: false,
-            waitingOn: 'none',
-            worktree: null,
-            updatedAt: '2026-08-05T00:00:10.000Z',
-          }))
-        }, 6_000)
-      },
-      runForMs: 12_500,
-    })
 
-    const marker = 'UNCORRELATABLE: mission:uncorrelated — liveness file declares no correlation key, cannot be matched to a transcript \(project unknown\)'
-    expect(out.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(2)
-    // Windows worst 12525 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
-  }, 32_000)
+async function caseKeepsLocalWAITINGONSPAWNERWordingUnchanged2() {
+  const dir = tmpRoot('wt-liveness-spawner-local-brief')
+  const transcriptName = 'agent-brieflocal123.jsonl'
+  const rawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
+  expect(rawId).toBe('brieflocal123')
+  const out = await runWatchScenario({
+    transcriptName,
+    metaName: null,
+    livenessDir: dir,
+    livenessFileName: `${sanitizeLivenessKey(rawId ?? '')}.json`,
+    livenessRecord: {
+      agentId: rawId,
+      agentIdSource: 'brief',
+      scope: 'mission:brief local wait',
+      complete: false,
+      waitingOn: 'spawner',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    transcriptAgeMs: 0,
+    transcriptAfterArm: false,
+    waitFor: /WAITING-ON-SPAWNER: /,
+  })
+  expect(out).toContain(`WAITING-ON-SPAWNER: ${rawId} — mission:brief local wait`)
+  expect(out).not.toContain(`WAITING-ON-SPAWNER: ${rawId} — mission:brief local wait (foreign to this project)`)
+}
+
+
+async function caseLabelsWAITINGONSPAWNERBriefSourcedRecords() {
+  const dir = tmpRoot('wt-liveness-spawner-foreign-brief')
+  const transcriptName = 'agent-brieflocal123.jsonl'
+  const localRawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
+  expect(localRawId).toBe('brieflocal123')
+  const foreignRawId = 'briefforeign456'
+  const out = await runWatchScenario({
+    transcriptName,
+    metaName: null,
+    livenessDir: dir,
+    livenessFileName: `${sanitizeLivenessKey(foreignRawId)}.json`,
+    livenessRecord: {
+      agentId: foreignRawId,
+      agentIdSource: 'brief',
+      scope: 'card:brief foreign',
+      complete: false,
+      waitingOn: 'spawner',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    transcriptAgeMs: 0,
+    transcriptAfterArm: false,
+    waitFor: /WAITING-ON-SPAWNER: /,
+  })
+  expect(out).toContain('WAITING-ON-SPAWNER: briefforeign456 — card:brief foreign (foreign to this project)')
+}
+
+
+function refreshSpawnerRecord(updatedAt: string) {
+  return {
+    agentId: 'pilot/cached-refresh',
+    agentIdSource: 'name',
+    scope: 'card:refresh',
+    complete: false,
+    waitingOn: 'spawner',
+    worktree: null,
+    updatedAt,
+  }
+}
+
+async function caseRefreshesTheCachedLocalTranscriptIdsWhen() {
+  const dir = tmpRoot('wt-liveness-spawner-refresh')
+  const out = await runWatchScenario({
+    metaName: 'pilot/cached-refresh',
+    livenessDir: dir,
+    livenessRecord: refreshSpawnerRecord('2026-08-05T00:00:00.000Z'),
+    transcriptAgeMs: 0,
+    manualTranscript: true,
+    waitFor: null,
+    afterArmed: ({ transcriptPath, metaPath }) => {
+      setTimeout(() => {
+        touchFile(transcriptPath, Date.now())
+        writeFileSync(metaPath, JSON.stringify({ name: 'pilot/cached-refresh' }))
+      }, 1_000)
+      setTimeout(() => {
+        writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/cached-refresh')}.json`), JSON.stringify(refreshSpawnerRecord('2026-08-05T00:00:10.000Z')))
+      }, 6_000)
+    },
+    runForMs: 12_500,
+  })
+
+  const waitingLines = out.split('\n').filter((line) => line.startsWith('WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh'))
+  expect(waitingLines).toEqual([
+    'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh (foreign to this project)',
+    'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh',
+  ])
+  // Windows worst 12527 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
+}
+
+
+async function caseKeepsTheSameEmissionCountWhileLabeling() {
+  const dir = tmpRoot('wt-liveness-emission-count')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/local-count')}.json`), JSON.stringify({
+    agentId: 'pilot/local-count',
+    agentIdSource: 'name',
+    scope: 'mission:local count',
+    complete: false,
+    waitingOn: 'spawner',
+    worktree: null,
+    updatedAt: '2026-08-05T00:00:00.000Z',
+  }))
+  writeFileSync(path.join(dir, 'orphan-count.json'), JSON.stringify({
+    agentId: null,
+    agentIdSource: 'none',
+    scope: 'mission:uncorrelated count',
+    complete: false,
+    waitingOn: 'none',
+    worktree: null,
+    updatedAt: '2026-08-05T00:00:00.000Z',
+  }))
+
+  const out = await runWatchScenario({
+    metaName: 'pilot/local-count',
+    livenessDir: dir,
+    transcriptAgeMs: 0,
+    transcriptAfterArm: false,
+    waitFor: null,
+    runForMs: 7_500,
+  })
+
+  const emissionCount = out.split('\n').filter((line) => /^(WAITING-ON-SPAWNER|UNCORRELATABLE): /.test(line)).length
+  expect(emissionCount).toBe(2)
+  expect(out).toContain('UNCORRELATABLE: mission:uncorrelated count — liveness file declares no correlation key, cannot be matched to a transcript (project unknown)')
+  // Windows worst 7521 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+}
+
+
+function orphanRecord(updatedAt: string) {
+  return {
+    agentId: null,
+    agentIdSource: 'none',
+    scope: 'mission:uncorrelated',
+    complete: false,
+    waitingOn: 'none',
+    worktree: null,
+    updatedAt,
+  }
+}
+
+async function caseEmitsUNCORRELATABLEOncePerDistinctUpdatedAtFor() {
+  const dir = tmpRoot('wt-liveness-uncorrelatable')
+  const file = path.join(dir, 'orphan-record.json')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, JSON.stringify(orphanRecord('2026-08-05T00:00:00.000Z')))
+
+  const out = await runWatchScenario({
+    metaName: 'pilot/unrelated-transcript',
+    livenessDir: dir,
+    transcriptAgeMs: 0,
+    waitFor: null,
+    afterArmed: () => {
+      setTimeout(() => {
+        writeFileSync(file, JSON.stringify(orphanRecord('2026-08-05T00:00:00.000Z')))
+      }, 1_000)
+      setTimeout(() => {
+        writeFileSync(file, JSON.stringify(orphanRecord('2026-08-05T00:00:10.000Z')))
+      }, 6_000)
+    },
+    runForMs: 12_500,
+  })
+
+  const marker = 'UNCORRELATABLE: mission:uncorrelated — liveness file declares no correlation key, cannot be matched to a transcript \(project unknown\)'
+  expect(out.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(2)
+  // Windows worst 12525 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
+}
+
+describe('wt-arc-watch liveness integration', () => {
+  it('emits each active idle registry record once and suppresses one closed by stop', caseEmitsEachActiveIdleRegistryRecordOnce, 56_000)
+
+  it('Invariant 1: no liveness file behaves exactly like the old STALE path', caseInvariant1NoLivenessFileBehavesExactly, 12_000)
+
+  it('keeps a normally finished agent silent when its transcript ends with end_turn', caseKeepsANormallyFinishedAgentSilentWhen, 19_000)
+
+  it('keeps a finished agent silent when harness-appended records trail its final end_turn', caseKeepsAFinishedAgentSilentWhenHarness, 19_000)
+
+  it('still emits STALE when a user turn follows the end_turn, even behind trailing attachments', caseStillEmitsSTALEWhenAUserTurn, 12_000)
+
+  it.each([
+    ['an empty object', {}],
+    ['null', null],
+    ['an untyped record that carries a user message', { message: { role: 'user', content: 'continue' } }],
+  ])('still emits STALE when %s trails the end_turn (malformed record, fail loud)', caseStillEmitsSTALEWhenSTrailsThe, 12_000)
+
+  it('still emits STALE when only attachments trail an assistant record that requested a tool', caseStillEmitsSTALEWhenOnlyAttachmentsTrail, 12_000)
+
+  it('a clean end_turn never silences an agent whose liveness file says its mission is not complete', caseACleanEndTurnNeverSilencesAn, 12_000)
+
+  it('still emits for a frozen agent whose last assistant record requests a tool', caseStillEmitsForAFrozenAgentWhose, 12_000)
+
+  it('Invariant 2: declared not complete emits IDLE-MID-MISSION, never STALE', caseInvariant2DeclaredNotCompleteEmitsIDLE, 12_000)
+
+  it('Invariant 3: malformed liveness JSON falls back to unchanged STALE, never silence', caseInvariant3MalformedLivenessJSONFallsBack, 12_000)
+
+  it('Invariant 3: waitingOn lane with a missing worktree fails toward alerting, not silence', caseInvariant3WaitingOnLaneWithAMissing, 12_000)
+
+  it('Invariant 3: waitingOn lane with a RELATIVE worktree path is neutralized, never trusted as recently active', caseInvariant3WaitingOnLaneWithARELATIVE, 28_000)
+
+  it('a liveness record whose declared identity does not match the correlation candidate is never trusted, even when found under the right filename', caseALivenessRecordWhoseDeclaredIdentityDoes, 12_000)
+
+  it('Invariant 4: explicit complete:true stays silent through the same watcher code path', caseInvariant4ExplicitCompleteTrueStaysSilent, 19_000)
+
+  it('silences legitimate lane waits only when the declared worktree shows recent real activity', caseSilencesLegitimateLaneWaitsOnlyWhenThe, 28_000)
+
+  it('correlates by transcript raw id when no declared name exists and emits IDLE-MID-MISSION', caseCorrelatesByTranscriptRawIdWhenNo, 12_000)
+
+  it('emits WAITING-ON-SPAWNER without waiting for transcript staleness', caseEmitsWAITINGONSPAWNERWithoutWaitingFor, 12_000)
+
+  it('labels WAITING-ON-SPAWNER records from other projects on the same line', caseLabelsWAITINGONSPAWNERRecordsFromOther, 12_000)
+
+  it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own delegates', caseKeepsLocalWAITINGONSPAWNERWordingUnchanged, 12_000)
+
+  it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own brief-sourced delegates', caseKeepsLocalWAITINGONSPAWNERWordingUnchanged2, 12_000)
+
+  it('labels WAITING-ON-SPAWNER brief-sourced records from other projects on the same line', caseLabelsWAITINGONSPAWNERBriefSourcedRecords, 12_000)
+
+  it('refreshes the cached local transcript ids when a newly-seen project transcript becomes part of the baseline', caseRefreshesTheCachedLocalTranscriptIdsWhen, 32_000)
+
+  it('keeps the same emission count while labeling uncorrelatable records as project unknown', caseKeepsTheSameEmissionCountWhileLabeling, 19_000)
+
+  it('emits UNCORRELATABLE once per distinct updatedAt for tier-none records', caseEmitsUNCORRELATABLEOncePerDistinctUpdatedAtFor, 32_000)
 })
 
 describe('test harness sanity', () => {
