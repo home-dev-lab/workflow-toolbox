@@ -99,6 +99,117 @@ const baseInput = {
   assumptions: ['The build gate is green'],
 }
 
+// Deliberately unsorted: the cap must not trust the synthesis agent's ordering.
+const mixedSeverityCandidates = [
+  { title: 'Low priority', lens: 'correctness', severity: 'low' as const },
+  { title: 'Medium first', lens: 'correctness', severity: 'medium' as const },
+  { title: 'High first', lens: 'security', severity: 'high' as const },
+  { title: 'Medium second', lens: 'correctness', severity: 'medium' as const },
+  { title: 'High second', lens: 'security', severity: 'high' as const },
+]
+
+// high > medium > low, stable on ties (synthesis order within a severity).
+const severityOrder = ['High first', 'High second', 'Medium first', 'Medium second', 'Low priority']
+
+const verifierCalls = (rt: FakeRuntime) => rt.calls.filter((c) =>
+  c.prompt.toLowerCase().includes('an independent multi-lens sweep proposes'),
+)
+
+/** Titles in the order their first verifier call was launched. */
+const launchOrder = (rt: FakeRuntime): string[] => {
+  const seen: string[] = []
+  for (const call of verifierCalls(rt)) {
+    const title = severityOrder.find((t) => call.prompt.includes(t))
+    if (title !== undefined && !seen.includes(title)) seen.push(title)
+  }
+  return seen
+}
+
+describe('independent-analysis maxVerifyClaims default', () => {
+  it('leaves all five critiques and their 13 verifier votes uncapped by default', async () => {
+    const rt = makeRuntime({ candidates: mixedSeverityCandidates })
+    const result = await wf.run(rt, JSON.stringify(baseInput))
+    expect(verifierCalls(rt)).toHaveLength(13)
+    expect(result.confirmed.map((c) => c.title)).toEqual(mixedSeverityCandidates.map((c) => c.title))
+    expect(result.candidateCount).toBe(5)
+    expect(result).toHaveProperty('unverifiedByCap', [])
+    expect(result).toHaveProperty('unverifiedByCapCount', 0)
+  })
+})
+
+describe('independent-analysis maxVerifyClaims cap', () => {
+  it('verifies the two most severe critiques and reports all three cut critiques with the cap reason', async () => {
+    const rt = makeRuntime({ candidates: mixedSeverityCandidates })
+    const result = await wf.run(rt, JSON.stringify({ ...baseInput, maxVerifyClaims: 2 }))
+    expect(result.confirmed.map((c) => c.title)).toEqual(['High first', 'High second'])
+    expect(verifierCalls(rt)).toHaveLength(6)
+    for (const call of verifierCalls(rt)) expect(call.prompt).toMatch(/High first|High second/)
+    expect(result).toHaveProperty('unverifiedByCapCount', 3)
+    expect(result).toHaveProperty('unverifiedByCap', [
+      { title: 'Medium first', lens: 'correctness', severity: 'medium', why: 'why Medium first', kind: 'risk',
+        verdict: 'unverified-by-cap', reason: 'not verified — beyond the maxVerifyClaims cap' },
+      { title: 'Medium second', lens: 'correctness', severity: 'medium', why: 'why Medium second', kind: 'risk',
+        verdict: 'unverified-by-cap', reason: 'not verified — beyond the maxVerifyClaims cap' },
+      { title: 'Low priority', lens: 'correctness', severity: 'low', why: 'why Low priority', kind: 'risk',
+        verdict: 'unverified-by-cap', reason: 'not verified — beyond the maxVerifyClaims cap' },
+    ])
+    expect(result.allVerified).toHaveLength(5)
+    expect(result.allVerified.filter((c) => c.verdict === 'unverified-by-cap')).toHaveLength(3)
+    expect(result.candidateCount).toBe(5)
+    expect(result.stats.verify?.truncated).toBe(3)
+    expect(result.warnings).toContain(
+      'adversarialVerification: 3 of 5 claims truncated by maxVerifyClaims=2 — kept as unverified-by-cap',
+    )
+  })
+})
+
+describe('independent-analysis maxVerifyClaims boundaries', () => {
+  it('keeps the first critique among equal severities at the cap boundary', async () => {
+    const rt = makeRuntime({ candidates: mixedSeverityCandidates })
+    const result = await wf.run(rt, { ...baseInput, maxVerifyClaims: 1 })
+    expect(result.confirmed.map((c) => c.title)).toEqual(['High first'])
+    expect(verifierCalls(rt)).toHaveLength(3)
+    expect(result).toHaveProperty('unverifiedByCapCount', 4)
+  })
+
+  it.each([5, 8, 1e100])('verifies everything in severity order when the cap is %s', async (maxVerifyClaims) => {
+    const rt = makeRuntime({ candidates: mixedSeverityCandidates })
+    const result = await wf.run(rt, { ...baseInput, maxVerifyClaims })
+    expect(verifierCalls(rt)).toHaveLength(13)
+    expect(launchOrder(rt)).toEqual(severityOrder)
+    expect(result.confirmed.map((c) => c.title)).toEqual(severityOrder)
+    expect(result.allVerified.map((c) => c.title)).toEqual(severityOrder)
+    expect(result).toHaveProperty('unverifiedByCap', [])
+    expect(result).toHaveProperty('unverifiedByCapCount', 0)
+  })
+})
+
+describe('independent-analysis maxVerifyClaims validation', () => {
+  it('reports zero cap exclusions when synthesis is empty', async () => {
+    const rt = makeRuntime({ candidates: [] })
+    const result = await wf.run(rt, { ...baseInput, maxVerifyClaims: 2 })
+    expect(verifierCalls(rt)).toHaveLength(0)
+    expect(result).toHaveProperty('unverifiedByCap', [])
+    expect(result).toHaveProperty('unverifiedByCapCount', 0)
+  })
+
+  it('rejects an unknown argument before launching any agent and names it', async () => {
+    const rt = makeRuntime()
+    await expect(wf.run(rt, { ...baseInput, verifierType: 'x' })).rejects.toThrow(/verifierType/)
+    expect(rt.calls).toHaveLength(0)
+  })
+
+  it.each([0, -1, 1.5, '3', null, true, NaN, Infinity])(
+    'rejects maxVerifyClaims=%s before launching any agent', async (maxVerifyClaims) => {
+      const rt = makeRuntime()
+      await expect(wf.run(rt, { ...baseInput, maxVerifyClaims })).rejects.toThrow(
+        'independent-analysis: "maxVerifyClaims" must be a positive integer',
+      )
+      expect(rt.calls).toHaveLength(0)
+    },
+  )
+})
+
 // ---------------------------------------------------------------------------
 // Metadata
 // ---------------------------------------------------------------------------

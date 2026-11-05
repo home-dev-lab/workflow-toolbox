@@ -46,7 +46,10 @@ import {
   untrusted,
   withLeafFence,
 } from '@workflow-toolbox/patterns'
-import type { VerifiedClaim, AgentTypeProbeReport } from '@workflow-toolbox/patterns'
+import type {
+  VerifiedClaim, AgentTypeProbeReport, PatternResult, LeafFenceReport,
+  FanOutAndSynthesizeOptions, AdversarialVerificationOptions,
+} from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
 // ---------------------------------------------------------------------------
@@ -80,6 +83,10 @@ export interface IndependentAnalysisInput {
   lensCount: number
   /** Verifier votes per (non-low) candidate. */
   votes: number
+  /** Optional positive-integer verification cap; omitted means no cap. Critiques
+   *  are severity-sorted before capping; excluded critiques remain in the output
+   *  as unverified-by-cap with a reason and an explicit count. */
+  maxVerifyClaims?: number
   /** Verifier model override; undefined → adversarialVerification's BEST_MODEL. */
   verifierModel: ModelAlias | undefined
   /** Subagent type to route EVERY verifier through — e.g. 'codex:codex-rescue'
@@ -192,6 +199,30 @@ const CANDIDATES_SCHEMA = {
 type CandidatesOutput = FromSchema<typeof CANDIDATES_SCHEMA>
 type Candidate = CandidatesOutput['candidates'][number]
 
+const CONFIG_SCHEMA = {
+  args: ['subject', 'context', 'assumptions', 'lenses', 'sourceRefs', 'lensCount',
+    'votes', 'maxVerifyClaims', 'verifierModel', 'effort', 'perAgent', 'agentTypes',
+    'models', 'sizing', 'messaging', 'observers'],
+}
+
+const SEVERITY_RANK = { high: 0, medium: 1, low: 2 } as const
+
+function orderForVerification(candidates: Candidate[], cap: number | undefined): Candidate[] {
+  // An uncapped launch retains the synthesis order, including equal-severity ties.
+  return cap === undefined ? candidates : [...candidates].sort((a, b) =>
+    SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
+  )
+}
+
+function summarizeCapExclusions(verified: ReadonlyArray<VerifiedClaim<Candidate>>) {
+  const unverifiedByCap = verified.filter((v) => v.verdict === 'unverified-by-cap').map((v) => ({
+    ...v.claim,
+    verdict: v.verdict,
+    reason: 'not verified — beyond the maxVerifyClaims cap',
+  }))
+  return { unverifiedByCap, unverifiedByCapCount: unverifiedByCap.length }
+}
+
 // ---------------------------------------------------------------------------
 // Untrusted-text embedding — caller text is data, never instructions.
 // ---------------------------------------------------------------------------
@@ -220,10 +251,208 @@ function optStringArray(obj: Record<string, unknown>, key: string): string[] {
   return v as string[]
 }
 
-// No explicit type args: passing only <TInput> would pin TOut to its `unknown`
-// default (TS skips inference for the rest once any arg is given). Letting both
-// infer — TInput from parseInput's annotated return, TOut from run's body —
-// gives consumers a typed result. (pr-review follows the same no-generics form.)
+function parseVerificationCap(obj: Record<string, unknown>): { maxVerifyClaims?: number } {
+  const cap = obj['maxVerifyClaims']
+  if (cap === undefined) return {}
+  if (typeof cap !== 'number' || !Number.isInteger(cap) || cap <= 0) {
+    throw new Error('independent-analysis: "maxVerifyClaims" must be a positive integer')
+  }
+  return { maxVerifyClaims: cap }
+}
+
+function parseCount(obj: Record<string, unknown>, key: string, fallback: number): number {
+  let count = fallback
+  if (obj[key] !== undefined) {
+    if (typeof obj[key] !== 'number' || obj[key] < 1) {
+      throw new Error(`independent-analysis: "${key}" must be a number >= 1`)
+    }
+    count = Math.floor(obj[key])
+  }
+  return count
+}
+
+function parseVerifierModel(obj: Record<string, unknown>): ModelAlias | undefined {
+  let verifierModel: ModelAlias | undefined
+  if (obj['verifierModel'] !== undefined) {
+    if (typeof obj['verifierModel'] !== 'string' || !(MODEL_ALIASES as readonly string[]).includes(obj['verifierModel'])) {
+      throw new Error(`independent-analysis: "verifierModel" must be one of ${MODEL_ALIASES.join(', ')}`)
+    }
+    verifierModel = obj['verifierModel'] as ModelAlias
+  }
+  return verifierModel
+}
+
+function analysisContext(input: IndependentAnalysisInput) {
+  const subjectBlock = untrusted('SUBJECT', input.subject)
+  const contextBlock = input.context.trim().length > 0 ? untrusted('CONTEXT', input.context) : '(no extra context)'
+  const assumptionsBlock = renderAssumptions(input.assumptions)
+  const sourceBlock = renderSourceRefs(input.sourceRefs, {
+    emptyNote: 'No source files were provided — reason from the subject + context as given.',
+    leadIn: 'READ these files to GROUND every claim in real content (cite specifics):',
+  })
+  return { subjectBlock, contextBlock, assumptionsBlock, sourceBlock }
+}
+
+type AnalysisContext = ReturnType<typeof analysisContext>
+
+function analysisEfforts(input: IndependentAnalysisInput) {
+  const lensesEffort = resolveEffort(input.effort?.['lenses'], LENSES_EFFORT)
+  const analyzeTaskEffort = resolveEffort(input.effort?.['analyzeTask'], ANALYZE_TASK_EFFORT)
+  const analyzeSynthesisEffort = resolveEffort(input.effort?.['analyzeSynthesis'], ANALYZE_SYNTHESIS_EFFORT)
+  const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
+  return { lensesEffort, analyzeTaskEffort, analyzeSynthesisEffort, verifyEffort }
+}
+
+function lensPrompt(input: IndependentAnalysisInput, ctx: AnalysisContext): string {
+  return `Propose exactly ${input.lensCount} DIVERSE, non-overlapping analysis lenses to adversarially ` +
+    `stress-test the subject below. Each lens is a distinct angle a forgotten risk could hide in ` +
+    `(e.g. correctness, edge cases, failure modes, security, performance, operability, ` +
+    `assumptions, alternatives, scope/altitude — pick what FITS this subject). Return { "lenses": ` +
+    `[{ "key": "<short-slug>", "focus": "<one sentence: what this lens hunts for>" }] }.\n\n` +
+    `SUBJECT:\n${ctx.subjectBlock}\n\nCONTEXT:\n${ctx.contextBlock}`
+}
+
+function requireProposedLenses(proposed: LensList | null): Lens[] {
+  if (proposed === null || proposed.lenses.length === 0) {
+    throw new Error('independent-analysis: lens proposal failed (agent died or returned no lenses) — ' +
+      'resume from the Lenses phase or pass explicit "lenses".')
+  }
+  return proposed.lenses
+}
+
+// A network-dependent lens without readable sources must never fail silently.
+function warnExternalLens(rt: WorkflowRuntime, input: IndependentAnalysisInput, lensList: Lens[]): void {
+  if (input.sourceRefs.length === 0) {
+    const externalLens = lensList.find((l) => /\bdocs?\b|\bweb\b|verify against|official/i.test(`${l.key} ${l.focus}`))
+    if (externalLens !== undefined) {
+      rt.log(`independent-analysis: lens "${externalLens.key}" implies external verification ` +
+        `but no sourceRefs were provided — agents will reason from priors and external ` +
+        `claims will be unverifiable. Attach the source via sourceRefs (Read is never ` +
+        `network-gated), or ground it out-of-band and pass the conclusion as context.`)
+    }
+  }
+}
+
+function analystPrompt(lens: Lens, ctx: AnalysisContext): string {
+  return `You are an independent analyst. Examine the subject ADVERSARIALLY through ONE lens only.\n` +
+    `LENS "${lens.key}": ${lens.focus}\n\n` +
+    `Your job is to surface FORGOTTEN angles — risks, gaps, wrong assumptions, edge cases, or ` +
+    `better alternatives — that the stated assumptions below do NOT already cover. Be concrete and ` +
+    `specific; prefer a few high-signal findings over a long shallow list. For EACH finding, honestly ` +
+    `set alreadyKnown=true if it merely restates a stated assumption.\n\n` +
+    `${ctx.sourceBlock}\n\n` +
+    `SUBJECT:\n${ctx.subjectBlock}\n\nCONTEXT:\n${ctx.contextBlock}\n\n` +
+    `ALREADY-STATED ASSUMPTIONS (do NOT restate these as new):\n${ctx.assumptionsBlock}\n\n` +
+    `Return { "angles": [{ "title", "why", "severity": high|medium|low, ` +
+    `"kind": risk|gap|wrong-assumption|edge-case|alternative, "alreadyKnown": bool }] }. ` +
+    `If this lens genuinely surfaces nothing new, return an empty angles array.`
+}
+
+function synthesisPrompt(parts: ReadonlyArray<AnglesOutput>, ctx: AnalysisContext): string {
+  return `You are the synthesis agent. Below are findings from ${parts.length} independent lens analysts ` +
+    `of the SAME subject (JSON). Produce a DEDUPED candidate list: (1) merge findings that are the ` +
+    `same angle in different words into one; (2) DROP any finding with alreadyKnown=true or that ` +
+    `merely restates one of the stated assumptions; (3) keep only genuinely-new angles. Carry the ` +
+    `most representative lens for each. Order by severity (high first).\n\n` +
+    `STATED ASSUMPTIONS (already covered — drop matches):\n${ctx.assumptionsBlock}\n\n` +
+    `RAW LENS FINDINGS (JSON):\n${untrusted('LENS-FINDINGS', JSON.stringify(parts))}\n\n` +
+    `Return { "candidates": [{ "title", "lens", "why", "severity": high|medium|low, ` +
+    `"kind": risk|gap|wrong-assumption|edge-case|alternative }] }.`
+}
+
+function analysisOptions(lensList: Lens[], ctx: AnalysisContext, efforts: ReturnType<typeof analysisEfforts>): FanOutAndSynthesizeOptions<Lens, AnglesOutput> {
+  return {
+    tasks: lensList,
+    taskPrompt: (lens) => analystPrompt(lens, ctx),
+    taskSchema: ANGLES_SCHEMA,
+    taskEffort: efforts.analyzeTaskEffort,
+    synthesisPrompt: (parts) => synthesisPrompt(parts, ctx),
+    synthesisSchema: CANDIDATES_SCHEMA,
+    synthesisEffort: efforts.analyzeSynthesisEffort,
+    phase: 'Analyze',
+  }
+}
+
+function verificationPrompt(c: Candidate, input: IndependentAnalysisInput, ctx: AnalysisContext): string {
+  return `An independent multi-lens sweep proposes the finding below as a GENUINELY NEW and REAL issue ` +
+    `with the subject — one NOT already covered by the stated assumptions. Decide whether it is BOTH ` +
+    `real AND new. REFUTE it if: it merely restates a stated assumption, it is a non-issue given the ` +
+    `subject as described, it is unfounded/speculative, or it duplicates another known point. ` +
+    (input.sourceRefs.length > 0
+      ? `Re-derive from the ACTUAL source files (${input.sourceRefs.join(', ')}) — do NOT trust the ` +
+        `finding's own description.\n\n`
+      : `\n`) +
+    `FINDING:\n${untrusted('FINDING', `${c.title}\n[${c.severity}/${c.kind}, lens=${c.lens}]\n${c.why}`)}\n\n` +
+    `STATED ASSUMPTIONS:\n${ctx.assumptionsBlock}\n\n` +
+    `SUBJECT (for grounding):\n${ctx.subjectBlock}`
+}
+
+function verificationOptions(input: IndependentAnalysisInput, candidates: Candidate[], ctx: AnalysisContext,
+  verifyEffort: EffortAlias, verifierModel: ModelAlias | undefined,
+  resolvedVerifierType: string | undefined): AdversarialVerificationOptions<Candidate> {
+  return {
+    claims: orderForVerification(candidates, input.maxVerifyClaims),
+    ...(input.maxVerifyClaims !== undefined ? { maxVerifyClaims: input.maxVerifyClaims } : {}),
+    renderClaim: (c) => verificationPrompt(c, input, ctx),
+    votes: input.votes,
+    votesPerClaim: (c) => (c.severity === 'low' ? 1 : input.votes),
+    effort: verifyEffort,
+    ...(verifierModel !== undefined ? { model: verifierModel } : {}),
+    ...(resolvedVerifierType !== undefined ? { verifierType: resolvedVerifierType } : {}),
+    phase: 'Verify',
+  }
+}
+
+function emptyResult(input: IndependentAnalysisInput, lensList: Lens[], analysis: PatternResult<CandidatesOutput | null>) {
+  return {
+    subject: input.subject,
+    lensesUsed: lensList.map((l) => l.key),
+    confirmed: [],
+    refuted: [],
+    allVerified: [],
+    ...summarizeCapExclusions([]),
+    candidateCount: 0,
+    stats: { analyze: analysis.stats, verify: null },
+    envelope: { trail: collectTrail(analysis) },
+    warnings: [...analysis.warnings, 'no candidate findings survived synthesis'],
+  }
+}
+
+function partitionVerified(verified: ReadonlyArray<VerifiedClaim<Candidate>>) {
+  const isReal = (v: VerifiedClaim<Candidate>): boolean =>
+    v.verdict === 'confirmed' || v.verdict === 'partially-confirmed'
+  const confirmed = verified.filter(isReal).map((v) => ({ ...v.claim, verdict: v.verdict }))
+  const refuted = verified.filter((v) => v.verdict === 'refuted')
+    .map((v) => ({ title: v.claim.title, severity: v.claim.severity, lens: v.claim.lens }))
+  return { confirmed, refuted }
+}
+
+interface RoutingReport {
+  verifierType: string | null
+  probe: AgentTypeProbeReport | null
+  leafFence: LeafFenceReport
+}
+
+function analysisResult(input: IndependentAnalysisInput, lensList: Lens[], candidates: Candidate[],
+  analysis: PatternResult<CandidatesOutput | null>, verification: PatternResult<Array<VerifiedClaim<Candidate>>>, routing: RoutingReport) {
+  const verified = (verification.value ?? []) as ReadonlyArray<VerifiedClaim<Candidate>>
+  const { confirmed, refuted } = partitionVerified(verified)
+  return {
+    subject: input.subject,
+    lensesUsed: lensList.map((l) => l.key),
+    ...routing,
+    confirmed,
+    refuted,
+    ...summarizeCapExclusions(verified),
+    allVerified: verified.map((v) => ({ title: v.claim.title, severity: v.claim.severity, kind: v.claim.kind, verdict: v.verdict })),
+    candidateCount: candidates.length,
+    stats: { analyze: analysis.stats, verify: verification.stats },
+    envelope: { trail: collectTrail(analysis, verification) },
+    warnings: [...analysis.warnings, ...verification.warnings],
+  }
+}
+
+// Infer both types: specifying only TInput would pin TOut to unknown.
 export default defineWorkflow({
   meta: {
     name: 'independent-analysis',
@@ -231,71 +460,28 @@ export default defineWorkflow({
       'Bias-free multi-lens adversarial analysis of a subject: fan out one agent per lens to surface forgotten angles/risks, dedup vs stated assumptions, then refute-first verify the survivors.',
     phases: [{ title: 'Fence' }, { title: 'Probe' }, { title: 'Lenses' }, { title: 'Analyze' }, { title: 'Verify' }],
   },
-
   parseInput: (raw): IndependentAnalysisInput => {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-      throw new Error(
-        'independent-analysis: input must be an object with at least "subject" (a non-empty string)',
-      )
+      throw new Error('independent-analysis: input must be an object with at least "subject" (a non-empty string)')
     }
     const obj = raw as Record<string, unknown>
-
     const subject = requireNonEmptyString(obj, 'subject')
     const context = typeof obj['context'] === 'string' ? obj['context'] : ''
     const assumptions = optStringArray(obj, 'assumptions')
     const lenses = optStringArray(obj, 'lenses')
     const sourceRefs = optStringArray(obj, 'sourceRefs')
-
-    let lensCount = 5
-    if (obj['lensCount'] !== undefined) {
-      if (typeof obj['lensCount'] !== 'number' || obj['lensCount'] < 1) {
-        throw new Error('independent-analysis: "lensCount" must be a number >= 1')
-      }
-      lensCount = Math.floor(obj['lensCount'])
-    }
-
-    let votes = 3
-    if (obj['votes'] !== undefined) {
-      if (typeof obj['votes'] !== 'number' || obj['votes'] < 1) {
-        throw new Error('independent-analysis: "votes" must be a number >= 1')
-      }
-      votes = Math.floor(obj['votes'])
-    }
-
-    let verifierModel: ModelAlias | undefined
-    if (obj['verifierModel'] !== undefined) {
-      if (
-        typeof obj['verifierModel'] !== 'string' ||
-        !(MODEL_ALIASES as readonly string[]).includes(obj['verifierModel'])
-      ) {
-        throw new Error(
-          `independent-analysis: "verifierModel" must be one of ${MODEL_ALIASES.join(', ')}`,
-        )
-      }
-      verifierModel = obj['verifierModel'] as ModelAlias
-    }
-
-
-    // Class B/C launch-time config, validated by the shared parseConfig helper:
-    // per-role effort overrides (`effort.verify`) and the per-role agentType
-    // routing map (`agentTypes.verify` — the structured channel for cross-model
-    // routing; no bespoke top-level arg). Bespoke subject/lenses/votes/
-    // verifierModel keys are IGNORED by parseConfig, so the conventions compose.
-    const cfg = parseConfig(obj)
+    const lensCount = parseCount(obj, 'lensCount', 5)
+    const votes = parseCount(obj, 'votes', 3)
+    const verifierModel = parseVerifierModel(obj)
+    const cfg = parseConfig(obj, CONFIG_SCHEMA)
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
     const messaging = cfg.messaging ?? null
     const perAgent = cfg.perAgent ?? null
-
-    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging, perAgent }
+    return { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel, verifierType, effort, messaging, perAgent, ...parseVerificationCap(obj) }
   },
-
   run: async (rt0: WorkflowRuntime, input: IndependentAnalysisInput) => {
-    // Leaf-agent fence — the LOWEST-priority default, applied first so it never
-    // clobbers a per-role agentType (each call site's own opts, e.g. verifierType
-    // below). Every agent this workflow spawns defaults to the SendMessage-denying
-    // agentType unless `messaging: true` was requested — see
-    // @workflow-toolbox/patterns' withLeafFence.
+    // Fence first: role-specific routing and blanket defaults still win over it.
     rt0.phase('Fence')
     const { rt: fencedRt, report: leafFence } = await withLeafFence(rt0, {
       phase: 'Fence',
@@ -303,26 +489,8 @@ export default defineWorkflow({
     })
     const rt = input.perAgent !== null ? withAgentDefaults(fencedRt, input.perAgent) : fencedRt
     const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel)
-    const subjectBlock = untrusted('SUBJECT', input.subject)
-    const contextBlock = input.context.trim().length > 0 ? untrusted('CONTEXT', input.context) : '(no extra context)'
-    const assumptionsBlock = renderAssumptions(input.assumptions)
-    const sourceBlock = renderSourceRefs(input.sourceRefs, {
-      emptyNote: 'No source files were provided — reason from the subject + context as given.',
-      leadIn: 'READ these files to GROUND every claim in real content (cite specifics):',
-    })
-
-    // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
-    // override wins when valid, else the stage-class default declared above.
-    // 'verify' is additionally floored at 'high' — see resolveVerifierEffort.
-    const lensesEffort = resolveEffort(input.effort?.['lenses'], LENSES_EFFORT)
-    const analyzeTaskEffort = resolveEffort(input.effort?.['analyzeTask'], ANALYZE_TASK_EFFORT)
-    const analyzeSynthesisEffort = resolveEffort(input.effort?.['analyzeSynthesis'], ANALYZE_SYNTHESIS_EFFORT)
-    const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
-
-    // ---- Phase 0 (conditional): probe the requested verifier agentType ----
-    // One schema-less probe; any non-affirmative outcome (UNAVAILABLE marker,
-    // null, error text, throw on an unregistered type) degrades to the standard
-    // same-model verifier. Never silent: logged + digested + result `probe`.
+    const ctx = analysisContext(input)
+    const efforts = analysisEfforts(input)
     let resolvedVerifierType: string | undefined
     let probeInfo: AgentTypeProbeReport | null = null
     if (input.verifierType !== undefined) {
@@ -331,161 +499,24 @@ export default defineWorkflow({
       resolvedVerifierType = probe.agentType
       probeInfo = { requested: input.verifierType, available: probe.available, reason: probe.reason }
     }
-
-    // ---- Phase 1: lenses (caller-supplied, else auto-proposed) ----
     rt.phase('Lenses')
     let lensList: Lens[]
     if (input.lenses.length > 0) {
       lensList = input.lenses.map((l, i) => ({ key: l.slice(0, 48) || `lens-${i + 1}`, focus: l }))
     } else {
-      const proposed = await rt.agent<LensList>(
-        `Propose exactly ${input.lensCount} DIVERSE, non-overlapping analysis lenses to adversarially ` +
-          `stress-test the subject below. Each lens is a distinct angle a forgotten risk could hide in ` +
-          `(e.g. correctness, edge cases, failure modes, security, performance, operability, ` +
-          `assumptions, alternatives, scope/altitude — pick what FITS this subject). Return { "lenses": ` +
-          `[{ "key": "<short-slug>", "focus": "<one sentence: what this lens hunts for>" }] }.\n\n` +
-          `SUBJECT:\n${subjectBlock}\n\nCONTEXT:\n${contextBlock}`,
-        { schema: LENS_SCHEMA, label: 'independent-analysis:propose-lenses', phase: 'Lenses', effort: lensesEffort },
-      )
-      if (proposed === null || proposed.lenses.length === 0) {
-        throw new Error(
-          'independent-analysis: lens proposal failed (agent died or returned no lenses) — ' +
-            'resume from the Lenses phase or pass explicit "lenses".',
-        )
-      }
-      lensList = proposed.lenses
+      const proposed = await rt.agent<LensList>(lensPrompt(input, ctx),
+        { schema: LENS_SCHEMA, label: 'independent-analysis:propose-lenses', phase: 'Lenses', effort: efforts.lensesEffort })
+      lensList = requireProposedLenses(proposed)
     }
     rt.log(`independent-analysis: ${lensList.length} lenses (${lensList.map((l) => l.key).join(', ')})`)
-
-    // Preventive nudge: a lens implying EXTERNAL verification (docs / web /
-    // "verify against" / official) can only be grounded by a network tool, which
-    // is silently deniable per environment. With no sourceRefs, the analyst
-    // reasons from priors and its external claims are unverifiable — warn (never
-    // fail) so the author attaches the source via sourceRefs (Read is never
-    // network-gated) or grounds it out-of-band and passes the conclusion as context.
-    if (input.sourceRefs.length === 0) {
-      const externalLens = lensList.find((l) =>
-        /\bdocs?\b|\bweb\b|verify against|official/i.test(`${l.key} ${l.focus}`),
-      )
-      if (externalLens !== undefined) {
-        rt.log(
-          `independent-analysis: lens "${externalLens.key}" implies external verification ` +
-            `but no sourceRefs were provided — agents will reason from priors and external ` +
-            `claims will be unverifiable. Attach the source via sourceRefs (Read is never ` +
-            `network-gated), or ground it out-of-band and pass the conclusion as context.`,
-        )
-      }
-    }
-
-    // ---- Phases 2: fan out per lens, then synthesize a deduped candidate list ----
-    const analysis = await fanOutAndSynthesize<Lens, AnglesOutput, CandidatesOutput>(rt, {
-      tasks: lensList,
-      taskPrompt: (lens) =>
-        `You are an independent analyst. Examine the subject ADVERSARIALLY through ONE lens only.\n` +
-        `LENS "${lens.key}": ${lens.focus}\n\n` +
-        `Your job is to surface FORGOTTEN angles — risks, gaps, wrong assumptions, edge cases, or ` +
-        `better alternatives — that the stated assumptions below do NOT already cover. Be concrete and ` +
-        `specific; prefer a few high-signal findings over a long shallow list. For EACH finding, honestly ` +
-        `set alreadyKnown=true if it merely restates a stated assumption.\n\n` +
-        `${sourceBlock}\n\n` +
-        `SUBJECT:\n${subjectBlock}\n\nCONTEXT:\n${contextBlock}\n\n` +
-        `ALREADY-STATED ASSUMPTIONS (do NOT restate these as new):\n${assumptionsBlock}\n\n` +
-        `Return { "angles": [{ "title", "why", "severity": high|medium|low, ` +
-        `"kind": risk|gap|wrong-assumption|edge-case|alternative, "alreadyKnown": bool }] }. ` +
-        `If this lens genuinely surfaces nothing new, return an empty angles array.`,
-      taskSchema: ANGLES_SCHEMA,
-      taskEffort: analyzeTaskEffort,
-      synthesisPrompt: (parts) =>
-        `You are the synthesis agent. Below are findings from ${parts.length} independent lens analysts ` +
-        `of the SAME subject (JSON). Produce a DEDUPED candidate list: (1) merge findings that are the ` +
-        `same angle in different words into one; (2) DROP any finding with alreadyKnown=true or that ` +
-        `merely restates one of the stated assumptions; (3) keep only genuinely-new angles. Carry the ` +
-        `most representative lens for each. Order by severity (high first).\n\n` +
-        `STATED ASSUMPTIONS (already covered — drop matches):\n${assumptionsBlock}\n\n` +
-        `RAW LENS FINDINGS (JSON):\n${untrusted('LENS-FINDINGS', JSON.stringify(parts))}\n\n` +
-        `Return { "candidates": [{ "title", "lens", "why", "severity": high|medium|low, ` +
-        `"kind": risk|gap|wrong-assumption|edge-case|alternative }] }.`,
-      synthesisSchema: CANDIDATES_SCHEMA,
-      synthesisEffort: analyzeSynthesisEffort,
-      phase: 'Analyze',
-    })
-
+    warnExternalLens(rt, input, lensList)
+    const analysis = await fanOutAndSynthesize<Lens, AnglesOutput, CandidatesOutput>(rt, analysisOptions(lensList, ctx, efforts))
     const candidates: Candidate[] = analysis.value?.candidates ?? []
     rt.log(`independent-analysis: ${candidates.length} candidate findings after synthesis/dedup`)
-
-    if (candidates.length === 0) {
-      return {
-        subject: input.subject,
-        lensesUsed: lensList.map((l) => l.key),
-        confirmed: [],
-        refuted: [],
-        allVerified: [],
-        candidateCount: 0,
-        stats: { analyze: analysis.stats, verify: null },
-        envelope: { trail: collectTrail(analysis) },
-        warnings: [...analysis.warnings, 'no candidate findings survived synthesis'],
-      }
-    }
-
-    // ---- Phase 3: refute-first verification of each candidate ----
-    const verification = await adversarialVerification<Candidate>(rt, {
-      claims: candidates,
-      renderClaim: (c) =>
-        `An independent multi-lens sweep proposes the finding below as a GENUINELY NEW and REAL issue ` +
-        `with the subject — one NOT already covered by the stated assumptions. Decide whether it is BOTH ` +
-        `real AND new. REFUTE it if: it merely restates a stated assumption, it is a non-issue given the ` +
-        `subject as described, it is unfounded/speculative, or it duplicates another known point. ` +
-        (input.sourceRefs.length > 0
-          ? `Re-derive from the ACTUAL source files (${input.sourceRefs.join(', ')}) — do NOT trust the ` +
-            `finding's own description.\n\n`
-          : `\n`) +
-        `FINDING:\n${untrusted('FINDING', `${c.title}\n[${c.severity}/${c.kind}, lens=${c.lens}]\n${c.why}`)}\n\n` +
-        `STATED ASSUMPTIONS:\n${assumptionsBlock}\n\n` +
-        `SUBJECT (for grounding):\n${subjectBlock}`,
-      votes: input.votes,
-      // Low-severity findings get a single vote; the rest get the full panel.
-      votesPerClaim: (c) => (c.severity === 'low' ? 1 : input.votes),
-      effort: verifyEffort,
-      ...(verifierModel !== undefined
-        ? { model: verifierModel }
-        : {}),
-      ...(resolvedVerifierType !== undefined ? { verifierType: resolvedVerifierType } : {}),
-      phase: 'Verify',
-    })
-
-    const verified = (verification.value ?? []) as ReadonlyArray<VerifiedClaim<Candidate>>
-    const isReal = (v: VerifiedClaim<Candidate>): boolean =>
-      v.verdict === 'confirmed' || v.verdict === 'partially-confirmed'
-
-    const confirmed = verified
-      .filter(isReal)
-      .map((v) => ({ ...v.claim, verdict: v.verdict }))
-    const refuted = verified
-      .filter((v) => v.verdict === 'refuted')
-      .map((v) => ({ title: v.claim.title, severity: v.claim.severity, lens: v.claim.lens }))
-
-    return {
-      subject: input.subject,
-      lensesUsed: lensList.map((l) => l.key),
-      // Verifier routing outcome: the type actually used (undefined → standard
-      // same-model verifier) + the structured probe story when routing was requested.
-      verifierType: resolvedVerifierType ?? null,
-      probe: probeInfo,
-      // Leaf-agent fence outcome (withLeafFence): whether every spawned agent
-      // defaulted to the SendMessage-denying agentType, or degraded/opted out.
-      leafFence,
-      confirmed,
-      refuted,
-      allVerified: verified.map((v) => ({
-        title: v.claim.title,
-        severity: v.claim.severity,
-        kind: v.claim.kind,
-        verdict: v.verdict,
-      })),
-      candidateCount: candidates.length,
-      stats: { analyze: analysis.stats, verify: verification.stats },
-      envelope: { trail: collectTrail(analysis, verification) },
-      warnings: [...analysis.warnings, ...verification.warnings],
-    }
+    if (candidates.length === 0) return emptyResult(input, lensList, analysis)
+    const verification = await adversarialVerification<Candidate>(rt,
+      verificationOptions(input, candidates, ctx, efforts.verifyEffort, verifierModel, resolvedVerifierType))
+    return analysisResult(input, lensList, candidates, analysis, verification,
+      { verifierType: resolvedVerifierType ?? null, probe: probeInfo, leafFence })
   },
 })

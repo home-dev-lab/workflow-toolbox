@@ -855,8 +855,18 @@ usage endpoint (`https://api.anthropic.com/api/oauth/usage`) is not publicly
 documented by Anthropic and may change without notice.
 Its stdout is one compact JSON object:
 `{configDir, quota_model, five_hour, seven_day, weekly_scoped}`. Branch on
-`quota_model`, not on an absent percentage: `'subscription'` means the account has real quota
-windows; `'none'` means a usage-billed account with no five-hour/seven-day window at all.
+`quota_model`, not on an absent percentage: `'subscription'` means usage was reported;
+`'unknown'` means it was not. The bundled endpoint has no known explicit no-subscription signal;
+only a custom probe's explicit `'none'` declaration stops the watcher.
+The watcher watches each window on its own: every window carrying a numeric `pct` is watched,
+and the arming line names them (`| watching 7d`). A window without one (omitted, `null`, or no
+numeric `pct`) is reported once per run as not reported by the probe and keeps its threshold and
+reset history; it is never read as absent from the plan, since an omitted window can also mean
+its reset passed. A partial reading never shrinks the windows required from later caches, and
+missing windows trigger a live recheck within the cache tolerance. Login caches must carry the
+current account fingerprint, as do token-keyed caches. Drops affect only their own window; an advancing reset deadline on
+the same verified account re-arms that window even if usage rises. A reading with no numeric
+window is `DEGRADED` with backoff, and recovery names the watched windows again.
 
 ## Companion app — Workflow Observatory
 

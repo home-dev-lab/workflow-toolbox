@@ -15,36 +15,32 @@ function invocation(code: string | null) {
   return { kill, host: createHostAdapter({ platform: 'linux', invoke: { kill } }) }
 }
 
-it.each(['EIO', 'EINVAL'])('keeps an old launch lock when its owner liveness is unknown (%s)', (code) => {
+function launchLockFixture(code: string | null, pid = 42) {
   const text = source('wt-lane')
-  const start = text.indexOf('const lockStatus = ') + 'const lockStatus = '.length
-  const end = text.indexOf('\n    const removeOwnedLock = ', start)
-  expect(start).toBeGreaterThan('const lockStatus = '.length)
+  const start = text.indexOf('function launchLockStatus(')
+  const end = text.indexOf('\nfunction removeOwnedLock(', start)
+  expect(start).toBeGreaterThanOrEqual(0)
   expect(end).toBeGreaterThan(start)
   const { kill, host } = invocation(code)
-  const lockStatus = runInNewContext(`(${text.slice(start, end).trim()})`, {
-    process: { kill }, hostAdapter: host, consentModules: { hostAdapter: host },
+  // Execute both production helpers: the launcher now delegates to module-level functions.
+  const lockStatus = runInNewContext(`${text.slice(start, end)}\n(path) => launchLockStatus(path, () => null, {})`, {
+    hostAdapter: host,
     path: { join: (...parts: string[]) => parts.join('/') },
-    readFileSync: () => JSON.stringify({ pid: 42, argv: ['fixture'], startTime: 1 }),
+    readFileSync: () => JSON.stringify({ pid, argv: ['fixture'], startTime: 1 }),
     statSync: () => ({ mtimeMs: 0 }), Date: { now: () => 240_001 },
-    LAUNCH_LOCK_MAX_AGE_MS: 120_000, launcherInspect: () => null,
+    LAUNCH_LOCK_MAX_AGE_MS: 120_000,
   }) as (path: string) => { stale: boolean }
+  return { kill, lockStatus }
+}
+
+it.each(['EIO', 'EINVAL'])('keeps an old launch lock when its owner liveness is unknown (%s)', (code) => {
+  const { kill, lockStatus } = launchLockFixture(code)
   expect(lockStatus('fixture-lock').stale, 'unknown launch owner is not reclaimable').toBe(false)
   expect(kill).toHaveBeenCalledWith(42, 0)
 })
 
 it.each([0, -7])('recovers an old launch lock whose owner pid %i is not a process id', (pid) => {
-  const text = source('wt-lane')
-  const start = text.indexOf('const lockStatus = ') + 'const lockStatus = '.length
-  const end = text.indexOf('\n    const removeOwnedLock = ', start)
-  const { kill, host } = invocation(null)
-  const lockStatus = runInNewContext(`(${text.slice(start, end).trim()})`, {
-    process: { kill }, hostAdapter: host, consentModules: { hostAdapter: host },
-    path: { join: (...parts: string[]) => parts.join('/') },
-    readFileSync: () => JSON.stringify({ pid, argv: ['fixture'], startTime: 1 }),
-    statSync: () => ({ mtimeMs: 0 }), Date: { now: () => 240_001 },
-    LAUNCH_LOCK_MAX_AGE_MS: 120_000, launcherInspect: () => null,
-  }) as (path: string) => { stale: boolean }
+  const { kill, lockStatus } = launchLockFixture(null, pid)
   expect(lockStatus('fixture-lock').stale, 'an invalid owner record ages out like an unreadable one').toBe(true)
   expect(kill, 'no signal is sent for an invalid owner pid').not.toHaveBeenCalled()
 })
