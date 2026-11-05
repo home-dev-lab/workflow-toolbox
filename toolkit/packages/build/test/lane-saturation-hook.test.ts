@@ -19,6 +19,7 @@ import { LANE_PROCESS_NAMES, countLaneProcessesReal, evaluateLaneCall } from '..
 import { inspectLaneLockWait, pgrepLaneName, PGREP_TIMEOUT_MS } from '../../../../plugin/bin/lib/host/lane-lock-wait.mjs'
 // @ts-expect-error runtime .mjs host boundary
 import { currentPidNamespace, processStartTime } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
+import { prepareFakeLane } from './helpers/owned-lane-process.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-saturation-hook.mjs')
@@ -442,14 +443,12 @@ describe('wt-lane-saturation-hook.mjs', () => {
 
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-real-'))
     roots.push(root)
-    const fake = join(root, 'opencode')
+    const { executable: fake, args: fakeArgs } = prepareFakeLane(root)
     const marker = join(root, 'marker.sh')
-    copyFileSync('/bin/sleep', fake)
-    chmodSync(fake, 0o755)
     writeFileSync(marker, '#!/bin/sh\n# opencode run --model x\nsleep 30\n')
     chmodSync(marker, 0o755)
 
-    const laneChild = spawn(fake, ['30'], { stdio: 'ignore' })
+    const laneChild = spawn(fake, fakeArgs, { stdio: 'ignore' })
     if (!laneChild.pid) throw new Error('lane child has no pid')
     await waitForOwnedLane(laneChild.pid, fake)
     let shellChild: ChildProcess | null = null
@@ -494,10 +493,8 @@ describe('wt-lane-saturation-hook.mjs', () => {
     }
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-empty-owned-'))
     roots.push(root)
-    const fake = join(root, 'opencode')
-    copyFileSync('/bin/sleep', fake)
-    chmodSync(fake, 0o755)
-    const lane = spawn(fake, ['30'], { stdio: 'ignore' })
+    const { executable: fake, args: fakeArgs } = prepareFakeLane(root)
+    const lane = spawn(fake, fakeArgs, { stdio: 'ignore' })
     if (!lane.pid) throw new Error('lane child has no pid')
     await waitForOwnedLane(lane.pid, fake)
 
@@ -584,12 +581,10 @@ describe('wt-lane-saturation-hook.mjs', () => {
 
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-contend-'))
     roots.push(root)
-    const fake = join(root, 'opencode')
-    copyFileSync('/bin/sleep', fake)
-    chmodSync(fake, 0o755)
+    const { executable: fake, args: fakeArgs } = prepareFakeLane(root)
 
     const marker = join(root, 'start-lane')
-    const arcA = spawn('/bin/sh', ['-c', 'while [ ! -e "$1" ]; do sleep 0.02; done; exec "$2" 30', 'arc-a', marker, fake], { stdio: 'ignore' })
+    const arcA = spawn('/bin/sh', ['-c', 'while [ ! -e "$1" ]; do sleep 0.02; done; shift; exec "$@"', 'arc-a', marker, fake, ...fakeArgs], { stdio: 'ignore' })
     if (!arcA.pid) throw new Error('arc A has no pid')
     await new Promise<void>((resolve, reject) => {
       arcA.once('spawn', resolve)

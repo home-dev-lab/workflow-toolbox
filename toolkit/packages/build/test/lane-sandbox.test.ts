@@ -73,6 +73,11 @@ const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSy
 // A rootless/user-mapped host can execute bwrap but cannot establish the root-owned executable
 // provenance required by this plan. Real integration cases skip there for that named reason.
 const OPENCODE = BWRAP_WORKS ? spawnSync('sh', ['-c', 'command -v opencode'], { encoding: 'utf8' }).stdout.trim() : ''
+// The two real network cases need a trusted host socat: it is the client probe inside the sandbox
+// and the host side of the egress bridge. Without it the planner isolates the network with no
+// bridge, so neither case can observe what it asserts. Same resolver as the production planner.
+const HOST_SOCAT = BWRAP_WORKS ? (() => { try { return sandbox.trustedSystemExecutable('socat', '') } catch { return null } })() : null
+const NO_SOCAT = 'skip: no trusted socat on this host (the probe client and the egress bridge need it)'
 const roots: string[] = []
 const servers: net.Server[] = []
 const children: Array<{ kill: (s?: NodeJS.Signals) => boolean }> = []
@@ -2062,7 +2067,8 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     expect(readdirSync(join(dirname(file), 'bindings'))).toEqual([])
   })
 
-  it('isolates the network so NO host loopback service is reachable (the H4 security invariant)', () => {
+  it('isolates the network so NO host loopback service is reachable (the H4 security invariant)', ({ skip }) => {
+    skip(!HOST_SOCAT, NO_SOCAT)
     const root = tempRoot('net')
     const home = join(root, 'home'); const w = join(root, 'w')
     mkdirSync(w, { recursive: true })
@@ -2094,7 +2100,8 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
   // HTTPS_PROXY; a host outside the allow-list is refused BY THE PROXY (403, logged) and a direct
   // connection has no route. The allowed host is a reserved .invalid name, so no test ever reaches
   // the internet: its log line proves the allowed branch was taken, then resolution fails.
-  it('routes egress through the host proxy only: allowed host reaches the proxy allow branch, others are refused', () => {
+  it('routes egress through the host proxy only: allowed host reaches the proxy allow branch, others are refused', ({ skip }) => {
+    skip(!HOST_SOCAT, NO_SOCAT)
     const root = tempRoot('egress')
     const home = join(root, 'home'); const w = join(root, 'w'); const log = join(root, 'egress.jsonl')
     mkdirSync(w, { recursive: true })

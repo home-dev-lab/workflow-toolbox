@@ -134,6 +134,7 @@ export const spawningTestFiles = [
   'packages/build/test/opencode-verifier-entry.test.ts',
   'packages/build/test/orchestrator-core.test.ts',
   'packages/build/test/outbound-guard-hooks.test.ts',
+  'packages/build/test/owned-lane-process.test.ts',
   'packages/build/test/pgrep-env-dump-guard-hook.test.ts',
   'packages/build/test/pilot-card-reconcile.test.ts',
   'packages/build/test/pilot-decision-store.test.ts',
