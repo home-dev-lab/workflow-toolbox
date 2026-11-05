@@ -23,6 +23,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - The delegated-arc watch no longer reports a normally finished sub-agent as STALE when harness records (SubagentStop hook attachments, request bookkeeping, system records) follow its final end_turn; it now skips every non-conversational trailing record instead of only observer heartbeats.
+- Lane launch admission now uses FIFO waiting without a default burst deadline, recovers dead
+  waiters' staging claims, and never suggests removing a live admission lock; a launch still
+  waiting after 30 seconds names the lock holder once instead of waiting silently. Worker visibility
+  allows bounded startup under load and admits with a warning when ancestry cannot be measured.
+  Failed launcher exits are refused by the lifecycle with their original diagnostics; success PID
+  output follows admission. Queued termination is handled before publishing success, including
+  when the count is unmeasured. The launch and
+  saturation-hook defaults now share a cap of 16, and process counts use the lock owner's OS user.
+  macOS process snapshots force the C locale and report unparseable rows as unmeasured.
+  Atomic launch admission covers `wt-lane` only; envelope and second-opinion launches do not
+  reserve slots under its mutex. Other exact-name opencode/codex processes are still counted.
 - Routine lane gates use one priority resolver across worker environments, brokers, direct/light leases and static package-script wrappers. Missing, empty or malformed lane priorities warn and default to P2; valid declarations retain P1 or P0, including without a broker and through gate-chain children. Ordinary callers keep their existing defaults, static FIFO and release behavior; sandboxed release remains refused.
 - The quota watcher watches each numeric window independently, names unreported windows once, and preserves their history. Partial live readings cannot weaken later cache requirements or postpone live rechecks beyond the cache tolerance; login caches require the current account fingerprint. Drops baseline only their own window, advancing reset deadlines on the same verified account re-arm thresholds even when usage rises, and recovery names the watched windows. A deadline that moves later before the previous one has passed is no longer announced as a reset: a drop before the deadline is still reported as "reset unverified", and a rise is checked against the thresholds as usual; a reset time too large to be a date counts as no reset time. A reading taken while the login account changed is discarded with a one-line notice and probed again on the next poll, instead of being cached or becoming the new account's starting point; a cached reading counts for the account checked around the cache read. Empty bundled-probe responses degrade with backoff instead of claiming no subscription and stopping; repeated readings emit each crossing once.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,

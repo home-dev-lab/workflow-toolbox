@@ -254,3 +254,24 @@ it.each(['copy', 'audit'])('T4 terminal %s failure removes ownership and leaves 
   vi.restoreAllMocks(); syncBuiltinESMExports()
   expect(await f.run({ kind: 'lane', phase: 'tdd' })).toContain('TIMEOUT'); expect(f.records).toHaveLength(2)
 })
+
+it.each([1, 2, 3, 125, 130, 143])('never adopts pid stdout from a launcher exiting %i and preserves its diagnostic', async (code) => {
+  const f = fixture()
+  fs.appendFileSync(f.launcher, `\nprocess.stderr.write('startup refused: fixture diagnostic\\n'); process.exitCode=${code}`)
+  const result = await f.run({ kind: 'lane', phase: 'tdd' })
+  expect(result, 'non-zero launcher exit must be a refusal').toContain('edge refused:')
+  expect(result).toContain('startup refused: fixture diagnostic')
+  expect(result).toContain(`launcher exit ${code}`)
+  expect(result).not.toContain('TIMEOUT')
+  expect(f.state.ownedLanes.size).toBe(0)
+})
+
+it.skipIf(process.platform === 'win32').each(['SIGTERM', 'SIGINT'])('never adopts a launcher terminated by %s after pid output', async (signal) => {
+  const f = fixture()
+  fs.appendFileSync(f.launcher, `\nprocess.stderr.write('launcher interrupted during admission\\n'); process.kill(process.pid, '${signal}')`)
+  const result = await f.run({ kind: 'lane', phase: 'tdd' })
+  expect(result).toContain('edge refused:')
+  expect(result).toContain('launcher exit 124')
+  expect(result).toContain('launcher interrupted during admission')
+  expect(f.state.ownedLanes.size).toBe(0)
+})
