@@ -90,6 +90,18 @@ it.each(GATES)('verify rides alongside Bash %s', async (command) => {
   for (const trigger of rule.triggers.filter((entry) => entry.kind === 'bash')) expect(trigger.beforeFirstAct).toBe(false)
 })
 
+// Hosted-platform and shipping acts, matched through the engine's own read-only masking.
+const PLATFORM_ACTS = ['gh run view 19 --json jobs', 'gh pr status', 'glab ci status', 'git push origin card/x', 'pnpm publish', 'cd toolkit && gh workflow run cross-os.yml']
+const PLATFORM_MENTIONS = ['grep "gh run view" notes.md', 'echo git push origin main', 'git log --grep push', 'gh pr checkout 12', 'gh issue close 1']
+it.each(PLATFORM_ACTS)('verify rides alongside the platform or shipping act %s', async (command) => {
+  const rule = await load(VERIFY)
+  expect(matching(rule, 'Bash', { command }).length, command).toBeGreaterThan(0)
+  expect(refuses(rule, 'Bash', { command }), command).toBe(false)
+})
+it.each(PLATFORM_MENTIONS)('verify stays silent on the mention or near miss %s', async (command) => {
+  expect(matching(await load(VERIFY), 'Bash', { command }), command).toEqual([])
+})
+
 it('verify rides alongside Agent but still refuses source edits', async () => {
   const rule = await load(VERIFY)
   for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
