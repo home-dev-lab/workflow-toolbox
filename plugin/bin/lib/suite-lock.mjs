@@ -426,7 +426,7 @@ function acquisitionPriority(options, env) {
     error.code = 'WT_SUITE_LOCK_PRIORITY_REFUSED'
     throw error
   }
-  return sandboxed && !options.root ? 'P1' : suiteLockPriority({ priority: explicit }, env)
+  return suiteLockPriority({ priority: explicit }, env)
 }
 
 async function acquireSuiteLock(options = {}) {
