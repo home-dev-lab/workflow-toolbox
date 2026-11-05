@@ -147,6 +147,29 @@ next reader trust when checking quickly. So it mislead exactly when it matter.
 
 This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
 needed: the sentence is reassuring.`],
+  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `**Claim about what a PLATFORM does — CI trigger fired, webhook did not, rate limit hit, permission
+refused? Deciding source is THAT PLATFORM's reference.** Your repository, your logs, your event
+metadata say what YOU did. They never say what the platform does with it. So the sentence tying the
+two together is INVENTED — and invented confidently, because every fact under it is true and
+correctly read.`],
+  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `⚠ **Tell is grammatical, needs no suspicion**: a sentence of the form *"it must have fired because
+<something I changed>"* about a system whose rules you have not read this turn.`],
+  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `⚠ **Corollary, and it is what makes this expensive**: a correction built the same way inherits the
+same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
+explanations in a row is the signature — stop building the third from the same material.`],
+  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `**High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
+published surface — answer all three:**
+1. Was the failure it prevent actually exercised? Not happy-path test written from same
+   understanding as the code.
+2. Did it run under real conditions and volume, or only fixtures? Name which.
+3. What can go wrong in the MECHANISM itself? Not the problem it address.
+Shipping with a "no" is legitimate. Letting reader assume the questions were asked is not.
+Say which of the three you can answer and which you cannot, SAME prominence as result.
+Check deferred to later step is NOT done until that step own record name it. Read executing
+system trace. Never a summary silence.`],
+  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `**Guard with wrong model of system it protect does not degrade. It INVERTS.** It grant confidence
+exactly when guarded thing is about to break. That is why question 3 check the mechanism, not the
+hazard.`],
   ['wt-delegation-ladder', 'wt-delegation-routing', `Compose pilot/orchestrator spawn (environment brief + model elevation) via
 \`workflow-toolbox:pilot-wave\` skill.`],
   ['wt-delegation-ladder', 'wt-delegation-addressing', `The cost is invisible from both sides. Whoever obeys a stale fence reports work correctly blocked
@@ -201,6 +224,48 @@ function triggerServesToolBeforeAct(trigger: Trigger, tool: string, input: unkno
     && Boolean(trigger.unconditional || new RegExp(trigger['input-regex'] ?? '$a').test(JSON.stringify(input)))
 }
 
+// The hosted-platform reasoning, the CI-job rule and the three answers are read on these acts.
+const PLATFORM_AND_SHIPPING_ACTS = [
+  'gh run view 123 --json jobs',
+  'gh run list --workflow cross-os.yml --limit 3',
+  'gh workflow run cross-os.yml --ref main',
+  'gh api repos/owner/repo/actions/runs',
+  'gh pr checks 12',
+  'gh pr status',
+  'gh pr view 12 --json statusCheckRollup',
+  'gh pr merge 12 --squash',
+  'gh release create v1.0.0',
+  'gh release edit v1.0.0 --draft=false',
+  'glab ci status',
+  'glab api projects/1/pipelines',
+  'glab mr merge 3',
+  'glab release create v1.0.0',
+  'yarn publish',
+  'yarn npm publish',
+  'yarn workspace pkg publish',
+  'npm -w pkg publish',
+  'npm --workspace=pkg publish',
+  'pnpm --recursive publish',
+  'npx changeset publish',
+  'pnpm changeset publish',
+  'git push origin card/x',
+  'git -C repo push public HEAD',
+  'pnpm publish',
+  'npm --prefix toolkit publish',
+  'cd toolkit && pnpm -F pkg publish',
+] as const
+const PLATFORM_AND_SHIPPING_NON_ACTS = [
+  'gh issue close 123',
+  'gh pr view 12',
+  'gh auth status',
+  'gh pr checkout 12',
+  'gh release view v1.0.0',
+  'git pull',
+  'git stash push',
+  'npm install',
+  'changeset version',
+] as const
+
 function checkServedBeforeTool(name: typeof ACT_RULES[number], tool: string, input: unknown) {
   expect(triggersFor(name).some((trigger) => triggerServesToolBeforeAct(trigger, tool, input)), `${name} before ${tool}`).toBe(true)
 }
@@ -208,7 +273,14 @@ function checkServedBeforeTool(name: typeof ACT_RULES[number], tool: string, inp
 const STATIC_ANCHORS = {
   'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
   'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
-  'wt-verify-by-ground-truth': ['claims a property against the body under it in the same pass'],
+  'wt-verify-by-ground-truth': [
+    'claims a property against the body under it in the same pass',
+    "Read the platform's own documentation FIRST, and QUOTE the reference in the claim.",
+    'say which of the three you can answer and which you cannot',
+    'A deferred check is not done until its own record names it.',
+    'stop building a third from the same material',
+    'CI claim = the JOB that exercise behaviour.',
+  ],
   'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
   'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
 }
@@ -526,6 +598,14 @@ describe('shipped at-act moves', () => {
   })
 
   it('keeps a static anchor for every moved duty', checkStaticAnchors)
+
+  it.each(PLATFORM_AND_SHIPPING_ACTS)('serves the hosted-platform and three-answers half on %s', (command) => {
+    expect(matchesBash('wt-verify-by-ground-truth', command)).toBe(true)
+  })
+
+  it.each(PLATFORM_AND_SHIPPING_NON_ACTS)('does not serve the hosted-platform and three-answers half on %s', (command) => {
+    expect(matchesBash('wt-verify-by-ground-truth', command)).toBe(false)
+  })
 })
 
 describe('shipped split rules', () => {
