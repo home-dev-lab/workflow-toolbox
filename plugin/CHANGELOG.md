@@ -7,6 +7,15 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
+  to bound verification work. It prioritizes the most severe critiques and reports
+  every critique beyond the cap as not verified, with its reason and a count.
+  Omitting the argument keeps verification uncapped. A cap larger than the critique
+  count verifies everything.
+- Behaviour change: Independent analysis now validates its top-level arguments like the
+  other composition examples. An argument it does not recognise (for example
+  `verifierType`) used to be silently ignored; it now fails before any agent runs, with
+  an error naming the argument.
 - Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
   an explicit JSON output, and throttled report-only session/prompt hooks. Reports
   never archive, move, purge or delete worktrees; apply remains unavailable.
@@ -14,6 +23,19 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - External lanes default `pnpm_config_verify_deps_before_run=false` through the worker and sandboxed child environment, preserving explicit caller overrides. Launches warn when a brief names only the ineffective `npm_config_verify_deps_before_run` spelling, with the exact pnpm variable to use.
+- Lane launch admission now uses FIFO waiting without a default burst deadline, recovers dead
+  waiters' staging claims, and never suggests removing a live admission lock; a launch still
+  waiting after 30 seconds names the lock holder once instead of waiting silently. Worker visibility
+  allows bounded startup under load and admits with a warning when ancestry cannot be measured.
+  Failed launcher exits are refused by the lifecycle with their original diagnostics; success PID
+  output follows admission. Queued termination is handled before publishing success, including
+  when the count is unmeasured. The launch and
+  saturation-hook defaults now share a cap of 16, and process counts use the lock owner's OS user.
+  macOS process snapshots force the C locale and report unparseable rows as unmeasured.
+  Atomic launch admission covers `wt-lane` only; envelope and second-opinion launches do not
+  reserve slots under its mutex. Other exact-name opencode/codex processes are still counted.
+- Routine lane gates use one priority resolver across worker environments, brokers, direct/light leases and static package-script wrappers. Missing, empty or malformed lane priorities warn and default to P2; valid declarations retain P1 or P0, including without a broker and through gate-chain children. Ordinary callers keep their existing defaults, static FIFO and release behavior; sandboxed release remains refused.
+- The quota watcher watches each numeric window independently, names unreported windows once, and preserves their history. Partial live readings cannot weaken later cache requirements or postpone live rechecks beyond the cache tolerance; login caches require the current account fingerprint. Drops baseline only their own window, advancing reset deadlines on the same verified account re-arm thresholds even when usage rises, and recovery names the watched windows. A deadline that moves later before the previous one has passed is no longer announced as a reset: a drop before the deadline is still reported as "reset unverified", and a rise is checked against the thresholds as usual; a reset time too large to be a date counts as no reset time. A reading taken while the login account changed is discarded with a one-line notice and probed again on the next poll, instead of being cached or becoming the new account's starting point; a cached reading counts for the account checked around the cache read. Empty bundled-probe responses degrade with backoff instead of claiming no subscription and stopping; repeated readings emit each crossing once.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
@@ -27,6 +49,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Ground-truth at-act guidance rides alongside verification commands and Agent results; every SendMessage at-act rule, including delegation ladder, routing, addressing, and proportionate verification, skips exact raw-agent-id messages while retaining named recipients and near-miss ids; concurrent-session worktree guidance skips list/prune while retaining add/remove/move and the existing reset, rebase, and merge triggers.
 - Plugin-launched opencode children no longer load `~/.claude/CLAUDE.md` automatically (an `instructions` entry you add to your own opencode config still applies); project `CLAUDE.md` files are loaded through config `instructions`. Repositories with both `AGENTS.md` and `CLAUDE.md` now load both. Nested sub-directory `CLAUDE.md` files are no longer attached on file reads.
 - Every `wt-lane.mjs` launch, including script callers, now counts live opencode/codex lanes under a machine-shared admission lock and refuses at 16 before starting a worker. The exported `laneLaunchAdmissionLockPath()` names `~/.local/state/wt-lane-host/launch-admission.lock` on Linux, `~/Library/Application Support/wt-lane-host/launch-admission.lock` on macOS and `%LOCALAPPDATA%/wt-lane-host/launch-admission.lock` on Windows; other scripts may take the same lock with the exported admission helpers. The OS user's profile home keeps project-isolated `HOME` and per-worktree state overrides from splitting admission. The lock stays held until the worker has recorded its real lane spawn and the counter sees that process or a descendant of it (preflight `opencode` probes never count), or until its worker finishes; a visibility timeout force-stops only the worker this launch spawned, after verifying its identity, and its error states the cleanup outcome observed. An acquisition timeout names the lock file, its owner pid and the manual remedy. An unavailable count, including a `pgrep` that does not answer within 5 seconds (it is then killed, in the lane saturation hook too), explicitly warns `lane count NOT MEASURED` and admits under the lock, so a broken or hung counter never blocks every lane; a process returned under both lane names counts once. Failing to remove the lock's temporary staging link is reported and never loses a claim already taken; Windows has no counter, so there the cap is not enforced and every launch prints `NOT MEASURED`. A launcher killed with SIGKILL between its worker spawn and that lane being counted can let one extra lane past the cap. Because a launcher can now outlive a short lane, the SDK pilot lifecycle reads the launcher's output through the descriptors it opened rather than by path, so a lane whose worker removes the brief cleanup directory before its launcher exits no longer leaves the lifecycle waiting forever, and an unreadable launcher output, or a failure closing either output file, now fails the launch instead of hanging it, and both files are always closed or attempted.
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows. On Windows the documented launch starts the answer process through a short Node detacher with file-backed output and records its process id beside the answer. When PATH holds several `node` executables, it uses the first one, as a bare `node` command would. A project or local installation now applies when its registered project path and the working directory spell the same Windows folder differently (an 8.3 short name such as `RUNNER~1` against its long name).

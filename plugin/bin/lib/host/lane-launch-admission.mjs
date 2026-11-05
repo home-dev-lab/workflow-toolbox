@@ -1,4 +1,4 @@
-// Machine-wide wt-lane launch admission. Other scripts may acquire the same exported
+// Per-OS-user wt-lane launch admission across projects. Other scripts may acquire the same exported
 // laneLaunchAdmissionLockPath() with acquireLaneAdmissionLock(), and must hold it from
 // counting until their own opencode/codex PID is retained by countLaneProcessesReal.
 // Linux: ~/.local/state/wt-lane-host/launch-admission.lock; macOS: ~/Library/Application
@@ -16,14 +16,16 @@
 // may admit one lane above the cap (at most one extra lane per launcher killed in that window).
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { countLaneProcessesReal, LANE_PROCESS_NAMES } from '../wt-lane-saturation-core.mjs'
+import { countLaneProcessesReal, DEFAULT_MAX, LANE_PROCESS_NAMES } from '../wt-lane-saturation-core.mjs'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { hostAdapter } from './adapter.mjs'
 import { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } from './lane-admission-lock.mjs'
 
 export { acquireLaneAdmissionLock, releaseLaneLaunchAdmission }
-export const LANE_LAUNCH_CAP = 16
-const VISIBILITY_MS = 90_000
+export const LANE_LAUNCH_CAP = DEFAULT_MAX
+// Worker preflight includes three 30s probes, the 30s cache wait, sandbox socket scans
+// (10+30+90s per scan), process capture and a 60s spawn receipt. Allow startup under load.
+const VISIBILITY_MS = 900_000
 
 export function laneLaunchAdmissionLockPath({ env = process.env, home, ...options } = {}) {
   // The helper's OS user-profile home, not a project-isolated HOME, owns this mutex.
@@ -60,9 +62,9 @@ function admissionLease(options, initial) {
       if (initial.state === 'unknown') { visible = true; return }
       const deadline = options.clock() + options.visibilityMs
       for (;;) {
-        const live = options.counter(LANE_PROCESS_NAMES)
+        const live = visibilityObservation(options, readPid)
         if (live.state === 'unknown') { warnUnknown(live); visible = true; return }
-        if (countedLaunch(live.pids, readPid(), options.readProcesses)) { visible = true; return }
+        if (live.visible) { visible = true; return }
         // A completed worker cannot later launch an uncounted lane. Very short commands
         // may finish between polls; retaining their reservation would serve no purpose.
         if (readTerminal() || (workerPid && options.workerFinished(workerPid))) { visible = true; return }
@@ -89,17 +91,33 @@ function workerFinished(pid) {
 
 // Only the worker's recorded lane spawn (childPid) proves visibility: the counted pid itself, or a
 // counted process descending from it (the bwrap wrapper case). Never a descendant of the worker alone.
+function readAncestry(readProcesses) {
+  try {
+    const snapshot = readProcesses()
+    const processes = snapshot?.processes
+    if (snapshot?.supported === false || !Array.isArray(processes)) return { state: 'unknown', reason: snapshot?.reason ?? 'process ancestry snapshot unavailable' }
+    return { processes }
+  } catch (error) { return { state: 'unknown', reason: error?.message ?? String(error) } }
+}
+
 function countedLaunch(pids, childPid, readProcesses) {
-  if (!childPid) return false
-  if (pids.includes(childPid)) return true
+  if (!childPid) return { visible: false }
+  if (pids.includes(childPid)) return { visible: true }
   const family = new Set([childPid])
-  const rows = readProcesses().processes ?? []
+  const snapshot = readAncestry(readProcesses)
+  if (snapshot.state === 'unknown') return snapshot
+  const rows = snapshot.processes
   let previousSize
   do {
     previousSize = family.size
     for (const row of rows) if (family.has(row.ppid)) family.add(row.pid)
   } while (family.size !== previousSize)
-  return pids.some((pid) => family.has(pid))
+  return { visible: pids.some((pid) => family.has(pid)) }
+}
+
+function visibilityObservation(options, readPid) {
+  const live = options.counter(LANE_PROCESS_NAMES)
+  return live.state === 'unknown' ? { state: 'unknown', reason: live.reason } : countedLaunch(live.pids, readPid(), options.readProcesses)
 }
 
 function releaseOnExit(claim, abort) {

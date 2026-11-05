@@ -81,6 +81,8 @@ export const ambientStateAllowList = new Map([
   ["scripts/test/process-enumeration-load.test.ts:real-process-table:const table = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' }).stdout", 'Linux-only cleanup lock reads the real table to verify only descendants of its owned harness process'],
   ["scripts/test/wt-observer.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [observerScript, ...args], {", 'case launches an owned observer fixture with explicit session paths'],
   ["scripts/test/wt-wake-channel.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [serverScript], {", 'case launches an owned JSON-RPC fixture with explicit transport state'],
+  ["packages/build/test/quota-watch-plan-windows.test.ts:short-negative-output-match:expect(res.stdout).not.toContain('99%')", 'assertion is over the watcher fixture output; 99 is a sentinel seeded only into the rejected cache, while the live readings are 40 and 41'],
+  ["packages/build/test/quota-watch-plan-windows.test.ts:short-negative-output-match:expect(res.stdout).not.toContain('99%')#2", 'assertion is over the watcher fixture output; 99 is a sentinel seeded only into the rejected cache (unbound or foreign fingerprint), while the live readings are 40 and 41'],
 ])
 
 function testFilesUnder(directory) {

@@ -10,7 +10,7 @@
       {
         "kind": "tool",
         "tool": "^SendMessage$",
-        "input-regex": "\"to\":\"(?!(?:main|team-lead)(?:\"|\\s*\\[))",
+        "input-regex": "\"to\":\"(?!(?:main|team-lead)(?:\"|\\s*\\[)|a[0-9a-f]{16}\")",
         "before-first-act": true
       },
       {
