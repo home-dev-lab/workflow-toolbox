@@ -342,6 +342,30 @@ function lastRecordTimestampMs(sessionName, transcriptFile) {
 // Any unreadable or malformed candidate fails toward the existing STALE alert.
 const CONVERSATIONAL_RECORD_TYPES = new Set(['user', 'assistant'])
 
+// A line that parses but is not a typed record ({}, null, an array) is malformed: null, fail loud.
+function parseTypedRecord(line) {
+  let record
+  try { record = JSON.parse(line) } catch { return null }
+  if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.type !== 'string') return null
+  return record
+}
+
+// The last conversational record, or null when a malformed line is met first or none exists.
+function lastConversationalRecord(lines) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const record = parseTypedRecord(lines[i])
+    if (!record) return null
+    if (CONVERSATIONAL_RECORD_TYPES.has(record.type)) return record
+  }
+  return null
+}
+
+function isCleanEndTurn(record) {
+  return record?.type === 'assistant'
+    && record?.message?.role === 'assistant'
+    && record?.message?.stop_reason === 'end_turn'
+}
+
 function transcriptEndedCleanly(name) {
   const slash = name.indexOf('/')
   if (slash < 0) return false
@@ -350,20 +374,11 @@ function transcriptEndedCleanly(name) {
   try {
     const lines = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
       .split('\n').filter(Boolean)
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      let record
-      try { record = JSON.parse(lines[i]) } catch { return false }
-      // A line that parses but is not a typed record ({}, null, an array) is malformed: fail loud.
-      if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.type !== 'string') return false
-      if (!CONVERSATIONAL_RECORD_TYPES.has(record.type)) continue
-      return record?.type === 'assistant'
-        && record?.message?.role === 'assistant'
-        && record?.message?.stop_reason === 'end_turn'
-    }
+    const record = lastConversationalRecord(lines)
+    return record !== null && isCleanEndTurn(record)
   } catch {
     return false
   }
-  return false
 }
 
 // Transcript filenames are `agent-<rawId>.jsonl` — the SAME raw id the outbound-guard journal
