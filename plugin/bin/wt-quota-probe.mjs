@@ -54,10 +54,12 @@ try {
     },
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const d = await res.json()
+  const body = await res.json()
+  const d = body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  const limits = Array.isArray(d.limits) ? d.limits : []
   // Compact projection: the two windows + any scoped weekly buckets + active severities.
-  const scoped = (d.limits ?? [])
-    .filter((l) => l.kind === 'weekly_scoped' && l.scope)
+  const scoped = limits
+    .filter((l) => l?.kind === 'weekly_scoped' && l.scope)
     .map((l) => ({ scope: l.scope?.model?.display_name ?? l.scope?.surface ?? 'unknown', percent: l.percent, severity: l.severity }))
   // LOCAL-time reset display (never UTC — the raw ISO stays in resets_at for machines):
   // reset_local = "12:30" same-day / "Fri 11/07 18:00" otherwise; reset_in = "1h22" / "6j5h".
@@ -80,21 +82,11 @@ try {
     return out
   }
   const sevenDay = fmtWindow(d.seven_day)
-  sevenDay.severity = (d.limits ?? []).find((l) => l.kind === 'weekly_all')?.severity ?? null
-  // ⚠ NOT every account HAS a subscription quota. Usage-billed (pay-per-token) accounts have
-  // no five-hour or seven-day window at all, and the endpoint simply omits them. Left implicit,
-  // `fmtWindow` then yields `{pct: null}` — and a consumer that renders or compares that null
-  // shows a percentage for a limit which does not exist. A monitor reporting a reassuring
-  // number on an account it cannot measure is worse than no monitor: the unmeasurable state
-  // becomes indistinguishable from a healthy one.
-  //
-  // So the distinction is made EXPLICIT and named, rather than left to be inferred from nulls:
-  //   'subscription' — at least one real window exists; percentages mean something
-  //   'none'         — no window at all; this account is usage-billed. Consumers must stay
-  //                    SILENT, not report 0% or null%.
-  // Anything reading this file should branch on `quota_model`, never on the presence of a pct.
-  const hasWindow = (w) => Number.isFinite(w?.utilization) || Boolean(w?.resets_at)
-  const quotaModel = hasWindow(d.five_hour) || hasWindow(d.seven_day) ? 'subscription' : 'none'
+  sevenDay.severity = limits.find((l) => l?.kind === 'weekly_all')?.severity ?? null
+  // This endpoint has no known explicit no-subscription discriminator. An empty or unfamiliar
+  // response says only that usage is unknown; it must never stop monitoring as if absence were proven.
+  const hasWindow = (w) => Number.isFinite(w?.utilization)
+  const quotaModel = hasWindow(d.five_hour) || hasWindow(d.seven_day) ? 'subscription' : 'unknown'
   console.log(
     JSON.stringify({
       configDir,

@@ -32,7 +32,7 @@ const USAGE = `Usage:
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
-  WT_SUITE_LOCK_PRIORITY declares P0, P1 (default), or P2; levels age one step per 30 minutes.
+  WT_SUITE_LOCK_PRIORITY declares P0, P1 (non-lane default), or P2 (routine lane default); levels age one step per 30 minutes.
   A lane's host launcher sets its level with wt-lane --lock-priority P0|P1|P2 or WT_SUITE_LOCK_PRIORITY
   in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
   A P1/P2 ticket ages no higher than P1 until ${P0_BYPASS_MAX_GRANTS} declared-P0 admissions have passed it, so a declared P0

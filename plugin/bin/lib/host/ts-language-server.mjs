@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tsFrameReader } from './ts-lsp-wire.mjs'
 
 const LIMIT = 1024 * 1024
 const FOLDERS = ['node_modules/typescript/lib', '.vscode/pnpify/typescript/lib', '.yarn/sdks/typescript/lib', '.pnpm/sdks/typescript/lib']
@@ -313,26 +314,12 @@ function refuse(message, bytes, { input, output, stderr, exit }) {
   setTimeout(finish, 30_000).unref()
 }
 
-function markTsAnswer(bytes, headerEnd, size, result, state) {
-  try {
-    const reply = JSON.parse(bytes.subarray(headerEnd + 4, headerEnd + 4 + size).toString('utf8'))
-    if (reply?.id === result.id && ('result' in reply || 'error' in reply)) state.answered = true
-  } catch { /* Forward protocol bytes unchanged; the backend owns malformed output. */ }
-}
-
 function observeTsAnswer(result, state) {
+  const receive = tsFrameReader(reply => {
+    if (reply.id === result.id && ('result' in reply || 'error' in reply)) state.answered = true
+  })
   return (chunk) => {
-    state.responseBytes = Buffer.concat([state.responseBytes, chunk])
-    while (state.responseBytes.length <= LIMIT) {
-      const headerEnd = state.responseBytes.indexOf('\r\n\r\n')
-      if (headerEnd < 0) break
-      const size = Number(/Content-Length:\s*(\d+)/i.exec(state.responseBytes.subarray(0, headerEnd).toString('latin1'))?.[1])
-      if (!Number.isSafeInteger(size) || size < 0 || size + headerEnd + 4 > LIMIT) break
-      if (state.responseBytes.length < headerEnd + 4 + size) break
-      markTsAnswer(state.responseBytes, headerEnd, size, result, state)
-      state.responseBytes = state.responseBytes.subarray(headerEnd + 4 + size)
-    }
-    if (state.responseBytes.length > LIMIT) state.responseBytes = Buffer.alloc(0)
+    try { receive(chunk) } catch { /* The relay forwards malformed backend bytes unchanged. */ }
   }
 }
 
@@ -349,7 +336,12 @@ function connectTsStreams(child, result, replay, streams, state) {
   const { input, output, stderr } = streams
   state.started = true
   child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') stderr.write(`wt-tsls: ${error.message}\n`) })
-  child.stdout.on('data', observeTsAnswer(result, state))
+  const observe = observeTsAnswer(result, state)
+  const onAnswer = (chunk) => {
+    observe(chunk)
+    if (state.answered) child.stdout.off('data', onAnswer)
+  }
+  child.stdout.on('data', onAnswer)
   child.stdout.pipe(output, { end: false })
   child.stderr.pipe(stderr, { end: false })
   const handoff = () => {
@@ -363,7 +355,7 @@ function connectTsStreams(child, result, replay, streams, state) {
 function superviseTsChild(child, plan, result, replay, streams, exitSignal) {
   const { input, output, exit } = streams
   const state = { answered: false, started: false, refusing: false, responseBytes: Buffer.alloc(0) }
-  const cleanup = forwardTsSignals(child)
+  const cleanup = streams.forwardSignals === false ? () => {} : forwardTsSignals(child)
   child.on('error', (error) => {
     cleanup()
     if (!state.answered) { state.refusing = true; refuse(`wt-tsls: could not start ${plan.command}: ${error.message}`, replay, streams) }
@@ -415,9 +407,9 @@ function initializeTsPeek(state, streams, select, start, exitSignal) {
   return peek
 }
 
-export function runTsLaunch({ input = process.stdin, output = process.stdout, stderr = process.stderr, exit = (code) => process.exit(code), exitSignal = (signal) => process.kill(process.pid, signal), select = planTsLaunch, start = spawn } = {}) {
+export function runTsLaunch({ input = process.stdin, output = process.stdout, stderr = process.stderr, exit = (code) => process.exit(code), exitSignal = (signal) => process.kill(process.pid, signal), select = planTsLaunch, start = spawn, forwardSignals = true } = {}) {
   const state = { buffered: Buffer.alloc(0), prior: Buffer.alloc(0) }
-  const streams = { input, output, stderr, exit }
+  const streams = { input, output, stderr, exit, forwardSignals }
   const peek = initializeTsPeek(state, streams, select, start, exitSignal)
   input.on('data', peek)
   input.on('end', () => { if (!state.buffered.length) exit(0); else if (inspectInitialize(state.buffered).status === 'pending') exit(0) })
