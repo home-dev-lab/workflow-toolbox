@@ -89,6 +89,39 @@ async function runIdleRegistryScenario(records: unknown[], runForMs = 11_000): P
   })
 }
 
+type WatchPaths = { transcriptPath: string, metaPath: string }
+type WatchCondition = { readonly description: string, readonly complete: boolean, test: (stdout: string) => boolean }
+type WatchLineStep = { line: string | RegExp, after?: () => void }
+
+function emittedLineSequence(name: string, steps: WatchLineStep[]): WatchCondition {
+  let consumed = 0
+  let next = 0
+  return {
+    get description() { return `${name}: ${steps[next]?.line ?? 'sequence completion'}` },
+    get complete() { return next === steps.length },
+    test(stdout) {
+      const lines = stdout.split('\n')
+      // Leave a partial final line for the next stdout chunk.
+      while (consumed < lines.length - 1) {
+        const line = lines[consumed++]!
+        const step = steps[next]
+        if (!step) break
+        const matches = typeof step.line === 'string' ? line === step.line : step.line.test(line)
+        if (!matches) continue
+        next++
+        step.after?.()
+      }
+      return next === steps.length
+    },
+  }
+}
+
+async function runWatchSequence(options: WatchScenarioOptions & { waitFor: WatchCondition }): Promise<string> {
+  const stdout = await runWatchScenario(options)
+  expect(options.waitFor.complete, `Missing watcher condition: ${options.waitFor.description}\n${stdout}`).toBe(true)
+  return stdout
+}
+
 type WatchScenarioOptions = {
   transcriptName?: string
   metaName?: string | null
@@ -100,8 +133,8 @@ type WatchScenarioOptions = {
   staleMinutes?: number
   transcriptAfterArm?: boolean
   manualTranscript?: boolean
-  afterArmed?: (paths: { transcriptPath: string, metaPath: string }) => void
-  waitFor?: RegExp | null
+  afterArmed?: (paths: WatchPaths) => void
+  waitFor?: RegExp | WatchCondition | null
   runForMs?: number
   cwd?: string
 }
@@ -899,25 +932,32 @@ function refreshSpawnerRecord(updatedAt: string) {
   }
 }
 
+function cachedRefreshSequence(dir: string) {
+  let paths: WatchPaths
+  const waiting = /^WAITING-ON-SPAWNER: pilot\/cached-refresh — card:refresh/
+  return {
+    afterArmed: (armedPaths: WatchPaths) => { paths = armedPaths },
+    waitFor: emittedLineSequence('cached transcript refresh emissions', [
+      { line: waiting, after: () => {
+        touchFile(paths.transcriptPath, Date.now())
+        writeFileSync(paths.metaPath, JSON.stringify({ name: 'pilot/cached-refresh' }))
+        writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/cached-refresh')}.json`), JSON.stringify(refreshSpawnerRecord('2026-08-05T00:00:10.000Z')))
+      } },
+      { line: waiting },
+    ]),
+    runForMs: 25_000,
+  }
+}
+
 async function caseRefreshesTheCachedLocalTranscriptIdsWhen() {
   const dir = tmpRoot('wt-liveness-spawner-refresh')
-  const out = await runWatchScenario({
+  const out = await runWatchSequence({
     metaName: 'pilot/cached-refresh',
     livenessDir: dir,
     livenessRecord: refreshSpawnerRecord('2026-08-05T00:00:00.000Z'),
     transcriptAgeMs: 0,
     manualTranscript: true,
-    waitFor: null,
-    afterArmed: ({ transcriptPath, metaPath }) => {
-      setTimeout(() => {
-        touchFile(transcriptPath, Date.now())
-        writeFileSync(metaPath, JSON.stringify({ name: 'pilot/cached-refresh' }))
-      }, 1_000)
-      setTimeout(() => {
-        writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/cached-refresh')}.json`), JSON.stringify(refreshSpawnerRecord('2026-08-05T00:00:10.000Z')))
-      }, 6_000)
-    },
-    runForMs: 12_500,
+    ...cachedRefreshSequence(dir),
   })
 
   const waitingLines = out.split('\n').filter((line) => line.startsWith('WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh'))
@@ -925,7 +965,6 @@ async function caseRefreshesTheCachedLocalTranscriptIdsWhen() {
     'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh (foreign to this project)',
     'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh',
   ])
-  // Windows worst 12527 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
 }
 
 
@@ -979,31 +1018,48 @@ function orphanRecord(updatedAt: string) {
   }
 }
 
+function uncorrelatableLine(scope: string): string {
+  return `UNCORRELATABLE: ${scope} — liveness file declares no correlation key, cannot be matched to a transcript (project unknown)`
+}
+
+function orphanRewriteSequence(dir: string, file: string): WatchCondition {
+  const original = '2026-08-05T00:00:00.000Z'
+  const updated = '2026-08-05T00:00:10.000Z'
+  const checkpoint = (scope: string, updatedAt: string) => {
+    writeFileSync(path.join(dir, 'poll-checkpoint.json'), JSON.stringify({ ...orphanRecord(updatedAt), scope }))
+  }
+  const target = uncorrelatableLine('mission:uncorrelated')
+  return emittedLineSequence('orphan updatedAt rewrite emissions', [
+    { line: target, after: () => {
+      writeFileSync(file, JSON.stringify(orphanRecord(original)))
+      checkpoint('mission:checkpoint-original', original)
+    } },
+    { line: uncorrelatableLine('mission:checkpoint-original'), after: () => checkpoint('mission:checkpoint-next', updated) },
+    // A second checkpoint emission requires a later sweep: the first sweep has
+    // finished reading the same-updatedAt target, whichever entry was read first.
+    { line: uncorrelatableLine('mission:checkpoint-next'), after: () => {
+      writeFileSync(file, JSON.stringify(orphanRecord(updated)))
+    } },
+    { line: target },
+  ])
+}
+
 async function caseEmitsUNCORRELATABLEOncePerDistinctUpdatedAtFor() {
   const dir = tmpRoot('wt-liveness-uncorrelatable')
   const file = path.join(dir, 'orphan-record.json')
   mkdirSync(dir, { recursive: true })
   writeFileSync(file, JSON.stringify(orphanRecord('2026-08-05T00:00:00.000Z')))
 
-  const out = await runWatchScenario({
+  const out = await runWatchSequence({
     metaName: 'pilot/unrelated-transcript',
     livenessDir: dir,
     transcriptAgeMs: 0,
-    waitFor: null,
-    afterArmed: () => {
-      setTimeout(() => {
-        writeFileSync(file, JSON.stringify(orphanRecord('2026-08-05T00:00:00.000Z')))
-      }, 1_000)
-      setTimeout(() => {
-        writeFileSync(file, JSON.stringify(orphanRecord('2026-08-05T00:00:10.000Z')))
-      }, 6_000)
-    },
-    runForMs: 12_500,
+    waitFor: orphanRewriteSequence(dir, file),
+    runForMs: 25_000,
   })
 
   const marker = 'UNCORRELATABLE: mission:uncorrelated — liveness file declares no correlation key, cannot be matched to a transcript \(project unknown\)'
   expect(out.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(2)
-  // Windows worst 12525 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
 }
 
 describe('wt-arc-watch liveness integration', () => {
