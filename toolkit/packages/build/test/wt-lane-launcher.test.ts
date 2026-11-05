@@ -3,17 +3,18 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
 import { dirname, join as pathJoin } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { prepareFakeLane } from './helpers/owned-lane-process.js'
 import { laneSandboxContext, noteInsideLaneSandbox, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error ESM runtime module
 import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneOpencodeChildEnv, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
@@ -379,14 +380,32 @@ function quotedExitReceiptCase() {
   expect(() => process.kill(childPid, 0)).not.toThrow()
 }
 
-function idleDefaultCase() {
+function knownIdleFixture() {
   const f = deadlineFixture('exec sleep 30')
+  const preload = join(f.root, 'known-idle-snapshot.mjs')
+  // Pin presence-only deadline evidence to this child, avoiding host-wide /proc churn.
+  // Preload the worker too: it is a separate process with its own adapter instance.
+  writeFileSync(preload, `import { hostAdapter } from ${JSON.stringify(pathToFileURL(join(ROOT, 'plugin/bin/lib/host/adapter.mjs')).href)}
+import { readCurrentSupervision } from ${JSON.stringify(pathToFileURL(join(ROOT, 'plugin/bin/lib/lane-supervisor-core.mjs')).href)}
+if (process.argv.includes('--worker')) hostAdapter.readProcessSnapshot = () => {
+  const state = readCurrentSupervision(${JSON.stringify(f.dir)})
+  if (hostAdapter.readProcessLiveness(state.childPid).status !== 'alive') throw new Error('known-idle fixture child exited')
+  return { supported: true, processes: [{ pid: state.childPid, ppid: process.pid }] }
+}
+`)
+  f.env.NODE_OPTIONS = `--import=${pathToFileURL(preload).href}`
+  return f
+}
+
+function idleDefaultCase() {
+  const f = knownIdleFixture()
   const { log, status } = launchDeadline(f, ['--timeout', '1.5', '--decision-grace', '0.5', '--idle-window', '0.5'])
   waitForContent(status, /"state": "(?:decision-needed|abandoned)"/)
   expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ defaultDecision: 'abandon', extensionCount: 0 })
   waitFor(log)
   expect(readFileSync(log, 'utf8')).toContain('LANE_NOT_EXTENDED reason=idle')
   expect(readFileSync(log, 'utf8')).not.toContain('LANE_EXTENDED')
+  expect(readFileSync(log, 'utf8')).not.toContain('LANE_IDLE_UNKNOWN')
   expect(readFileSync(log, 'utf8')).toMatch(/TERMINATION=timeout\nEXIT=126\n$/)
 }
 
@@ -1689,8 +1708,8 @@ function registerTempAttributionCases() {
   it.skipIf(process.platform !== 'linux')('does not report an executable named opencode from the OS temp directory [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true', true)
     const fakeDir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-fake-opencode-'))); roots.push(fakeDir)
-    const fake = join(fakeDir, 'opencode'); copyFileSync('/bin/sleep', fake)
-    const child = spawnChild(fake, ['30'], { cwd: f.dir, stdio: 'ignore' })
+    const { executable: fake, args: fakeArgs } = prepareFakeLane(fakeDir)
+    const child = spawnChild(fake, fakeArgs, { cwd: f.dir, stdio: 'ignore' })
     try {
       expectLiveChild(child.pid!)
       const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
@@ -2146,8 +2165,19 @@ describe('wt-lane --priority and the removed --attach', () => {
 
 describe('wt-lane --lock-priority carries the card suite-lock level to the lane host broker', () => {
   const base = ['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']
+  it('leaves an absent ambient priority absent and silently resolves the child default', () => {
+    const warning = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const ambient = { PATH: '/bin' }
+    try {
+      const env = laneWorkerEnv(ambient, null)
+      expect(Object.hasOwn(ambient, 'WT_SUITE_LOCK_PRIORITY')).toBe(false)
+      expect(env.WT_SUITE_LOCK_PRIORITY).toBe('P2')
+      expect(env.WT_SUITE_LOCK_PRIORITY).not.toBe('undefined')
+      expect(warning).not.toHaveBeenCalled()
+    } finally { warning.mockRestore() }
+  })
   it('accepts P0, P1 and P2 in any case, normalised to upper case; absent declares nothing', () => {
-    expect(parse(base).lockPriority, 'no flag: the ambient WT_SUITE_LOCK_PRIORITY (else P1) still applies').toBeNull()
+    expect(parse(base).lockPriority, 'no flag: the host resolves ambient WT_SUITE_LOCK_PRIORITY, else P2').toBeNull()
     expect([['P0'], ['p1'], ['p2']].map(([value]) => parse([...base, '--lock-priority', value!]).lockPriority)).toEqual(['P0', 'P1', 'P2'])
   })
   it.each([['release'], ['Release'], ['P3'], ['urgent'], [''], [null]])('refuses %j at parsing, naming --lock-priority', (value) => {
@@ -2155,26 +2185,52 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
     expect(error).toContain('--lock-priority must be P0, P1 or P2')
     if (value?.toLowerCase() === 'release') expect(error).toContain('release is reserved to the main session')
   })
-  it('the worker env carries the declared level over an ambient one, and is the ambient env without the flag', () => {
-    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
-    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P0' })
+  it('the worker env carries the declared level over an ambient one, and keeps an ambient pnpm choice', () => {
+    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2', pnpm_config_verify_deps_before_run: 'false' }
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ ...ambient, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P0' })
     expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
-    expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
-    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin' })
+    expect(laneWorkerEnv(ambient, null)).toEqual({ ...ambient, WT_SUITE_LOCK_CONTEXT: 'lane' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+  })
+  it('the worker env carries the declared level over an ambient one, else defaults to P2', () => {
+    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P0' })
+    expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
+    expect(laneWorkerEnv(ambient, null)).toEqual({ ...ambient, pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+  })
+})
+
+describe('wt-lane pnpm dependency verification spellings', () => {
+  it.each(['pnpm_config_verify_deps_before_run', 'PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN'])('the model child env keeps a caller %s and gains no other spelling', (name) => {
+    const caller = { PATH: '/bin', [name]: 'true' }
+    const child = laneWorkerEnv(laneOpencodeChildEnv(caller, 'openai/example'), null)
+    expect(child[name]).toBe('true')
+    expect(Object.keys(child).filter((key) => key.toLowerCase() === 'pnpm_config_verify_deps_before_run')).toEqual([name])
   })
 })
 
 describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
-  it.each([[['--lock-priority', 'p0'], undefined, 'P0'], [[], undefined, 'unset'], [[], 'P2', 'unset']] as const)('the opencode child env carries the declared level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
+  it.each([undefined, 'true', 'false', ''])('passes pnpm dependency verification through every child env filter (%j)', (value) => {
+    const f = fixture('pnpm-verify-deps-env')
+    delete f.env.pnpm_config_verify_deps_before_run
+    if (value !== undefined) f.env.pnpm_config_verify_deps_before_run = value
+    const res = run(f, ['--timeout', '1'])
+    expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'pnpm-verify-deps-env'), 'utf8')).toBe(value ?? 'false')
+  })
+
+  it.each([[['--lock-priority', 'p0'], 'P2', 'P0'], [['--lock-priority', 'p1'], 'P0', 'P1'], [['--lock-priority', 'p2'], 'P0', 'P2'], [[], undefined, 'P2'], [[], 'P0', 'P0'], [[], 'P1', 'P1'], [[], 'P2', 'P2']] as const)('the opencode child env carries the effective level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
     const f = fixture('lock-priority-env')
-    // Without the flag an ambient level stays filtered out of the child, as before this flag existed.
+    // The host resolves the priority before the child environment allow-list is applied.
     if (ambient) f.env.WT_SUITE_LOCK_PRIORITY = ambient
     const res = run(f, ['--timeout', '1', ...extra]); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'lock-priority-env'), 'utf8')).toBe(expected)
   })
-  it.skipIf(process.platform !== 'linux')('a launched worker runs with the declared level, and without one when no flag is given [reads /proc/<pid>/environ]', () => {
-    for (const [extra, expected] of [[['--lock-priority', 'p0'], 'WT_SUITE_LOCK_PRIORITY=P0'], [[], undefined]] as const) {
+  it.skipIf(process.platform !== 'linux')('a launched worker runs with the declared level, else P2 [reads /proc/<pid>/environ]', () => {
+    for (const [extra, expected] of [[['--lock-priority', 'p0'], 'WT_SUITE_LOCK_PRIORITY=P0'], [[], 'WT_SUITE_LOCK_PRIORITY=P2']] as const) {
       const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
       expect(f.env.WT_SUITE_LOCK_PRIORITY, 'the fixture env declares no ambient level').toBeUndefined()
       expect(run(f, ['--timeout', '60', ...extra]).status).toBe(0)
@@ -2182,6 +2238,7 @@ describe('wt-lane --lock-priority reaches the processes the launcher starts', ()
       const state = JSON.parse(readFileSync(status, 'utf8'))
       try {
         const declared = readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0').find((entry) => entry.startsWith('WT_SUITE_LOCK_PRIORITY='))
+        expect(readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0')).toContain('pnpm_config_verify_deps_before_run=false')
         expect(declared, `worker env for ${JSON.stringify(extra)}`).toBe(expected)
       } finally {
         const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
@@ -2425,6 +2482,24 @@ describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
 
 // Launch admission observed through the real launcher path (main -> launchAndObserve -> admission).
 const ADMISSION_PROBE = join(ROOT, 'toolkit/packages/build/test/fixtures/launcher-counter/admission-probe.mjs')
+
+it.skipIf(process.platform === 'win32').each([false, true])('consumes a termination queued during synchronous preflight before accepting the launch (unknown count=%s)', async (unknown) => {
+  const f = fixture('true')
+  f.env.WT_SLOW_PREFLIGHT_AT_COUNT = '1'
+  if (unknown) f.env.WT_LAUNCHER_UNKNOWN_COUNT = '1'
+  const child = spawnChild(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stdout = ''
+  child.stdout!.on('data', (bytes) => { stdout += String(bytes) })
+  const exited = new Promise<number | null>((resolve) => child.once('exit', resolve))
+  waitForContent(join(f.dir, '.lane', 'preflight-count'), /^1$/)
+  child.kill('SIGTERM')
+  expect(await exited, 'queued termination must refuse the unknown-count launch').toBe(143)
+  const pid = Number(readFileSync(join(f.dir, '.lane', 'pid'), 'utf8'))
+  const identity = inspectProcess(pid)
+  if (identity) waitForIdentityExit(identity, 5_000)
+  expect(inspectProcess(pid), 'cancelled launch must not leave its original worker alive').toBeNull()
+  expect(stdout).not.toMatch(/^pid=/m)
+}, 30_000)
 type AdmissionProbe = { code: number | null, error: string | null, stops: number[], warnings: string[] }
 function admissionProbe(f: ReturnType<typeof fixture>, extra: string[], env: NodeJS.ProcessEnv = {}) {
   const result = nativeSpawnSync(process.execPath, [ADMISSION_PROBE, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: { ...f.env, ...env } })
@@ -2445,6 +2520,7 @@ describe.skipIf(process.platform !== 'linux')('wt-lane launch admission through 
       const worker = Number(/worker pid (\d+)/.exec(probe!.error!)![1])
       expect(probe!.stops).toEqual([worker])
       expect(probe!.warnings.filter((line) => line.includes('NOT CONFIRMED'))).toEqual([])
+      expect(result.stdout, 'a failed visibility wait must not publish a success pid').not.toMatch(/^pid=/m)
     } finally { killRecordedOpencode(f) }
   }, 30_000)
 
@@ -2472,6 +2548,6 @@ describe.skipIf(process.platform !== 'linux')('wt-lane launch admission through 
     // Control readable in both outcomes: this launch did spawn its worker and was refused at the record write.
     expect(result.stderr).toContain(`Refused: supervision record ${paths.record} already exists`)
     expect(probe!.code).toBe(1)
-    expect(probe!.stops).toEqual([])
+    expect(probe!.stops, 'a foreign record must never authorize worker cleanup').toEqual([])
   }, 30_000)
 })

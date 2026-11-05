@@ -7,6 +7,22 @@ import { externalSource } from './external-test.mjs';
 
 const names = ['wt-delegation-ladder-at-act', 'wt-delegation-addressing-at-act', 'wt-delegation-routing-at-act'];
 
+function assertNoRuleServed(result, name, to) {
+  assert.equal(result.deny, undefined, `${name} to ${to} must not be refused`);
+  for (const context of result.context ?? []) {
+    assert.doesNotMatch(context, new RegExp(`<rule name="${name}\\.md"`), `${name} to ${to} must not receive rule context`);
+  }
+}
+
+for (const channel of ['deny', 'context']) {
+  test(`absence assertion rejects a rule deliberately populated in ${channel}`, () => {
+    const name = names[0];
+    const marker = `<rule name="${name}.md">Synthetic instruction.</rule>`;
+    const result = channel === 'deny' ? { deny: marker } : { context: ['prior context', marker] };
+    assert.throws(() => assertNoRuleServed(result, name, 'a0000000000000000'), assert.AssertionError);
+  });
+}
+
 async function fixture(name, specPath) {
   const spec = await readSpec(specPath);
   const mutant = process.env.ROD_SCOPE_MUTANT;
@@ -43,14 +59,13 @@ for (const name of names) {
       const call = await fixture(name, spec.url);
       const args = messageFirst ? { message: 'progress', to } : { to, message: 'progress' };
       const result = await call({ tool: 'SendMessage', agentId: 'a1b2c3', ...args });
-      assert.equal(result.deny, undefined, `${name} to ${to} must not be refused`);
-      assert.doesNotMatch(JSON.stringify(result), new RegExp(`<rule name="${name}\\.md"`));
+      assertNoRuleServed(result, name, to);
     }
   });
 
   test(`${name}: main addressing a delegate receives the rule`, { skip: spec.skip }, async () => {
     // `parent` is no harness address (every recorded send to it failed), so a delegate may carry that name.
-    for (const to of ['pilot-1', 'a7aee4b875a68ab69', 'mainline', 'main-2', 'team-leader', 'parent', 'parent-worker', 'parent [x1]']) {
+    for (const to of ['pilot-1', 'mainline', 'main-2', 'team-leader', 'parent', 'parent-worker', 'parent [x1]']) {
       const call = await fixture(name, spec.url);
       const first = await call({ tool: 'SendMessage', to, message: 'progress' });
       assert.match(first.deny ?? '', new RegExp(`<rule name="${name}\\.md"`), `${name} to ${to}`);
@@ -61,6 +76,24 @@ for (const name of names) {
     for (const args of [{ message: 'progress', to: 'worker-1' }, { to: 'Main', message: 'progress' }]) {
       const call = await fixture(name, spec.url);
       assert.match((await call({ tool: 'SendMessage', ...args })).deny ?? '', new RegExp(`<rule name="${name}\\.md"`), `${name} to ${args.to}`);
+    }
+  });
+
+  test(`${name}: exact raw ids do not serve the rule`, { skip: spec.skip }, async () => {
+    for (const to of ['a7aee4b875a68ab69', 'a0000000000000000', 'affffffffffffffff']) {
+      for (const args of [{ to, message: 'progress' }, { message: 'progress', to }]) {
+        const call = await fixture(name, spec.url);
+        const result = await call({ tool: 'SendMessage', ...args });
+        assertNoRuleServed(result, name, to);
+      }
+    }
+  });
+
+  test(`${name}: near-miss raw ids still serve the rule`, { skip: spec.skip }, async () => {
+    for (const to of ['a0123456789abcde', 'a0123456789abcdef0', 'a0123456789abcdeF', 'worker-a0123456789abcdef', 'a0123456789abcdef-worker']) {
+      const call = await fixture(name, spec.url);
+      const result = await call({ tool: 'SendMessage', to, message: 'progress' });
+      assert.match(result.deny ?? '', new RegExp(`<rule name="${name}\\.md"`), `${name} to ${to}`);
     }
   });
 
