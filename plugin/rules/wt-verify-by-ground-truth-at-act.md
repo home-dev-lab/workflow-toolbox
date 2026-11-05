@@ -102,3 +102,35 @@ next reader trust when checking quickly. So it mislead exactly when it matter.
 
 This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
 needed: the sentence is reassuring.
+
+## A HOSTED PLATFORM's behaviour — why its documentation decides
+
+**Claim about what a PLATFORM does — CI trigger fired, webhook did not, rate limit hit, permission
+refused? Deciding source is THAT PLATFORM's reference.** Your repository, your logs, your event
+metadata say what YOU did. They never say what the platform does with it. So the sentence tying the
+two together is INVENTED — and invented confidently, because every fact under it is true and
+correctly read.
+
+⚠ **Tell is grammatical, needs no suspicion**: a sentence of the form *"it must have fired because
+<something I changed>"* about a system whose rules you have not read this turn.
+
+⚠ **Corollary, and it is what makes this expensive**: a correction built the same way inherits the
+same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
+explanations in a row is the signature — stop building the third from the same material.
+
+## High-impact mechanisms — the three answers in full
+
+**High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
+published surface — answer all three:**
+1. Was the failure it prevent actually exercised? Not happy-path test written from same
+   understanding as the code.
+2. Did it run under real conditions and volume, or only fixtures? Name which.
+3. What can go wrong in the MECHANISM itself? Not the problem it address.
+Shipping with a "no" is legitimate. Letting reader assume the questions were asked is not.
+Say which of the three you can answer and which you cannot, SAME prominence as result.
+Check deferred to later step is NOT done until that step own record name it. Read executing
+system trace. Never a summary silence.
+
+**Guard with wrong model of system it protect does not degrade. It INVERTS.** It grant confidence
+exactly when guarded thing is about to break. That is why question 3 check the mechanism, not the
+hazard.

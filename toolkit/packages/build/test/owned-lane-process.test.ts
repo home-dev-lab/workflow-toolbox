@@ -2,7 +2,7 @@
 // the process it starts keeps the lane name and stays alive, even where a copied binary refuses
 // to run under a foreign name (uutils coreutils dispatches on its executable name).
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,23 @@ function refusingBinary(root: string) {
   writeFileSync(path, "#!/bin/sh\necho \"coreutils: unknown program '$(basename \"$0\")'\" >&2\nexit 1\n")
   chmodSync(path, 0o755)
   return path
+}
+
+/** A stand-in for a copied platform binary that macOS kills at once: it dies by SIGKILL, with no exit code. */
+function killedBinary(root: string, label: string) {
+  const path = join(root, `killed-${label}`)
+  writeFileSync(path, '#!/bin/sh\nkill -KILL $$\n')
+  chmodSync(path, 0o755)
+  return path
+}
+
+/** The default candidates, with every copied system binary replaced by one killed at once (the macOS shape). */
+function defaultsWithSystemBinariesKilled(root: string) {
+  const shell = defaultFakeLaneCandidates()[1]?.source
+  return defaultFakeLaneCandidates().map((candidate, index) =>
+    candidate.source === '/bin/sleep' || candidate.source === shell
+      ? { ...candidate, source: killedBinary(root, String(index)) }
+      : candidate)
 }
 
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -90,5 +107,27 @@ describe.skipIf(process.platform === 'win32')('prepareFakeLane', () => {
   it.skipIf(process.platform !== 'linux')('the default candidates on this host give a live process named opencode [requires Linux /proc]', async () => {
     const root = scratch()
     expect(await aliveNameAfter(startOwned(prepareFakeLane(root)), 300)).toBe('opencode')
+  })
+})
+
+// macOS kills a copy of /bin/sleep and /bin/sh at once (exit null in the Mac certification).
+describe.skipIf(process.platform === 'win32')('prepareFakeLane where copied system binaries are killed at once', () => {
+  it('names the signal that killed a candidate, never an exit code it never had', () => {
+    const root = scratch()
+    const killed = killedBinary(root, 'only')
+    expect(() => prepareFakeLane(root, 'opencode', [{ source: killed, args: [], probeArgs: [] }]))
+      .toThrow(new RegExp(`no candidate runs under the name opencode: ${killed}: killed by signal SIGKILL$`))
+  })
+
+  it('still gives a live process named opencode when every copied system binary is killed', async () => {
+    const root = scratch()
+    const fake = prepareFakeLane(root, 'opencode', defaultsWithSystemBinariesKilled(root))
+    expect(fake.source).toBe(process.execPath)
+    const child = startOwned(fake)
+    const name = await aliveNameAfter(child, 300)
+    if (process.platform === 'linux') expect(name).toBe('opencode')
+    // The name the lane counter reads on every POSIX host, macOS included.
+    const pgrep = spawnSync('pgrep', ['-x', 'opencode'], { encoding: 'utf8', timeout: 5_000 })
+    expect(pgrep.stdout.trim().split('\n'), 'pgrep -x opencode must list the fake lane').toContain(String(child.pid))
   })
 })
