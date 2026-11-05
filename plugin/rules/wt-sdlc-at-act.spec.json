@@ -14,6 +14,12 @@
         "before-first-act": true
       },
       {
+        "kind": "tool",
+        "tool": "^Skill$",
+        "input-regex": "second-opinion|independent-analysis",
+        "before-first-act": true
+      },
+      {
         "kind": "path",
         "tool": "^(?:Write|Edit|MultiEdit)$",
         "regex": "(?:^|/)(?:review|refut|critic)[^/]*\\.md$",

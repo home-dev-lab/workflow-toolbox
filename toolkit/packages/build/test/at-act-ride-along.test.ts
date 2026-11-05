@@ -42,8 +42,8 @@ const matching = (rule: Rule, tool: string, input: Input = {}) => rule.triggers.
 ))
 const refuses = (rule: Rule, tool: string, input: Input = {}) => matching(rule, tool, input).some((trigger) => trigger.beforeFirstAct)
 
-async function deliveryFixture() {
-  const text = frontmatter(await readSpec(join(RULES_DIR, `${VERIFY}.spec.json`))) + 'Read the result.\n'
+async function deliveryFixture(name = VERIFY, body = 'Read the result.\n') {
+  const text = frontmatter(await readSpec(join(RULES_DIR, `${name}.spec.json`))) + body
   resetForSelftest()
   const handlers = new Map<string, Handler>()
   const store = new Map<string, unknown>()
@@ -51,7 +51,7 @@ async function deliveryFixture() {
   const host = {
     env: { get: async (key: string) => key === 'CLAUDE_CONFIG_DIR' ? '/synthetic-config' : undefined },
     fs: {
-      list: async (dir: string) => dir === '/synthetic-config/rules-on-demand' ? [{ kind: 'file', name: `${VERIFY}.md` }] : [],
+      list: async (dir: string) => dir === '/synthetic-config/rules-on-demand' ? [{ kind: 'file', name: `${name}.md` }] : [],
       read: async () => text,
       stat: async (path: string) => ({ kind: 'file', size: text.length, realPath: path }),
     },
@@ -199,4 +199,30 @@ it.each(CHANGED)('keeps the revised contract through CRLF JSON and frontmatter: 
     else if (name === WORKTREE) expect(matching(rule, 'Bash', { command: 'git worktree list' })).toEqual([])
     else expect(matching(rule, 'SendMessage', { to: 'a0123456789abcdef' })).toEqual([])
   } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+const SDLC = 'wt-sdlc-at-act'
+const SDLC_MOVED = ['## Revise only blocking critic findings', '## Proportionality']
+const SDLC_ACTS: Array<[string, Input]> = [
+  ['Write', { file_path: 'src/example.ts' }], ['Edit', { file_path: 'src/example.ts' }],
+  ['MultiEdit', { file_path: 'src/example.ts' }], ['NotebookEdit', { notebook_path: 'notes.ipynb' }],
+  ['Agent', { prompt: 'Review the diff' }], ['Task', { prompt: 'Review the diff' }], ['Workflow', {}],
+  ['Skill', { skill: 'workflow-toolbox:second-opinion' }], ['Skill', { skill: 'workflow-toolbox:independent-analysis' }],
+]
+it.each(SDLC_ACTS)('serves the moved wt-sdlc review sections before %s runs, through the real hook', async (tool, input) => {
+  const call = await deliveryFixture(SDLC, readFileSync(join(RULES_DIR, `${SDLC}.md`), 'utf8'))
+  let executed = false
+  const result = await call({ tool, input, command: input.command }, async () => {
+    executed = true
+    return { output: 'original result' }
+  })
+  expect(executed, `${tool} must wait until the rule is read`).toBe(false)
+  for (const heading of SDLC_MOVED) expect(String(result.deny), `${tool}: ${heading}`).toContain(heading)
+})
+
+it('does not serve wt-sdlc on reads, read-only commands or unrelated skills', async () => {
+  const rule = await load(SDLC)
+  expect(matching(rule, 'Read', { file_path: 'src/example.ts' })).toEqual([])
+  expect(matching(rule, 'Bash', { command: 'ls src' })).toEqual([])
+  expect(matching(rule, 'Skill', { skill: 'workflow-toolbox:changelog' })).toEqual([])
 })

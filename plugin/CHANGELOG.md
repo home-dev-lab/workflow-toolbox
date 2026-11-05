@@ -71,6 +71,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - `wt-crossos-dispatch` preview-merge recovery commands preserve the selected repository, including a trailing carriage return, and use the installed dispatcher's absolute path, so they work from another directory. If the worktree root is unavailable, the ancestry refusal and recovery recipe remain visible with an explicit repository placeholder. Paths are shell-quoted for POSIX shells, including Git Bash on Windows; historical collection and release checks remain valid when local `develop` advances or is absent.
 - The opencode envelope reports the pool's first failure after draining running tasks, so a sibling's later output-write error cannot replace an integrity refusal or its exit-3 protocol. Successful output-writability probes are regression-tested for cleanup.
 
+### Changed
+- wt-sdlc: the "Revise only blocking critic findings" and "Proportionality" sections move verbatim to wt-sdlc-at-act.md, served before the first edit, agent spawn, or second-opinion/independent-analysis skill call; the core keeps a one-line pointer for each and keeps the before-coding sections static
+
 ## [0.197.0] - 2026-10-26
 
 ### Added
