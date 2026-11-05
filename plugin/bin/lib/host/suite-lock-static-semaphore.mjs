@@ -1,13 +1,15 @@
 import path from 'node:path'
 import { readHolderIn, readQueueSnapshot } from './suite-lock-queue.mjs'
 import { displayArgv } from '../suite-lock-display.mjs'
+import { suiteLockPriority } from '../suite-lock-priority.mjs'
 
-// A separate instance of the proven mkdir/identity/reclaim mutex. All its tickets are P1,
-// non-light, so the existing ordered queue reduces to FIFO and concurrency is exactly one.
+// A separate instance of the proven mkdir/identity/reclaim mutex, always non-light.
+// Lane levels follow the shared resolver; ordinary callers retain the historical FIFO.
 export const staticSemaphoreRoot = (root) => path.join(root, 'static-lane')
 
 export function staticSemaphoreOptions(root, options) {
-  return { ...options, root: staticSemaphoreRoot(root), static: false, light: false, priority: 'P1',
+  return { ...options, root: staticSemaphoreRoot(root), static: false, light: false,
+    priority: suiteLockPriority({ ...options, priority: options.priority === undefined ? options.journalPriority : options.priority, staticSemaphore: true }, options.env ?? process.env),
     journalRoot: root, journalKind: 'static', staticDomain: true,
     onWait(line) { options.onWait?.call(this, line.replace('suite lock', 'static lane')) } }
 }
