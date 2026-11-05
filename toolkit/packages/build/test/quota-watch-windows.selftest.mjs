@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 const WATCH = process.env.WT_QUOTA_WATCH_TEST_SCRIPT || fileURLToPath(new URL('../../../../plugin/bin/wt-quota-watch.mjs', import.meta.url))
+// Card 1899394115301279304 (develop): a window the probe does not report is named ONCE, in words.
+const FIVE_HOUR_NOT_REPORTED = 'QUOTA WATCH: the 5-hour window is not reported by the probe'
 const absentOptionalWindows = [
   ['missing', {}],
   ['null window', { five_hour: null }],
@@ -44,7 +46,7 @@ for (const [label, optional] of absentOptionalWindows) {
     const result = runReadings([{ ...optional, seven_day: { pct: 96 } }])
     assert.doesNotMatch(result.stdout, /QUOTA WATCH DEGRADED/)
     assert.match(result.stdout, /7d 96%/)
-    assert.doesNotMatch(result.stdout, /5h|five.hour/i)
+    assert.equal(result.stdout.split('\n').filter((line) => line.startsWith(FIVE_HOUR_NOT_REPORTED)).length, 1)
     assert.deepEqual(result.sleeps, [5_000])
   })
 
@@ -54,7 +56,7 @@ for (const [label, optional] of absentOptionalWindows) {
     assert.deepEqual(result.sleeps, [10_000, 5_000, 5_000], 'a live seven-day recovery must reset probe backoff')
     assert.equal((result.stdout.match(/QUOTA WATCH DEGRADED/g) || []).length, 1)
     assert.match(result.stdout, /7d 96%/)
-    assert.doesNotMatch(result.stdout, /5h|five.hour/i)
+    assert.equal(result.stdout.split('\n').filter((line) => line.startsWith(FIVE_HOUR_NOT_REPORTED)).length, 1)
   })
 
   test(`seven-day thresholds and resets fire with ${label} five-hour data`, () => {
@@ -62,17 +64,8 @@ for (const [label, optional] of absentOptionalWindows) {
     assert.match(result.stdout, /QUOTA 7d: 81% — crossed the 80% threshold/)
     assert.match(result.stdout, /QUOTA RESET 7d: 4% \(was 81%\)/)
     assert.match(result.stdout, /QUOTA 7d: 96% — crossed the 95% threshold/)
-    assert.doesNotMatch(result.stdout, /QUOTA WATCH DEGRADED|5h|five.hour/i)
-  })
-}
-
-for (const [label, required] of [['missing', {}], ['null window', { seven_day: null }], ['null pct', { seven_day: { pct: null } }]]) {
-  test(`numeric five-hour usage stays degraded with ${label} seven-day data`, () => {
-    const result = runReadings(Array.from({ length: 12 }, () => ({ five_hour: { pct: 95 }, ...required })))
-    assert.match(result.stdout, /missing window\(s\): seven_day/)
-    assert.match(result.stdout, /QUOTA WATCH DEGRADED: still blind after/)
-    assert.doesNotMatch(result.stdout, /QUOTA STATUS/)
-    assert.ok(result.sleeps.every((ms) => ms > 5_000))
+    assert.doesNotMatch(result.stdout, /QUOTA WATCH DEGRADED/)
+    assert.equal(result.stdout.split('\n').filter((line) => line.startsWith(FIVE_HOUR_NOT_REPORTED)).length, 1)
   })
 }
 

@@ -361,8 +361,8 @@ it.skipIf(process.platform === 'win32')('refuses a symlinked worktree log withou
   const target = join(dir, 'target')
   writeFileSync(target, 'untouched\n')
   symlinkSync(target, join(worktree, '.lane', 'run.log'))
-  const launcher = join(process.cwd(), '..', 'plugin', 'bin', 'wt-lane.mjs')
-  spawnSync(process.execPath, [launcher, '--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: join(dir, 'state'), WT_LANE_MIN_AVAILABLE_MIB: '0' }) })
+  const launcher = join(process.cwd(), 'packages/build/test/fixtures/launcher-counter/wt-lane.mjs')
+  spawnSync(process.execPath, [launcher, '--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: join(dir, 'state'), WT_LANE_FIXTURE_HOME: join(dir, 'home'), WT_LANE_MIN_AVAILABLE_MIB: '0' }) })
   expect(readFileSync(target, 'utf8')).toBe('untouched\n')
 })
 
@@ -374,8 +374,8 @@ it.skipIf(process.platform !== 'linux')('does not block on a FIFO in a lane work
   const start = Date.now()
   expect(readWorktreeRegular(fifo)).toBeNull()
   expect(Date.now() - start).toBeLessThan(2000)
-  const launcher = join(process.cwd(), '..', 'plugin', 'bin', 'wt-lane.mjs')
-  const result = spawnSync(process.execPath, [launcher, '--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', fifo, '--allow-no-git'], { encoding: 'utf8', timeout: 2000, env: sealedPluginCliEnv(dir, { WT_LANE_MIN_AVAILABLE_MIB: '0' }) })
+  const launcher = join(process.cwd(), 'packages/build/test/fixtures/launcher-counter/wt-lane.mjs')
+  const result = spawnSync(process.execPath, [launcher, '--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', fifo, '--allow-no-git'], { encoding: 'utf8', timeout: 2000, env: sealedPluginCliEnv(dir, { WT_LANE_FIXTURE_HOME: join(dir, 'home'), WT_LANE_MIN_AVAILABLE_MIB: '0' }) })
   expect((result.error as NodeJS.ErrnoException | undefined)?.code).not.toBe('ETIMEDOUT')
 })
 
@@ -394,8 +394,8 @@ it.skipIf(process.platform !== 'linux')('refuses launch while a legacy record na
   writeFileSync(join(legacy, 'current.json'), JSON.stringify({ runId: id }))
   const identity = inspectProcess(process.pid)
   writeFileSync(join(legacy, `${id}.json`), JSON.stringify({ runId: id, state: 'launch-failed', workerPid: process.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: process.pid, childArgv: identity.argv, childStartTime: identity.startTime }))
-  const launcher = join(process.cwd(), '..', 'plugin', 'bin', 'wt-lane.mjs')
-  const result = spawnSync(process.execPath, [launcher, '--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: join(dir, 'state'), WT_LANE_MIN_AVAILABLE_MIB: '0' }) })
+  const launcher = join(process.cwd(), 'packages/build/test/fixtures/launcher-counter/wt-lane.mjs')
+  const result = spawnSync(process.execPath, [launcher, '--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: join(dir, 'state'), WT_LANE_FIXTURE_HOME: join(dir, 'home'), WT_LANE_MIN_AVAILABLE_MIB: '0' }) })
   expect(result.stderr).toContain('Refused: legacy lane supervision may still have a live worker or child')
 })
 

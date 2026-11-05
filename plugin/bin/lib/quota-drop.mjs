@@ -19,17 +19,23 @@
 //
 // Pure, no I/O; the watcher passes what it stored from the previous poll.
 
-/** Epoch milliseconds from a `resets_at` value: ISO string, epoch seconds, or epoch millis. */
+/** A time a Date can hold, else null: a huge input overflows `* 1000` to ±Infinity or past the Date range. */
+function validTimeMs(ms) {
+  return Number.isFinite(ms) && !Number.isNaN(new Date(ms).getTime()) ? ms : null
+}
+
+/** An epoch below 1e12 is in seconds, otherwise in milliseconds. */
+function epochToMs(epoch) {
+  return validTimeMs(epoch < 1e12 ? epoch * 1000 : epoch)
+}
+
+/** Epoch milliseconds from a `resets_at` value: ISO string, epoch seconds, or epoch millis; null when none is usable. */
 export function resetsAtToMs(value) {
   if (value === null || value === undefined || value === '') return null
-  if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value
-  if (typeof value === 'string') {
-    const asNumber = Number(value)
-    if (value.trim() !== '' && Number.isFinite(asNumber)) return asNumber < 1e12 ? asNumber * 1000 : asNumber
-    const parsed = Date.parse(value)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  return null
+  if (typeof value === 'number') return Number.isFinite(value) ? epochToMs(value) : null
+  if (typeof value !== 'string') return null
+  const asNumber = Number(value)
+  return value.trim() !== '' && Number.isFinite(asNumber) ? epochToMs(asNumber) : validTimeMs(Date.parse(value))
 }
 
 /**

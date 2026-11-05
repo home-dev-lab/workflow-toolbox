@@ -146,7 +146,7 @@ function registerInjectedSnapshots() {
 
     expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples[platform]] })
     if (platform === 'darwin') {
-      expect(run).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,lstart=,etime=,command='])
+      expect(run).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,lstart=,etime=,command='], { env: expect.objectContaining({ LC_ALL: 'C' }) })
     }
   })
 
@@ -170,6 +170,11 @@ function registerInjectedSnapshots() {
     expect(activityEvidence({ snapshot: host.readProcessSnapshot(), worktree: { status: 'known' }, rootPid: snapshotSamples[platform].pid })).toMatchObject({ status: 'unknown', reason: `process CPU time unavailable for pid ${snapshotSamples[platform].pid}` })
   })
 }
+
+it('reports malformed macOS birth dates as unknown instead of a plausible empty table', () => {
+  const host = createHostAdapter({ platform: 'darwin', invoke: { run: () => ({ status: 0, stdout: '1 0 mar. nov. 14 22:13:20 2023 05:46 /sbin/launchd\n' }) } })
+  expect(host.readProcessSnapshot()).toMatchObject({ supported: false, reason: expect.stringContaining('unparseable') })
+})
 
 function registerLinuxIdentityContracts() {
   it('never combines a Linux PID identity with a reused process command', () => {

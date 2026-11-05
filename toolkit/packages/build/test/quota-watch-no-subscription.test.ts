@@ -1,5 +1,4 @@
-// quota-watch-no-subscription.test.ts — an account with no subscription quota must make the
-// watcher SAY SO and stop, never sit there looking armed while watching nothing.
+// An explicit probe declaration of no subscription stops; missing or unknown data degrades.
 //
 // WHAT THIS PROTECTS: usage-billed (pay-per-token) accounts have no five-hour or seven-day
 // window at all. Every window then reads as absent — which is the SAME SHAPE as a probe that
@@ -7,9 +6,8 @@
 // indistinguishable from "quota is fine". That is the inverting-guard failure this repo keeps
 // closing: a mechanism that cannot produce the signal saying it is not working.
 //
-// The discriminator is the probe's explicit `quota_model`, never the absence of a percentage:
-// an absent window and an unreadable one are identical from the watcher's side, and only the
-// probe can tell them apart.
+// A custom probe may declare `quota_model: 'none'`. The bundled endpoint has no known explicit
+// no-subscription discriminator, so empty responses must never be promoted to that declaration.
 import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -56,7 +54,8 @@ function runWatch(probePath: string) {
         ...process.env,
         CLAUDE_CONFIG_DIR: configDir,
         WT_QUOTA_WATCH_TEST_MAX_CYCLES: '3',
-        WT_QUOTA_WATCH_TEST_SLEEP_LOG: '',
+        WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(configDir, 'sleeps'),
+        ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '',
       },
     },
   )
@@ -72,6 +71,13 @@ const SUBSCRIPTION = {
 }
 
 describe('wt-quota-watch on an account with no subscription quota', () => {
+  it('unknown quota model with no numeric window degrades and backs off instead of stopping', () => {
+    const res = runWatch(fakeProbe({ ...USAGE_BILLED, quota_model: 'unknown' }))
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): five_hour,seven_day) (reported once)')
+    expect(res.stdout).not.toContain('QUOTA WATCH STOPPING')
+  })
+
   it('says there is nothing to watch, and EXITS — it does not sit there looking armed', () => {
     const res = runWatch(fakeProbe(USAGE_BILLED))
     expect(res.status).toBe(0)
