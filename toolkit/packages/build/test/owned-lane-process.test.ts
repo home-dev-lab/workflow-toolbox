@@ -31,9 +31,22 @@ function refusingBinary(root: string) {
   return path
 }
 
-async function nameAfter(pid: number, ms: number) {
-  await new Promise((resolve) => setTimeout(resolve, ms))
-  try { return readFileSync(`/proc/${pid}/comm`, 'utf8').trim() } catch { return 'gone' }
+const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** After `ms`, the child must still be running; on Linux, also return its kernel process name. */
+async function aliveNameAfter(child: ChildProcess, ms: number) {
+  await settle(ms)
+  expect(child.exitCode).toBeNull()
+  expect(child.signalCode).toBeNull()
+  if (process.platform !== 'linux') return null
+  try { return readFileSync(`/proc/${child.pid}/comm`, 'utf8').trim() } catch { return 'gone' }
+}
+
+function startOwned(fake: { executable: string, args: string[] }) {
+  const child = spawn(fake.executable, fake.args, { stdio: 'ignore' })
+  children.push(child)
+  if (!child.pid) throw new Error('fake lane has no pid')
+  return child
 }
 
 describe.skipIf(process.platform === 'win32')('prepareFakeLane', () => {
@@ -45,14 +58,21 @@ describe.skipIf(process.platform === 'win32')('prepareFakeLane', () => {
     ])
     expect(fake.executable).toBe(join(root, 'opencode'))
     expect(fake.source).not.toBe(join(root, 'multicall'))
-    const child = spawn(fake.executable, fake.args, { stdio: 'ignore' })
-    children.push(child)
-    if (!child.pid) throw new Error('fake lane has no pid')
+    const child = startOwned(fake)
+    const name = await aliveNameAfter(child, 300)
     if (process.platform === 'linux') {
-      expect(await nameAfter(child.pid, 300)).toBe('opencode')
+      expect(name).toBe('opencode')
       expect(readFileSync(`/proc/${child.pid}/cmdline`, 'utf8').split('\0')[0]).toBe(fake.executable)
     }
-    expect(child.exitCode).toBeNull()
+  })
+
+  // The shell fallback is what runs where coreutils is uutils; force it so GNU hosts exercise it too.
+  it.skipIf(process.platform !== 'linux')('the shell fallback alone gives a live process named opencode [requires Linux /proc]', async () => {
+    const root = scratch()
+    const shell = defaultFakeLaneCandidates()[1]
+    const fake = prepareFakeLane(root, 'opencode', [{ source: refusingBinary(root), args: ['30'], probeArgs: ['0'] }, shell])
+    expect(fake.source).toBe(shell.source)
+    expect(await aliveNameAfter(startOwned(fake), 1_500)).toBe('opencode')
   })
 
   it('refuses, naming every candidate, when none runs under the name', () => {
@@ -68,11 +88,6 @@ describe.skipIf(process.platform === 'win32')('prepareFakeLane', () => {
 
   it.skipIf(process.platform !== 'linux')('the default candidates on this host give a live process named opencode [requires Linux /proc]', async () => {
     const root = scratch()
-    const fake = prepareFakeLane(root)
-    const child = spawn(fake.executable, fake.args, { stdio: 'ignore' })
-    children.push(child)
-    if (!child.pid) throw new Error('fake lane has no pid')
-    expect(await nameAfter(child.pid, 300)).toBe('opencode')
-    expect(child.exitCode).toBeNull()
+    expect(await aliveNameAfter(startOwned(prepareFakeLane(root)), 300)).toBe('opencode')
   })
 })

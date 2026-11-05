@@ -16,8 +16,9 @@ export interface FakeLaneCandidate { source: string, args: string[], probeArgs: 
 export interface FakeLane { executable: string, args: string[], source: string }
 
 // The loop keeps the shell process itself alive: a simple `-c 'sleep 30'` may be exec'd in place,
-// which would rename the process to `sleep`.
-const SHELL_LOOP = 'while :; do sleep 1; done'
+// which would rename the process to `sleep`. It ends on its own after about 30 s, like `sleep 30`,
+// so a test that never kills it cannot leave it running.
+const SHELL_LOOP = 'i=0; while [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done'
 
 export function defaultFakeLaneCandidates(): FakeLaneCandidate[] {
   const shell = (() => { try { return realpathSync('/bin/sh') } catch { return '/bin/sh' } })()
