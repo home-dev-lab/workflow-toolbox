@@ -22,6 +22,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- External lanes default `pnpm_config_verify_deps_before_run=false` through the worker and sandboxed child environment, preserving explicit caller overrides. Launches warn when a brief names only the ineffective `npm_config_verify_deps_before_run` spelling, with the exact pnpm variable to use.
 - Lane launch admission now uses FIFO waiting without a default burst deadline, recovers dead
   waiters' staging claims, and never suggests removing a live admission lock; a launch still
   waiting after 30 seconds names the lock holder once instead of waiting silently. Worker visibility
