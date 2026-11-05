@@ -61,7 +61,15 @@ function verifyOwnedArgv(child: ChildProcess, executable: string) {
     expect(child.spawnfile).toBe(executable)
   }
 }
+// Every fake lane this file starts, killed after each test whether or not the counter under test
+// ever saw it, so a broken limiter cannot leave a process behind for the next test to count.
+const ownedChildren: ChildProcess[] = []
+function trackOwned<T extends ChildProcess>(child: T): T {
+  ownedChildren.push(child)
+  return child
+}
 afterEach(() => {
+  for (const child of ownedChildren.splice(0)) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
   // A test asserting the real default must delete the env var to observe it — restore
   // whatever was there before (present or absent) so later tests, or a CI/operator-set
@@ -266,6 +274,54 @@ it.skipIf(process.platform !== 'linux')('real queued suite waiter is excluded, t
   }
 })
 
+// Two-arc contention fixtures, at module scope so the test body stays under the size limit.
+// Arc A waits for a marker file, then execs the fake lane so its pid becomes a process named
+// exactly `opencode`. Arc B is the launcher under test, given only arc A's pid as owned.
+async function startArcA(root: string) {
+  const { executable: fake, args: fakeArgs } = prepareFakeLane(root)
+  const marker = join(root, 'start-lane')
+  const arcA = trackOwned(spawn('/bin/sh', ['-c', 'while [ ! -e "$1" ]; do sleep 0.02; done; shift; exec "$@"', 'arc-a', marker, fake, ...fakeArgs], { stdio: 'ignore' }))
+  if (!arcA.pid) throw new Error('arc A has no pid')
+  await new Promise<void>((resolve, reject) => {
+    arcA.once('spawn', resolve)
+    arcA.once('error', reject)
+  })
+  return { arcA: arcA as ChildProcess & { pid: number }, fake, marker }
+}
+
+function arcBCaller(arcAPid: number) {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    WT_LANE_MAX_CONCURRENT: '1',
+    WT_LANE_SATURATION_TEST_MODE: '1',
+    WT_LANE_SATURATION_TEST_PIDS: String(arcAPid),
+  }
+  delete env.WT_LANE_ENFORCE_MODE // real default: deny
+  return () =>
+    spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'opencode run --model openai/gpt-5.4 review < /dev/null' } }),
+      encoding: 'utf8',
+      env,
+    })
+}
+
+type ArcBResult = ReturnType<ReturnType<typeof arcBCaller>>
+
+function expectAllowedSilently(res: ArcBResult, stderrNeedle: string) {
+  expect(res.status).toBe(0)
+  expect(`${res.stdout ?? ''}`.trim()).toBe('')
+  expect(res.stderr).toContain(stderrNeedle)
+}
+
+function expectRefusedAtBound(res: ArcBResult) {
+  expect(res.status).toBe(0)
+  const parsed = JSON.parse(res.stdout || '{}')
+  expect(parsed?.hookSpecificOutput?.permissionDecision).toBe('deny')
+  const reason = String(parsed?.hookSpecificOutput?.permissionDecisionReason ?? '')
+  expect(reason).toContain('REFUSED, not merely flagged')
+  expect(reason).toContain('at or past its bound')
+}
+
 describe('wt-lane-saturation-hook.mjs', () => {
   it('is silent on a command that has nothing to do with the lane', () => {
     const result = evaluateLaneCall(
@@ -310,7 +366,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
       expect(evaluateLaneCall({ tool_input: { command } }, { countLaneProcesses }).silent, command).toBe(true)
     }
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   it('is silent when a heredoc-written fixture contains a lane invocation mention', () => {
     const countLaneProcesses = () => {
       throw new Error('countLaneProcesses should not be called for heredoc data')
@@ -348,7 +406,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
     )
     expect(result.silent).toBe(true)
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   it('DENIES by default — naming the count, the bound and the real failure mode — when the call would cross the bound', () => {
     // Default enforcement is now `deny`, not advisory: an informed caller was measured
     // (on this exact card) proceeding past a plain warning anyway, because nothing forced
@@ -394,7 +454,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
     expect(result.message).toContain('This is advisory (WT_LANE_ENFORCE_MODE=warn)')
     expect(result.message).toContain('call is NOT blocked')
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   it('reports NOT MEASURED — never a zero, and NEVER denies — when counting is unavailable', () => {
     // The failure this closes: "pgrep is missing" and "nothing is running" are opposite
     // facts, and reporting the first as the second tells a caller the lane is free at
@@ -428,7 +490,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
     expect(result.silent).toBe(true)
     expect(result.deny).toBeUndefined()
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   // This is the one test in this suite that exercises the real `pgrep`
   // mechanism; it is deliberately restricted to PIDs this test spawned and whose argv it
   // verifies, so unrelated `opencode`/`codex` processes cannot affect it. If `pgrep` itself is
@@ -448,7 +512,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
     writeFileSync(marker, '#!/bin/sh\n# opencode run --model x\nsleep 30\n')
     chmodSync(marker, 0o755)
 
-    const laneChild = spawn(fake, fakeArgs, { stdio: 'ignore' })
+    const laneChild = trackOwned(spawn(fake, fakeArgs, { stdio: 'ignore' }))
     if (!laneChild.pid) throw new Error('lane child has no pid')
     await waitForOwnedLane(laneChild.pid, fake)
     let shellChild: ChildProcess | null = null
@@ -458,7 +522,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
       expect(withLane.state).toBe('ok')
       if (withLane.state === 'ok') expect(withLane).toMatchObject({ count: 1, pids: [laneChild.pid] })
 
-      shellChild = spawn('/bin/sh', [marker], { stdio: 'ignore' })
+      shellChild = trackOwned(spawn('/bin/sh', [marker], { stdio: 'ignore' }))
       if (!shellChild.pid) throw new Error('shell child has no pid')
 
       const withShellMention = countLaneProcessesReal(['opencode'], [laneChild.pid, shellChild.pid])
@@ -474,7 +538,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
       await stopOwnedChild(laneChild, fake)
     }
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   it('the CLI wrapper stays silent on a non-lane command and exits 0', () => {
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }),
@@ -494,7 +560,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-empty-owned-'))
     roots.push(root)
     const { executable: fake, args: fakeArgs } = prepareFakeLane(root)
-    const lane = spawn(fake, fakeArgs, { stdio: 'ignore' })
+    const lane = trackOwned(spawn(fake, fakeArgs, { stdio: 'ignore' }))
     if (!lane.pid) throw new Error('lane child has no pid')
     await waitForOwnedLane(lane.pid, fake)
 
@@ -513,7 +579,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
       await stopOwnedChild(lane, fake)
     }
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   it.skipIf(process.platform === 'win32')('treats malformed pgrep output as unknown instead of a false zero [requires a POSIX pgrep executable fixture]', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-malformed-pgrep-'))
     roots.push(root)
@@ -548,7 +616,9 @@ describe('wt-lane-saturation-hook.mjs', () => {
     expect(res.stdout ?? '').toBe('') // no deny JSON, no advisory text — silent allow
     expect(res.stderr ?? '').toContain('wt-lane-saturation-hook.mjs: FAILED OPEN')
   })
+})
 
+describe('wt-lane-saturation-hook.mjs', () => {
   // ── Manufactured two-arc contention proof ─────────────────────────────────────────────
   //
   // The discriminating requirement this guard is held to: seeing, on a case built
@@ -581,37 +651,13 @@ describe('wt-lane-saturation-hook.mjs', () => {
 
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-contend-'))
     roots.push(root)
-    const { executable: fake, args: fakeArgs } = prepareFakeLane(root)
-
-    const marker = join(root, 'start-lane')
-    const arcA = spawn('/bin/sh', ['-c', 'while [ ! -e "$1" ]; do sleep 0.02; done; shift; exec "$@"', 'arc-a', marker, fake, ...fakeArgs], { stdio: 'ignore' })
-    if (!arcA.pid) throw new Error('arc A has no pid')
-    await new Promise<void>((resolve, reject) => {
-      arcA.once('spawn', resolve)
-      arcA.once('error', reject)
-    })
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      WT_LANE_MAX_CONCURRENT: '1',
-      WT_LANE_SATURATION_TEST_MODE: '1',
-      WT_LANE_SATURATION_TEST_PIDS: String(arcA.pid),
-    }
-    delete env.WT_LANE_ENFORCE_MODE // real default: deny
-
-    const callArcB = () =>
-      spawnSync(process.execPath, [HOOK], {
-        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'opencode run --model openai/gpt-5.4 review < /dev/null' } }),
-        encoding: 'utf8',
-        env,
-      })
+    const { arcA, fake, marker } = await startArcA(root)
+    const callArcB = arcBCaller(arcA.pid)
 
     // --- direction (b), first half: UNCONTENDED — arc B must pass through untouched. This
     // is the false-deny check the closing criterion's own "no lost work" half depends on:
     // a guard that denies normal, uncontended usage is worse than the problem it fixes.
-    const before = callArcB()
-    expect(before.status).toBe(0)
-    expect(`${before.stdout ?? ''}`.trim()).toBe('') // silent = allowed, no deny JSON
-    expect(before.stderr).toContain('WT_LANE_SATURATION_TEST_PIDS')
+    expectAllowedSilently(callArcB(), 'WT_LANE_SATURATION_TEST_PIDS') // silent = allowed, no deny JSON
 
     // --- arc A saturates the lane: one real process, named exactly `opencode`, alive.
     writeFileSync(marker, 'start')
@@ -624,12 +670,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
       // ACTUAL `opencode run` process is never spawned by this refused call — which is
       // exactly what "no lost work" (direction b) requires: a denied call cannot time out,
       // because it never started.
-      const contended = callArcB()
-      expect(contended.status).toBe(0)
-      const parsed = JSON.parse(contended.stdout || '{}')
-      expect(parsed?.hookSpecificOutput?.permissionDecision).toBe('deny')
-      expect(String(parsed?.hookSpecificOutput?.permissionDecisionReason ?? '')).toContain('REFUSED, not merely flagged')
-      expect(String(parsed?.hookSpecificOutput?.permissionDecisionReason ?? '')).toContain('at or past its bound')
+      expectRefusedAtBound(callArcB())
     } finally {
       await stopOwnedChild(arcA, fake)
     }
@@ -638,9 +679,6 @@ describe('wt-lane-saturation-hook.mjs', () => {
     // which now proceeds exactly as it would have without ever having lost a batch: no
     // retry loop, no accumulated state, no manual intervention. The child's `exit` event above
     // is the drain signal; no wall-clock sleep guesses when SIGTERM has taken effect.
-    const after = callArcB()
-    expect(after.status).toBe(0)
-    expect(`${after.stdout ?? ''}`.trim()).toBe('')
-    expect(after.stderr).toContain(`WT_LANE_SATURATION_TEST_PIDS=${arcA.pid}`)
+    expectAllowedSilently(callArcB(), `WT_LANE_SATURATION_TEST_PIDS=${arcA.pid}`)
   })
 })

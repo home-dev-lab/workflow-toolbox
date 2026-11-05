@@ -115,6 +115,9 @@ jobs:
       - name: Test (Ubuntu shard ${{ matrix.shard }}/3)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         shell: bash
+        # socat was installed above: its absence here is a failure, never a skip.
+        env:
+          WT_LANE_SANDBOX_REQUIRE_SOCAT: '1'
         run: |
           mkdir -p ci-diagnostics
           pnpm test:shard --shard=${{ matrix.shard }}/3 --coverage \
