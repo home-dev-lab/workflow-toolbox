@@ -85,12 +85,15 @@ const JUSTIFIED: Justifications = new Map([
   }],
 ])
 
+// Cold Linux scan (10 runs): median 4798.203 ms, max 9698.302 ms, above the
+// 2000 ms target. Windows CI exceeded 20 s; allow 60 s (3x that budget) for
+// this cold family scan. Subsequent scans reuse content-validated analysis.
 it('every plugin hookSpecificOutput emission carries its registered hookEventName', () => {
   const result = scanPlugin(SCAN_ROOT, JUSTIFIED)
   expect(result.emissions).toBeGreaterThan(40)
   expect(result.problems, result.problems.join('\n')).toEqual([])
   expect([...result.justified].sort()).toEqual([...JUSTIFIED.keys()].sort())
-})
+}, 60_000)
 
 it.each([...JUSTIFIED])('serialized dynamic event contract: %s', async (_key, entry) => { await entry.prove() })
 
@@ -122,6 +125,13 @@ const invalidSources = [
   ['computed notice key', 'emitGuardNotice({stdoutJson: {["hookSpecificOutput"]: {hookEventName: "PreToolUse"}}})'],
   ['computed aliased envelope key', 'const envelope = {["hookSpecificOutput"]: {hookEventName: "PreToolUse"}}; write(envelope)'],
   ['missing field', 'write({hookSpecificOutput: {permissionDecision: "deny"}})'],
+  ['escaped identifier', 'write({hook\\u0053pecificOutput: {}})'],
+  ['escaped string key', 'write({"hook\\u0053pecificOutput": {}})'],
+  ['hex escaped string key', 'write({"\\x68ookSpecificOutput": {}})'],
+  ['octal escaped string key', 'write({"\\150ookSpecificOutput": {}})'],
+  ['code point escaped string key', 'write({"\\u{68}ookSpecificOutput": {}})'],
+  ['non-escape string key', 'write({"hookSpecifi\\cOutput": {}})'],
+  ['continued string key', 'write({"hookSpeci' + '\\' + '\n' + 'ficOutput": {}})'],
   ['unresolved shorthand', 'write({hookSpecificOutput})'],
   ['conditional bad branch', 'write({hookSpecificOutput: warn ? {hookEventName: "PreToolUse"} : {}})'],
   ['bad local initializer', 'function f() {const output = {}; write({hookSpecificOutput: output})}'],
@@ -147,6 +157,7 @@ it.each([
   'function f(){const output = {hookEventName: "PreToolUse"}; output.additionalContext = "context"; write({hookSpecificOutput: output})}',
   'function f(){const output = warn ? {additionalContext: "context"} : {permissionDecision: "deny"}; write({hookSpecificOutput: {hookEventName: "PreToolUse", ...output}})}',
   'write({hookSpecificOutput: {...unknown, hookEventName: "PreToolUse"}})',
+  'write({"hook\\u0053pecificOutput": {hookEventName: "PreToolUse"}})',
   'function f(){const hookSpecificOutput = {hookEventName: "PreToolUse"}; write({hookSpecificOutput})}',
   'out["hookSpecificOutput"] = {hookEventName: "PreToolUse"}',
   'function f(){const output = {}; output.hookEventName = "PreToolUse"; write({hookSpecificOutput: output})}',
@@ -227,4 +238,44 @@ it('automatically covers a newly added emitter outside the current guard names',
   const root = pluginCopy()
   writeFileSync(join(root, 'bin/new-hook.mjs'), 'write({hookSpecificOutput: {additionalContext: "fixture"}})')
   expect(scanPlugin(root, JUSTIFIED).problems).toContainEqual(expect.stringContaining('bin/new-hook.mjs:1: hookSpecificOutput requires'))
+})
+
+it('cached scans reread changed source and do not expose mutable results', () => {
+  const root = pluginCopy()
+  const file = join(root, 'bin/new-hook.mjs')
+  const source = 'write({hookSpecificOutput: {hookEventName: "PreToolUse"}})'
+  writeFileSync(file, source)
+  const first = scanPlugin(root, JUSTIFIED)
+  first.problems.push('caller mutation')
+  first.justified.clear()
+  const second = scanPlugin(root, JUSTIFIED)
+  expect(second.problems).toEqual([])
+  expect([...second.justified].sort()).toEqual([...JUSTIFIED.keys()].sort())
+  writeFileSync(file, source.replace('hookEventName', 'hookEventGone'))
+  expect(scanPlugin(root, JUSTIFIED).problems).toContainEqual(expect.stringContaining('bin/new-hook.mjs:1: hookSpecificOutput requires'))
+})
+
+it('cached scans recheck changed registration events', () => {
+  const root = pluginCopy()
+  expect(scanPlugin(root, JUSTIFIED).problems).toEqual([])
+  const manifest = join(root, '.claude-plugin/plugin.json')
+  const value = JSON.parse(readFileSync(manifest, 'utf8'))
+  value.hooks.Stop.push({ hooks: [{ command: 'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-version-guard-hook.mjs"' }] })
+  delete value.hooks.PreToolUse
+  writeFileSync(manifest, JSON.stringify(value))
+  expect(scanPlugin(root, JUSTIFIED).problems).toContainEqual(expect.stringMatching(/wt-version-guard-hook\.mjs:\d+: hookEventName PreToolUse is not a registered event/))
+})
+
+it.each(['reason', 'prove'])('cached scans snapshot mutable justification %s', (field) => {
+  const root = pluginCopy()
+  const key = 'bin/new-hook.mjs:event'
+  const entry = { reason: 'Fixture serialization proof.', prove() {} }
+  const exceptions = new Map([...JUSTIFIED, [key, entry] as const])
+  writeFileSync(join(root, 'bin/new-hook.mjs'), 'write({hookSpecificOutput: {hookEventName: event}})')
+  expect(scanPlugin(root, exceptions).problems).toEqual([])
+  const original = Reflect.get(entry, field)
+  Reflect.set(entry, field, field === 'reason' ? '' : undefined)
+  expect(scanPlugin(root, exceptions).problems).toContainEqual(expect.stringContaining('bin/new-hook.mjs:1: non-literal hookEventName requires'))
+  Reflect.set(entry, field, original)
+  expect([...scanPlugin(root, exceptions).justified]).toContain(key)
 })
