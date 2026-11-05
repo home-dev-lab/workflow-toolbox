@@ -102,6 +102,28 @@ function waitFixture() {
 
 const oneLane = () => ({ status: 0, stdout: '10\n' })
 
+it.skipIf(process.platform === 'win32')('scopes pgrep to the same OS user as the admission lock', () => {
+  const root = mkdtempSync(join(tmpdir(), 'lane-pgrep-user-')); roots.push(root)
+  writeFileSync(join(root, 'pgrep'), '#!/bin/sh\nprintf "%s\\n" "$@"\n')
+  chmodSync(join(root, 'pgrep'), 0o755)
+  const previous = process.env.PATH
+  process.env.PATH = `${root}:${previous}`
+  try {
+    expect(pgrepLaneName('opencode').stdout.trim().split('\n'), 'pgrep must count only the admission lock OS user').toEqual(['-u', String(process.geteuid!()), '-x', 'opencode'])
+  } finally { process.env.PATH = previous }
+})
+
+it('names a missing OS user identity unknown instead of querying a plausible username', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, 'geteuid')
+  Object.defineProperty(process, 'geteuid', { configurable: true, value: undefined })
+  try {
+    expect(pgrepLaneName('opencode').error?.message, 'a missing OS user must be named unknown').toBe('OS user identity unavailable for pgrep')
+  } finally {
+    if (descriptor) Object.defineProperty(process, 'geteuid', descriptor)
+    else Reflect.deleteProperty(process, 'geteuid')
+  }
+})
+
 it('discounts only positively proved synchronous lock waiters from the bound', () => {
   const result = countLaneProcessesReal(['opencode'], null, { pgrep: oneLane, inspectLockWait: waitFixture().inspect })
   expect(result).toMatchObject({ state: 'ok', liveCount: 1, count: 0, pids: [], excludedCount: 1,

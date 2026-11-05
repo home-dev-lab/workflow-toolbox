@@ -2859,7 +2859,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('does not attest a receipt from another launch nonce', async () => {
-    const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')"), 30)
+    const lifecycle = testLifecycle('LITE', [], launcher("import { readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1], brief = process.argv[process.argv.indexOf('--brief') + 1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(report, 'report\\n')"), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing'); expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'foreign' }))).toContain('missing lane receipt unchanged')
