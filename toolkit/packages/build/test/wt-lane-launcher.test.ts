@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { prepareFakeLane } from './helpers/owned-lane-process.js'
 import { laneSandboxContext, noteInsideLaneSandbox, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error ESM runtime module
 import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
@@ -1707,8 +1708,8 @@ function registerTempAttributionCases() {
   it.skipIf(process.platform !== 'linux')('does not report an executable named opencode from the OS temp directory [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true', true)
     const fakeDir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-fake-opencode-'))); roots.push(fakeDir)
-    const fake = join(fakeDir, 'opencode'); copyFileSync('/bin/sleep', fake)
-    const child = spawnChild(fake, ['30'], { cwd: f.dir, stdio: 'ignore' })
+    const { executable: fake, args: fakeArgs } = prepareFakeLane(fakeDir)
+    const child = spawnChild(fake, fakeArgs, { cwd: f.dir, stdio: 'ignore' })
     try {
       expectLiveChild(child.pid!)
       const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })

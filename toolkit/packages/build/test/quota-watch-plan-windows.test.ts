@@ -72,15 +72,17 @@ function sequencePreload(root: string, accountKey: string | null, steps: Step[],
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 const root = ${JSON.stringify(root)}, steps = ${JSON.stringify(steps)};
-const cache = root + ${JSON.stringify(accountKey && accountKey !== 'login' ? `/.quota-cache.${accountKey}.json` : '/.quota-cache.json')};
-const identity = root + '/.claude.json';
+// Built with the platform's own join, as the watcher builds them: compared by string equality below.
+const cache = ${JSON.stringify(join(root, accountKey && accountKey !== 'login' ? `.quota-cache.${accountKey}.json` : '.quota-cache.json'))};
+const identity = ${JSON.stringify(join(root, '.claude.json'))};
+const sleepLog = ${JSON.stringify(join(root, 'sleeps'))};
 const writeIdentity = (uuid) => fs.writeFileSync(identity, JSON.stringify({ oauthAccount: { accountUuid: uuid } }));
 const append = fs.appendFileSync, now = Date.now();
 let cycle = 0, offset = 0;
 Date.now = () => now + offset;
 fs.appendFileSync = function(path, ...args) {
   const result = append.call(this, path, ...args);
-  if (path !== root + '/sleeps') return result;
+  if (path !== sleepLog) return result;
   const step = steps[cycle++] || {};
   offset += step.advanceMs || 0;
   if (step.uuid) writeIdentity(step.uuid);
