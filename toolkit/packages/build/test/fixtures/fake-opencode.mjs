@@ -128,4 +128,5 @@ else if (argv[0] === 'debug' && argv[1] === 'skill') {
   if (String(count) === process.env.WT_SLOW_PREFLIGHT_AT_COUNT) await sleep(6000)
   if (String(count) === process.env.WT_FAIL_PREFLIGHT_AT_COUNT) process.exitCode = 7
   else process.stdout.write(`${process.env.WT_EFFECTIVE_SKILLS || '[]'}\n`)
-} else await runAction()
+} else if (action === 'pnpm-verify-deps-env') write('pnpm-verify-deps-env', process.env.pnpm_config_verify_deps_before_run ?? 'unset')
+else await runAction()

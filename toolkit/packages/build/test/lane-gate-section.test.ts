@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs launcher
@@ -11,6 +11,11 @@ import { BRIEF_GATE_RUNNABLES, briefEvidenceLines, briefGateSectionRefusal, pars
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const launcher = fileURLToPath(new URL('./fixtures/launcher-counter/wt-lane.mjs', import.meta.url))
+// Mutation proofs may point at an isolated copy; normal checkouts import the installed launcher and spawn it
+// through the counter fixture, like every other CLI test here.
+const verifyDepsModule = process.env.WT_LANE_VERIFY_DEPS_MODULE
+const verifyDepsLauncher = verifyDepsModule ?? launcher
+const { laneWorkerEnv } = await import(pathToFileURL(verifyDepsModule ?? fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))).href)
 const roots: { root: string, dir: string }[] = []
 afterEach(() => {
   for (const { root, dir } of roots.splice(0)) {
@@ -117,6 +122,48 @@ function fixture() {
   writeFileSync(brief, '# Work\nWrite the feature.\n')
   return { root, dir, brief, args: ['--dir', dir, '--brief', brief, '--model', 'openai/example', '--allow-no-git'] }
 }
+
+describe('lane pnpm dependency verification', () => {
+  it('defaults the environment handed to the worker without mutating the caller', () => {
+    const env = { PATH: 'tools', npm_config_verify_deps_before_run: 'false' }
+    expect(laneWorkerEnv(env, null).pnpm_config_verify_deps_before_run).toBe('false')
+    expect(env).not.toHaveProperty('pnpm_config_verify_deps_before_run')
+    expect(laneWorkerEnv({ PATH: 'tools' }, null)).toEqual({ PATH: 'tools', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+  })
+
+  it.each(['true', 'false', ''])('preserves explicit caller value %j in the worker environment', (value) => {
+    const env = { pnpm_config_verify_deps_before_run: value }
+    expect(laneWorkerEnv(env, 'P0')).toMatchObject({ ...env, WT_SUITE_LOCK_PRIORITY: 'P0' })
+  })
+
+  it.each([['pnpm_config_verify_deps_before_run'], ['PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN']])('adds no default beside a caller %s', (name) => {
+    for (const value of ['true', '']) expect(laneWorkerEnv({ PATH: 'tools', [name]: value }, null)).toEqual({ PATH: 'tools', [name]: value, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+  })
+
+  it.each([
+    ['export npm_config_verify_deps_before_run=false', true],
+    ['export NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false', true],
+    ['export npm_config_verify_deps_before_run=false\nexport PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false', false],
+    ['`npm_config_verify_deps_before_run` is disabled.', true],
+    ['export pnpm_config_verify_deps_before_run=false', false],
+    ['npm_config_verify_deps_before_run=false\npnpm_config_verify_deps_before_run=true', false],
+    ['No dependency configuration.', false],
+    ['other_npm_config_verify_deps_before_run=false', false],
+  ])('warns only for an npm-only brief at launch: %s', (text, warn) => {
+    const f = fixture()
+    writeFileSync(f.brief, `# Work\n${text}\n## Gates\npnpm typecheck\n`)
+    const env = sealedPluginCliEnv(f.root, { WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_FIXTURE_HOME: join(f.root, 'home') })
+    const result = spawnSync(process.execPath, [verifyDepsLauncher, ...f.args], { encoding: 'utf8', env })
+    expect(result.error).toBeUndefined()
+    expect(result.status, 'warn-only: still reaches the sealed-environment stop').toBe(1)
+    const warning = result.stderr.split('\n').find((line) => line.startsWith('wt-lane: Warning:'))
+    if (warn) {
+      expect(warning).toContain('use pnpm_config_verify_deps_before_run=false')
+      expect(warning).toContain('npm_config_verify_deps_before_run')
+    } else expect(warning).toBeUndefined()
+    expect(readFileSync(join(laneHostDir(f.dir, { env, home: env.WT_LANE_FIXTURE_HOME }), 'run.log'), 'utf8')).toContain('BRIEF_SHA256=')
+  })
+})
 
 it('refuses at the CLI before creating any lane state', () => {
   const f = fixture()

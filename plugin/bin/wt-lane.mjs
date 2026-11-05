@@ -44,7 +44,7 @@ const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 const PLATFORM = process.platform
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, legacySupervision, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv: laneOpencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, legacySupervision, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }
 }
 
 async function loadIntegrationModule() {
@@ -62,6 +62,12 @@ export const BRIEF_GATE_RUNNABLES = Object.freeze([
 const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
 const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
 const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+const PNPM_VERIFY_DEPS_ENV = 'pnpm_config_verify_deps_before_run'
+// The spellings pnpm reads on Linux; the launcher honours exactly these, in the environment and in a brief.
+const PNPM_VERIFY_DEPS_SPELLINGS = Object.freeze([PNPM_VERIFY_DEPS_ENV, PNPM_VERIFY_DEPS_ENV.toUpperCase()])
+const NPM_VERIFY_DEPS_BRIEF = /\b(?:npm_config_verify_deps_before_run|NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN)\b/
+const PNPM_VERIFY_DEPS_BRIEF = /\b(?:pnpm_config_verify_deps_before_run|PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN)\b/
+const callerVerifyDeps = (env) => PNPM_VERIFY_DEPS_SPELLINGS.filter((name) => env[name] !== undefined).map((name) => [name, env[name]])
 
 function isRunnableGateLine(line) {
   const folded = line.replace(/\s+/g, ' ').replace(PNPM_RUN_FORM, 'pnpm ')
@@ -98,7 +104,11 @@ function launchBriefRefusal(briefEvidence, opts) {
   if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
     return { code: 1, message: `wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.` }
   }
-  const refusal = briefGateSectionRefusal(briefEvidence.bytes.toString('utf8'), opts)
+  const text = briefEvidence.bytes.toString('utf8')
+  if (NPM_VERIFY_DEPS_BRIEF.test(text) && !PNPM_VERIFY_DEPS_BRIEF.test(text)) {
+    process.stderr.write('wt-lane: Warning: pnpm 11 ignores npm_config_verify_deps_before_run; use pnpm_config_verify_deps_before_run=false in the brief (warn-only probation).\n')
+  }
+  const refusal = briefGateSectionRefusal(text, opts)
   return refusal ? { code: 2, message: refusal } : null
 }
 
@@ -126,9 +136,17 @@ function laneLockPriority(value) {
  * An env carrying the effective lane priority. Used twice: for the worker, which hands its env to the host-side
  * suite-lock broker (lane-sandbox.mjs, the broker bridge, which reads WT_SUITE_LOCK_PRIORITY); and for the opencode
  * child, whose env filter would otherwise drop it. A declaration wins over the ambient level, else P2.
+ * Dependency verification defaults off so pnpm cannot recreate an offline lane's install before running a gate;
+ * a caller's own value, in either spelling pnpm reads, is kept and gains no default beside it.
  */
 export function laneWorkerEnv(env, lockPriority) {
-  return { ...env, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
+  const verifyDeps = callerVerifyDeps(env).length ? {} : { [PNPM_VERIFY_DEPS_ENV]: 'false' }
+  return { ...env, ...verifyDeps, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
+}
+
+// Preserve only this caller-owned pnpm choice across the model environment filter; the default stays in laneWorkerEnv.
+export function laneOpencodeChildEnv(env, model) {
+  return { ...opencodeChildEnv(env, model), ...Object.fromEntries(callerVerifyDeps(env)) }
 }
 
 // The worker argv that carries a declared --lock-priority to the detached worker; nothing when none was declared.
@@ -976,8 +994,9 @@ function prepareLaneDiscovery(opts, consentModules, skills, variant, releaseLaun
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
   // Names the launcher sets itself: the child environment allow-list passes them, never inherits them.
-  // The effective host-selected priority is explicitly owned, so it survives the child's env filter.
-  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD', 'WT_SUITE_LOCK_PRIORITY']
+  // The effective host-selected priority is explicitly owned, so it survives the child's env filter; so does the
+  // pnpm dependency-verification choice, in either spelling.
+  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD', 'WT_SUITE_LOCK_PRIORITY', ...PNPM_VERIFY_DEPS_SPELLINGS]
   // Inside the Linux lane sandbox the lock DIRECTORY is bound read-write by the sandbox itself. The
   // CLI that WT_SUITE_LOCK_CMD runs reads beyond bin/ at import (lib/artifact-server.mjs reads
   // .claude-plugin/plugin.json), so the whole plugin root it ships in is bound read-only here.
