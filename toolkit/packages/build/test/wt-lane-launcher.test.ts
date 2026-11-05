@@ -14,7 +14,7 @@ import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneOpencodeChildEnv, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
@@ -2185,16 +2185,42 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
     expect(error).toContain('--lock-priority must be P0, P1 or P2')
     if (value?.toLowerCase() === 'release') expect(error).toContain('release is reserved to the main session')
   })
-  it('the worker env carries the declared level over an ambient one, else defaults to P2', () => {
-    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
-    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P0' })
+  it('the worker env carries the declared level over an ambient one, and keeps an ambient pnpm choice', () => {
+    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2', pnpm_config_verify_deps_before_run: 'false' }
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ ...ambient, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P0' })
     expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
     expect(laneWorkerEnv(ambient, null)).toEqual({ ...ambient, WT_SUITE_LOCK_CONTEXT: 'lane' })
-    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+  })
+  it('the worker env carries the declared level over an ambient one, else defaults to P2', () => {
+    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P0' })
+    expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
+    expect(laneWorkerEnv(ambient, null)).toEqual({ ...ambient, pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
+  })
+})
+
+describe('wt-lane pnpm dependency verification spellings', () => {
+  it.each(['pnpm_config_verify_deps_before_run', 'PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN'])('the model child env keeps a caller %s and gains no other spelling', (name) => {
+    const caller = { PATH: '/bin', [name]: 'true' }
+    const child = laneWorkerEnv(laneOpencodeChildEnv(caller, 'openai/example'), null)
+    expect(child[name]).toBe('true')
+    expect(Object.keys(child).filter((key) => key.toLowerCase() === 'pnpm_config_verify_deps_before_run')).toEqual([name])
   })
 })
 
 describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
+  it.each([undefined, 'true', 'false', ''])('passes pnpm dependency verification through every child env filter (%j)', (value) => {
+    const f = fixture('pnpm-verify-deps-env')
+    delete f.env.pnpm_config_verify_deps_before_run
+    if (value !== undefined) f.env.pnpm_config_verify_deps_before_run = value
+    const res = run(f, ['--timeout', '1'])
+    expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'pnpm-verify-deps-env'), 'utf8')).toBe(value ?? 'false')
+  })
+
   it.each([[['--lock-priority', 'p0'], 'P2', 'P0'], [['--lock-priority', 'p1'], 'P0', 'P1'], [['--lock-priority', 'p2'], 'P0', 'P2'], [[], undefined, 'P2'], [[], 'P0', 'P0'], [[], 'P1', 'P1'], [[], 'P2', 'P2']] as const)('the opencode child env carries the effective level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
     const f = fixture('lock-priority-env')
     // The host resolves the priority before the child environment allow-list is applied.
@@ -2212,6 +2238,7 @@ describe('wt-lane --lock-priority reaches the processes the launcher starts', ()
       const state = JSON.parse(readFileSync(status, 'utf8'))
       try {
         const declared = readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0').find((entry) => entry.startsWith('WT_SUITE_LOCK_PRIORITY='))
+        expect(readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0')).toContain('pnpm_config_verify_deps_before_run=false')
         expect(declared, `worker env for ${JSON.stringify(extra)}`).toBe(expected)
       } finally {
         const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
