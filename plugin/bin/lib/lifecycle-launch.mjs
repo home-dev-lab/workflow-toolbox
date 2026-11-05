@@ -665,6 +665,7 @@ function acceptLauncherPid(context, lane, launch) {
   const { refusal, state } = context
   const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
   if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', lane.log)}${launcherFailureDetail(launch)}`
+  if (launch.code !== 0) return `${refusal(`${state.phase}->next`, 'successful launcher exit', lane.log)}${launcherFailureDetail(launch)}`
   Object.assign(lane.ownedRecord, { runId: /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null, workerPid })
   return null
 }

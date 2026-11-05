@@ -2,7 +2,7 @@
 // identity, never by age. A populated-directory reclaim mutex prevents stale readers from
 // unlinking a newer claim; its token-named member makes concurrent reaping safe as well.
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { hostAdapter } from './adapter.mjs'
@@ -108,45 +108,99 @@ function tryClaim(file, stage, owner) {
   } catch (error) { removeOwnFile(file, owner); throw error }
 }
 
-// No age-based reclaim: a live, unprovable owner (a `self:` identity whose PID was reused) is
-// left in place, so the timeout names the file, its owner pid and the manual remedy. Any script
-// may hold this lock, so the remedy is keyed on the claim's own process, never on its kind.
-function busyMessage(file) {
+// No age-based reclaim, and no advice to unlink a potentially live owner's claim.
+function holderText(file) {
   const pid = readOwner(file)?.pid
-  const holder = Number.isSafeInteger(pid) ? `owner pid ${pid}` : 'no readable owner pid'
-  const subject = Number.isSafeInteger(pid)
-    ? `pid ${pid} is not running or is not the process that wrote this claim (pid reused)`
-    : 'the process that wrote this claim is no longer running'
-  const guard = guardExists(file) ? `; reclaim guard ${file}.reclaim is present: remove it too under the same condition` : ''
-  return `wt-lane: admission lock busy or owner unmeasured: ${file} (${holder}); wait for the owning launch to finish, then retry the same wt-lane command; if ${subject}, remove ${file}, then retry${guard}`
+  return Number.isSafeInteger(pid) ? `owner pid ${pid}` : 'no readable owner pid'
+}
+
+function busyMessage(file) {
+  const guard = guardExists(file) ? `; reclaim guard ${file}.reclaim is present` : ''
+  return `wt-lane: admission lock busy or owner unmeasured: ${file} (${holderText(file)}); wait for the owning launch to finish, then retry the same wt-lane command; dead owners are recovered automatically${guard}`
+}
+
+// Waiting has no default deadline, so a long wait names its holder once instead of going silent.
+function waitNotice(file, start, { noticeMs = 30_000 }, warn) {
+  const due = start + noticeMs
+  let told = false
+  return (now) => {
+    if (told || now < due) return
+    told = true
+    warn(`wt-lane: still waiting for admission lock ${file} (${holderText(file)}); this launch keeps its place in the queue; a dead owner is recovered automatically and a live one is never broken`)
+  }
 }
 
 // Runs after the claim was published or the wait failed: a leftover staging link is reported,
 // never thrown, so it can neither take a published claim from its caller nor mask the wait's
 // own error. The link holds no claim; only the lock file itself does.
 function removeStage(stage, warn) {
-  try { rmSync(stage, { force: true }) } catch (error) {
-    warn(`wt-lane: could not remove admission staging link ${stage} (${error.code ?? error.message}); it holds no claim and may be removed by hand`)
+  let unused = `${stage}.held`
+  // Retire the queue ticket atomically before unlinking. An unlink failure must not leave
+  // a completed acquisition at the head of the queue while its process remains alive.
+  try { renameSync(stage, unused) } catch (error) {
+    if (error.code === 'ENOENT') return
+    unused = stage
+    warn(`wt-lane: could not retire admission staging link ${stage} (${error.code ?? error.message})`)
+  }
+  try { rmSync(unused, { force: true }) } catch (error) {
+    warn(`wt-lane: could not remove admission staging link ${unused} (${error.code ?? error.message}); it holds no claim and may be removed by hand`)
   }
 }
 
 const warnToStderr = (line) => process.stderr.write(`${line}\n`)
 
-export async function acquireLaneAdmissionLock(file, { clock = performance.now.bind(performance), waitMs = 120_000, pollMs = 25, warn = warnToStderr } = {}) {
+function queuedClaims(file) {
+  const prefix = `${basename(file)}.`
+  const entries = []
+  for (const name of readdirSync(dirname(file))) {
+    if (!name.startsWith(prefix) || !/\.claim(?:\.held)?$/.test(name)) continue
+    const path = join(dirname(file), name)
+    const owner = readOwner(path)
+    if (deadOwner(owner)) { removeOwnFile(path, owner); continue }
+    if (name.endsWith('.claim') && Number.isSafeInteger(owner?.ticket)) entries.push(owner)
+  }
+  return entries.sort((a, b) => a.ticket - b.ticket || a.token.localeCompare(b.token))
+}
+
+function watchWaitingStage(stage, warn) {
+  const cleanup = () => removeStage(stage, warn)
+  const signals = [['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]]
+  const handlers = signals.map(([signal, code]) => [signal, () => process.exit(code)])
+  process.once('exit', cleanup)
+  for (const [signal, handler] of handlers) process.once(signal, handler)
+  return () => {
+    process.removeListener('exit', cleanup)
+    for (const [signal, handler] of handlers) process.removeListener(signal, handler)
+  }
+}
+
+function tryQueuedClaim(file, stage, owner) {
+  return queuedClaims(file)[0]?.token === owner.token && tryClaim(file, stage, owner)
+}
+
+// Visible predecessors are ordered by ticket, not polling luck. Waiting has no default
+// deadline: a burst of healthy bounded launches is not evidence of a saturated lane cap.
+export async function acquireLaneAdmissionLock(file, { clock = performance.now.bind(performance), waitMs = Infinity, pollMs = 25, warn = warnToStderr, ...notices } = {}) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   // Own runtime start is available without an external process reader. A live self-only
   // identity is never judged reused from a later native identity in a different format.
-  const owner = { pid: process.pid, startIdentity: birthIdentity(process.pid) ?? SELF_START_IDENTITY, token: randomUUID() }
+  const ticket = Math.max(0, ...queuedClaims(file).map((owner) => owner.ticket)) + 1
+  const owner = { pid: process.pid, startIdentity: birthIdentity(process.pid) ?? SELF_START_IDENTITY, token: randomUUID(), ticket }
   const stage = `${file}.${owner.token}.claim`
   writeFileSync(stage, JSON.stringify(owner), { flag: 'wx', mode: 0o600 })
-  const deadline = clock() + waitMs
+  const detach = watchWaitingStage(stage, warn)
+  const start = clock()
+  const deadline = start + waitMs
+  const notice = waitNotice(file, start, notices, warn)
   try {
     for (;;) {
-      if (tryClaim(file, stage, owner)) return { file, owner }
-      if (clock() >= deadline) throw new Error(busyMessage(file))
+      if (tryQueuedClaim(file, stage, owner)) return { file, owner }
+      const now = clock()
+      if (now >= deadline) throw new Error(busyMessage(file))
+      notice(now)
       await delay(pollMs)
     }
-  } finally { removeStage(stage, warn) }
+  } finally { detach(); removeStage(stage, warn) }
 }
 
 export function releaseLaneLaunchAdmission(claim) {

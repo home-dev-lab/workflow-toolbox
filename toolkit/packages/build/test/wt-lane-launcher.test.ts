@@ -2455,6 +2455,24 @@ describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
 
 // Launch admission observed through the real launcher path (main -> launchAndObserve -> admission).
 const ADMISSION_PROBE = join(ROOT, 'toolkit/packages/build/test/fixtures/launcher-counter/admission-probe.mjs')
+
+it.skipIf(process.platform === 'win32').each([false, true])('consumes a termination queued during synchronous preflight before accepting the launch (unknown count=%s)', async (unknown) => {
+  const f = fixture('true')
+  f.env.WT_SLOW_PREFLIGHT_AT_COUNT = '1'
+  if (unknown) f.env.WT_LAUNCHER_UNKNOWN_COUNT = '1'
+  const child = spawnChild(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { env: f.env, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stdout = ''
+  child.stdout!.on('data', (bytes) => { stdout += String(bytes) })
+  const exited = new Promise<number | null>((resolve) => child.once('exit', resolve))
+  waitForContent(join(f.dir, '.lane', 'preflight-count'), /^1$/)
+  child.kill('SIGTERM')
+  expect(await exited, 'queued termination must refuse the unknown-count launch').toBe(143)
+  const pid = Number(readFileSync(join(f.dir, '.lane', 'pid'), 'utf8'))
+  const identity = inspectProcess(pid)
+  if (identity) waitForIdentityExit(identity, 5_000)
+  expect(inspectProcess(pid), 'cancelled launch must not leave its original worker alive').toBeNull()
+  expect(stdout).not.toMatch(/^pid=/m)
+}, 30_000)
 type AdmissionProbe = { code: number | null, error: string | null, stops: number[], warnings: string[] }
 function admissionProbe(f: ReturnType<typeof fixture>, extra: string[], env: NodeJS.ProcessEnv = {}) {
   const result = nativeSpawnSync(process.execPath, [ADMISSION_PROBE, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: { ...f.env, ...env } })
@@ -2475,6 +2493,7 @@ describe.skipIf(process.platform !== 'linux')('wt-lane launch admission through 
       const worker = Number(/worker pid (\d+)/.exec(probe!.error!)![1])
       expect(probe!.stops).toEqual([worker])
       expect(probe!.warnings.filter((line) => line.includes('NOT CONFIRMED'))).toEqual([])
+      expect(result.stdout, 'a failed visibility wait must not publish a success pid').not.toMatch(/^pid=/m)
     } finally { killRecordedOpencode(f) }
   }, 30_000)
 
@@ -2502,6 +2521,6 @@ describe.skipIf(process.platform !== 'linux')('wt-lane launch admission through 
     // Control readable in both outcomes: this launch did spawn its worker and was refused at the record write.
     expect(result.stderr).toContain(`Refused: supervision record ${paths.record} already exists`)
     expect(probe!.code).toBe(1)
-    expect(probe!.stops).toEqual([])
+    expect(probe!.stops, 'a foreign record must never authorize worker cleanup').toEqual([])
   }, 30_000)
 })
