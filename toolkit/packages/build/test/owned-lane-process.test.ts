@@ -70,6 +70,7 @@ describe.skipIf(process.platform === 'win32')('prepareFakeLane', () => {
   it.skipIf(process.platform !== 'linux')('the shell fallback alone gives a live process named opencode [requires Linux /proc]', async () => {
     const root = scratch()
     const shell = defaultFakeLaneCandidates()[1]
+    if (!shell) throw new Error('the default candidates no longer carry a shell fallback')
     const fake = prepareFakeLane(root, 'opencode', [{ source: refusingBinary(root), args: ['30'], probeArgs: ['0'] }, shell])
     expect(fake.source).toBe(shell.source)
     expect(await aliveNameAfter(startOwned(fake), 1_500)).toBe('opencode')
