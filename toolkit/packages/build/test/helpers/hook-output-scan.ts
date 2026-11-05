@@ -11,6 +11,28 @@ export type Justifications = Map<string, Justification>
 export interface ScanResult { emissions: number; problems: string[]; justified: Set<string> }
 interface Context { file: string; source: ts.SourceFile; events?: Set<string> | undefined; exceptions: Justifications; result: ScanResult }
 const extensions = new Set(['.mjs', '.js', '.cjs'])
+interface CachedScan { text: string; events: string; proofs: ProofSnapshot; result: ScanResult }
+type ProofSnapshot = Array<[string, string, ContractProof]>
+// Root-independent entries let disposable plugin copies reuse unchanged analysis.
+// Always reread source and snapshot registrations/proofs: no mtime-based validity.
+const scans = new Map<string, CachedScan>()
+
+function sameProofs(left: ProofSnapshot, right: ProofSnapshot): boolean {
+  return left.length === right.length && left.every(([key, reason, prove], index) => {
+    const other = right[index]!
+    return key === other[0] && reason === other[1] && prove === other[2]
+  })
+}
+
+function scanFile(file: string, text: string, events: Set<string> | undefined, exceptions: Justifications, proofs: ProofSnapshot): ScanResult {
+  const registered = JSON.stringify(events ? [...events].sort() : null)
+  const relevant = proofs.filter(([key]) => key.startsWith(`${file}:`))
+  const cached = scans.get(file)
+  if (cached?.text === text && cached.events === registered && sameProofs(cached.proofs, relevant)) return cached.result
+  const result = scanSource(file, text, events, exceptions)
+  scans.set(file, { text, events: registered, proofs: relevant, result })
+  return result
+}
 
 function problem(context: Context, node: ts.Node, message: string) {
   const line = context.source.getLineAndCharacterOfPosition(node.getStart(context.source)).line + 1
@@ -70,6 +92,12 @@ function assignmentValue(node: ts.BinaryExpression): ts.Expression | undefined {
   return undefined
 }
 
+function mayContainEnvelope(text: string): boolean {
+  // Any escape keeps the full walk: identifiers, string keys and JSON literals
+  // can spell the envelope name without containing its raw source text.
+  return text.includes('hookSpecificOutput') || text.includes('\\')
+}
+
 export function scanSource(file: string, text: string, events?: Set<string>, exceptions: Justifications = new Map()): ScanResult {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const result: ScanResult = { emissions: 0, problems: [], justified: new Set() }
@@ -77,6 +105,9 @@ export function scanSource(file: string, text: string, events?: Set<string>, exc
   for (const { node, message } of serializationHazards(source, events)) {
     if (!justified(context, node)) problem(context, node, message)
   }
+  // Hazards (including computed writer keys without a literal envelope name)
+  // still cover every file; only the redundant emission walk can be skipped.
+  if (!mayContainEnvelope(text)) return result
   const visit = (node: ts.Node) => {
     if (ts.isPropertyAssignment(node) && propertyName(node.name) === 'hookSpecificOutput') checkEnvelope(context, node.initializer)
     if (ts.isShorthandPropertyAssignment(node) && node.name.text === 'hookSpecificOutput') checkEnvelope(context, node.name)
@@ -127,12 +158,13 @@ export function scanPlugin(root: string, exceptions: Justifications = new Map())
   const files = sourceFiles(root).map((absolute) => relative(root, absolute).replaceAll('\\', '/'))
   const manifest = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8'))
   const { registrations, result } = scanManifest(manifest, new Set(files), exceptions)
+  const proofs: ProofSnapshot = [...exceptions].map(([key, entry]) => [key, entry.reason, entry.prove])
   sdkRegistrations(root, registrations)
   for (const file of registrations.keys()) {
     if (!files.includes(file)) result.problems.push(`${file}: registered hook source file is not scanned`)
   }
   for (const file of files) {
-    const scanned = scanSource(file, readFileSync(join(root, file), 'utf8'), registrations.get(file), exceptions)
+    const scanned = scanFile(file, readFileSync(join(root, file), 'utf8'), registrations.get(file), exceptions, proofs)
     result.emissions += scanned.emissions
     result.problems.push(...scanned.problems)
     for (const key of scanned.justified) result.justified.add(key)
