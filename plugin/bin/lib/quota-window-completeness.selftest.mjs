@@ -1,6 +1,5 @@
-// Standalone `node --test` locks for quota-window-completeness.mjs (card 1898619335555942069), on the
-// per-window contract of card 1899394115301279304: a reading is usable when it carries at least one
-// watched window. The vitest twin is toolkit/packages/build/test/quota-window-completeness.test.ts.
+// Standalone `node --test` locks for quota-window-completeness.mjs, on the per-window contract: a
+// reading is usable when it carries at least one watched window. The vitest twin is toolkit/packages/build/test/quota-window-completeness.test.ts.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { isUsableReading, missingWindows } from './quota-window-completeness.mjs'
