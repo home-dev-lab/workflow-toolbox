@@ -88,40 +88,25 @@ installed binary? Name that dependency. Ask if YOU created it earlier for other 
 
 ## A HOSTED PLATFORM's behaviour is read in its documentation, never inferred from your traces
 
-**Claim about what a PLATFORM does — CI trigger fired, webhook did not, rate limit hit, permission
-refused? Deciding source is THAT PLATFORM's reference.** Your repository, your logs, your event
-metadata say what YOU did. They never say what the platform does with it. So the sentence tying the
-two together is INVENTED — and invented confidently, because every fact under it is true and
-correctly read.
-
 Read the platform's own documentation FIRST, and QUOTE the reference in the claim. Repository
 archaeology is the fallback, never the opening move.
-
-⚠ **Tell is grammatical, needs no suspicion**: a sentence of the form *"it must have fired because
-<something I changed>"* about a system whose rules you have not read this turn.
-
-⚠ **Corollary, and it is what makes this expensive**: a correction built the same way inherits the
-same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
-explanations in a row is the signature — stop building the third from the same material.
 
 **After claiming mechanism, grep for code that must exist for claim to be FALSE.** Report what you
 found. Fastest guard against explanation built from quote that say opposite of conclusion drawn
 from it.
 
+Two wrong explanations in a row → stop building a third from the same material. Why, the tell,
+the corollary: at-act half (first file edit; test, CI, API, merge, push, publish, release commands).
+
 ## High-impact mechanisms require three answers
 
 **Shipping anything requires an explicit CROSS-PLATFORM verdict:** classify each dependency as throwing, degrading to a named `unknown`, or silently returning a plausible value.
 
-**High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
-published surface — answer all three:**
-1. Was the failure it prevent actually exercised? Not happy-path test written from same
-   understanding as the code.
-2. Did it run under real conditions and volume, or only fixtures? Name which.
-3. What can go wrong in the MECHANISM itself? Not the problem it address.
-Shipping with a "no" is legitimate. Letting reader assume the questions were asked is not.
-Say which of the three you can answer and which you cannot, SAME prominence as result.
-Check deferred to later step is NOT done until that step own record name it. Read executing
-system trace. Never a summary silence.
+High impact or high risk (guard, safety mechanism, money, security, data loss, availability,
+published surface): say which of the three you can answer and which you cannot — failure
+exercised? real conditions or fixtures? what can go wrong in the mechanism? — same prominence as
+result. A deferred check is not done until its own record names it. Full text: at-act half (same
+acts as above).
 
 **Evidence must OUTLIVE the process that produced it.** Check run at execution time and not
 archived is not re-verifiable. Proof die with process. Later reader left with claim alone.
@@ -129,10 +114,6 @@ Archive input beside output — the file, or its hash, plus exact command. Later
 separate VERIFIED from ASSERTED-BY-WHOEVER-RAN-IT.
 Corroboration make claim likely. Likely-by-corroboration is still NOT verified. Report must say
 which one it is.
-
-**Guard with wrong model of system it protect does not degrade. It INVERTS.** It grant confidence
-exactly when guarded thing is about to break. That is why question 3 check the mechanism, not the
-hazard.
 
 **One mechanical read not enough — evidence across sources, leads to chase, surprise needing root
 cause?** Escalate to `deep-grounding` skill. Do not chain ad-hoc reads.
