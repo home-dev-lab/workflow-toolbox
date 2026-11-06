@@ -73,6 +73,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The opencode envelope reports the pool's first failure after draining running tasks, so a sibling's later output-write error cannot replace an integrity refusal or its exit-3 protocol. Successful output-writability probes are regression-tested for cleanup.
 
 ### Changed
+- wt-sdlc: the "Revise only blocking critic findings" and "Proportionality" sections move verbatim to wt-sdlc-at-act.md, served before the first edit, agent spawn, or second-opinion/independent-analysis skill call; the core keeps a one-line pointer for each and keeps the before-coding sections static
 - wt-verify-by-ground-truth: the hosted-platform reasoning and the full three high-impact questions move to the at-act half, which is now also served after gh/glab CI, API, merge and release commands, git push, and npm/pnpm/yarn or changeset publish; the core keeps a one-line anchor for each moved duty (core 8,817 to 7,612 characters)
 
 ## [0.197.0] - 2026-10-26
