@@ -3,8 +3,8 @@
 // processes actually load, read off each process (its module path), never off a manifest.
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
-import { checkLoadedVersions } from './lib/loaded-version/scan.mjs'
-import { renderJson, renderText } from './lib/loaded-version/report.mjs'
+import { checkLoadedVersions } from './lib/host/loaded-version/scan.mjs'
+import { renderJson, renderText } from './lib/host/loaded-version/report.mjs'
 
 const HELP = `Usage: wt-loaded-version --plugin <name> (--expect <version> | --list) [--profile <config-dir>]... [--allow-none] [--json]
 Lists every live Claude Code session of this user, on every profile (config dir), with the version of
@@ -38,7 +38,7 @@ export function parseArguments(argv) {
 }
 
 export function loadedVersionMain(argv = process.argv.slice(2), write = text => process.stdout.write(text)) {
-  handleHelpFlag(argv, HELP, { valueFlags: VALUE_FLAGS, booleanFlags: Object.keys(BOOLEAN_FLAGS) })
+  handleHelpFlag(argv, HELP, { valueFlags: ['--plugin', '--expect', '--profile'], booleanFlags: ['--json', '--list', '--allow-none'] })
   const options = parseArguments(argv)
   const result = checkLoadedVersions(options)
   write(options.json ? `${JSON.stringify(renderJson(result))}\n` : `${renderText(result)}\n`)

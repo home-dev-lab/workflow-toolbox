@@ -1,8 +1,8 @@
 // Which version of a plugin each live Claude session's servers load, read off the processes.
 // Exit codes: 0 every session current (or listing only), 1 at least one stale, 2 could not judge.
 import path from 'node:path'
-import { hostProcfs } from '../host/procfs.mjs'
-import { hostLoadedVersionFiles } from '../host/loaded-version-files.mjs'
+import { hostProcfs } from '../procfs.mjs'
+import { hostLoadedVersionFiles } from './files.mjs'
 import { UnjudgeableError, assertInspectable, errorCode, readCensus, realUid } from './census.mjs'
 import { inspectSession } from './session.mjs'
 
