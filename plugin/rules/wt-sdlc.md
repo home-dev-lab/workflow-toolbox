@@ -6,6 +6,8 @@ first edit; otherwise the work and its review are invisible.
 
 Its act-bound half is `wt-sdlc-at-act.md`, loaded alongside this file or served on demand where
 an engine is installed.
+- Served at act, before the first edit, agent spawn or review skill: **Revise only blocking critic findings**.
+- Served at act, before the first edit, agent spawn or review skill: **Proportionality**.
 
 **UNDERSTAND → PLAN → TASK → TEST → IMPLEMENT → VERIFY → INDEPENDENT REVIEW → INDEPENDENT
 REFUTATION → IMPLEMENTER DECISION → REVERIFY → E2E → REPORT.**
@@ -33,28 +35,12 @@ Run the applicable build, type, lint, format, test, integration, static-analysis
 checks. Record each by exit code. Never claim a check passed unless it ran; an unrunnable check
 remains explicitly unresolved. Warnings introduced by the change are failures unless justified.
 
-## Revise only blocking critic findings
-
-Revise only for the blocking findings. Keep every previously accepted part unchanged. Do not
-restart the plan from scratch. For each blocking finding, state what changed.
-
 ## E2E
 
 Every brief carries the e2e in its definition of done. Every card where an end-to-end check is
 possible gets one that runs against real data and real sources, is repeatable with a script or
 written procedure, and has its output pasted verbatim into the report. A delivery without the
 required output says `e2e not run` with a reason instead of being presented as ready.
-
-## Proportionality
-
-| Change range | Required judgment shape |
-| --- | --- |
-| Feature, production logic, or high risk | Full five-lens review plus independent refuter |
-| Follow-up implementing an approved finding | One targeted independent verifier, or the arbiter's diff-read plus gates, stated explicitly |
-| Test-only or docs-only | Diff-read plus gates; no agents |
-
-Classify mechanically, not by feel: the lightweight range requires at most three files, at most
-one hundred lines, no untested caller, and no risk category. Otherwise use the higher range.
 
 ## Final report
 
