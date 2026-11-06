@@ -29,7 +29,7 @@ function descriptorTargets(procfs, pid) {
 
 const isProfile = (dir, files) => lookup(() => files.isDirectory(path.join(dir, 'plugins', 'cache')), `stat of ${dir}/plugins/cache failed`)
 
-export function attribution(procfs, pid, files) {
+function attribution(procfs, pid, files) {
   const targets = descriptorTargets(procfs, pid)
   const ids = [...new Set(targets.map(target => SESSION_ID.exec(target)?.[1]).filter(Boolean))]
   const profiles = [...new Set(targets)]
@@ -39,7 +39,7 @@ export function attribution(procfs, pid, files) {
 }
 
 // `<profile>/plugins/cache/<marketplace>/<plugin>/<version>[/...]` -> the version root, never the rest.
-export function matchModule(file, plugin) {
+function matchModule(file, plugin) {
   const parts = file.split('/')
   for (let i = 1; i + 4 < parts.length; i += 1) {
     if (parts[i] !== 'plugins' || parts[i + 1] !== 'cache' || parts[i + 3] !== plugin) continue
@@ -71,7 +71,7 @@ function exitedOrEmpty(procfs, pid) {
 }
 
 // The plugin modules one process loads; null when the process exited mid-scan.
-export function processModules(procfs, pid, plugin, files) {
+function processModules(procfs, pid, plugin, files) {
   const raw = readLive(procfs, pid, () => procfs.readCommandLine(pid, 'utf8'), `command line of pid ${pid} unreadable`)
   if (raw === null) return null
   if (raw === '') return exitedOrEmpty(procfs, pid)
