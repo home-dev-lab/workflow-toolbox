@@ -670,6 +670,60 @@ it.each(['returned', 'readback', 'conflict', 'readback-error'])('lifecycle routi
   expect(calls.some((call) => call.arguments.cardId === '1')).toBe(false)
 })
 
+// Planka MCP result texts measured on the live server: add_label_to_card answers success in plain text
+// ("Label <labelId> added to card <cardId>"), and every request failure, a duplicate label included, as an isError
+// text "Request failed with status code <n>" (get_card on a missing card answers "... status code 404"); create_card
+// answers JSON.
+const MISSING_CARD = { isError: true, content: [{ type: 'text', text: 'Request failed with status code 404' }] }
+function plainTextLabelBoard(failures: Record<string, number>, readBackMissing = false) {
+  const attempted: string[] = []
+  const fetch = async (_url: string, options: { body: string }) => {
+    const wire = JSON.parse(options.body)
+    let result: unknown = {}
+    if (wire.method === 'tools/call' && wire.params.name === 'create_card') {
+      const created = readBackMissing ? { id: '77' } : { id: '77', description: wire.params.arguments.description }
+      result = { content: [{ type: 'text', text: JSON.stringify(created) }] }
+    } else if (wire.method === 'tools/call' && wire.params.name === 'get_card') {
+      result = MISSING_CARD
+    } else if (wire.method === 'tools/call' && wire.params.name === 'add_label_to_card') {
+      const { cardId, labelId } = wire.params.arguments
+      attempted.push(labelId)
+      const status = failures[labelId]
+      result = status
+        ? { isError: true, content: [{ type: 'text', text: `Request failed with status code ${status}` }] }
+        : { content: [{ type: 'text', text: `Label ${labelId} added to card ${cardId}` }] }
+    }
+    return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: wire.id, result }) }
+  }
+  return { attempted, board: createBoardClient({ url: 'http://mock-transport', boardId: 'board', fetch }) }
+}
+
+it('lifecycle routing through the real board client records the card when labels answer in plain text or fail', async () => {
+  const { attempted, board } = plainTextLabelBoard({ chore: 409, m: 500 })
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, routeFinding: board.createRoutedCard })
+  expect(await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })))
+    .toBe('routed card 77 — Recovery (label failure: add_label_to_card m: board unavailable: Request failed with status code 500)')
+  expect(attempted).toEqual(['p1', 'chore', 'm', 'project'])
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toEqual([{
+    id: '77', title: 'Recovery', l4Reason: 'different subsystem', dependencyVerified: true,
+    failure: 'add_label_to_card m: board unavailable: Request failed with status code 500',
+  }])
+})
+
+it('lifecycle routing through the real board client keeps the card and the server text when the read-back answers 404', async () => {
+  const { attempted, board } = plainTextLabelBoard({}, true)
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, routeFinding: board.createRoutedCard })
+  const reason = 'created card 77 read-back failed: board unavailable: Request failed with status code 404; do not retry creation'
+  expect(await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })))
+    .toBe(`routed card 77 — Recovery (dependency unverified: ${reason})`)
+  expect(attempted).toEqual(['p1', 'chore', 'm', 'project'])
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toEqual([{ id: '77', title: 'Recovery', l4Reason: 'different subsystem', dependencyVerified: false, dependencyVerificationReason: reason }])
+})
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
