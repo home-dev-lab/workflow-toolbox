@@ -50,6 +50,7 @@ export function createProcfs({
     readMaps: (pid, ...args) => invoke(readFile, [String(pid), 'maps'], args),
     readMountInfo: (...args) => invoke(readFile, ['self', 'mountinfo'], args),
     readPidNamespace: (pid = 'self', ...args) => invoke(readlink, [String(pid), 'ns', 'pid'], args),
+    readSelfLink: (...args) => invoke(readlink, ['self'], args),
     resolveWorkingDirectory: (pid, ...args) => invoke(realpath, [String(pid), 'cwd'], args),
     listDescriptors: (pid, ...args) => invoke(readdir, [String(pid), 'fd'], args),
     readDescriptorTarget: (pid, fd, ...args) => invoke(readlink, [String(pid), 'fd', String(fd)], args),

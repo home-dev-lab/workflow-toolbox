@@ -232,5 +232,14 @@ export default tseslint.config(
       'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
     },
   },
+  {
+    files: ['plugin/bin/lib/host/loaded-version/**/*.mjs', '../plugin/bin/lib/host/loaded-version/**/*.mjs',
+      'plugin/bin/wt-loaded-version.mjs', '../plugin/bin/wt-loaded-version.mjs',
+      'test-support/loaded-version-*.mjs', 'packages/build/test/loaded-version*.test.ts'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+    },
+  },
   { ...gitIgnores },
 )
