@@ -1924,7 +1924,7 @@ ${request.renderClaim(request.claim)}`;
     const planOut = await agentWithSchemaSalvage(rt, planPrompt, planOpts);
     agentsSpawned += planOut.spawns;
     for (const message of planOut.warnings) warn(rt, warnings, `${STAGE3}: ${message}`);
-    const plan = planOut.value;
+    const plan2 = planOut.value;
     const pushPlanSalvageRecord = () => {
       if (planOut.salvageAttempted) {
         trail.push(makeRecord(`${planStage}:salvage`, planOut.salvaged, {
@@ -1933,7 +1933,7 @@ ${request.renderClaim(request.claim)}`;
         }));
       }
     };
-    if (plan === null) {
+    if (plan2 === null) {
       warn(rt, warnings, "planAndExecute: planner returned null \u2014 nothing executed");
       trail.push(makeRecord(planStage, false, {
         ...planModel !== void 0 ? { model: planModel } : {},
@@ -1950,7 +1950,7 @@ ${request.renderClaim(request.claim)}`;
       emitDigest(rt, { stage: STAGE3, ...phase !== void 0 ? { phase } : {}, output: "synthesis: none", counts: { planned: 0, executed: 0, dropped: 0, truncated: 0 } });
       return { value: null, stats: stats2, warnings, workerResults: [], trail };
     }
-    const plannedSubtasks = plan.subtasks;
+    const plannedSubtasks = plan2.subtasks;
     const plannedCount = plannedSubtasks.length;
     const { kept: keptSubtasks, truncated } = applyCap(plannedSubtasks, maxSubtasks);
     if (truncated > 0) {
@@ -2174,7 +2174,7 @@ ${request.renderClaim(request.claim)}`;
     required: ["tasks"],
     additionalProperties: false
   };
-  var PLAN_ARTIFACT_SCHEMA = {
+  var SYNTHESIZED_PLAN_SCHEMA = {
     type: "object",
     properties: {
       goal: { type: "string", maxLength: 8e3 },
@@ -2238,6 +2238,29 @@ ${request.renderClaim(request.claim)}`;
     },
     required: ["goal", "context", "tasks", "risks", "outOfScope"],
     additionalProperties: false
+  };
+  var PLAN_ARTIFACT_SCHEMA = {
+    ...SYNTHESIZED_PLAN_SCHEMA,
+    properties: {
+      ...SYNTHESIZED_PLAN_SCHEMA.properties,
+      rejected: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            files: { type: "array", items: { type: "string" } },
+            verdict: { type: "string" },
+            // The refuting verifiers' reasons, joined: a human arbitrates each
+            // rejection, and a title alone does not say whether it was right.
+            reason: { type: "string" }
+          },
+          required: ["title", "files", "verdict", "reason"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: [...SYNTHESIZED_PLAN_SCHEMA.required, "rejected"]
   };
   var SNIPPET_RENDER_CAP = 3e3;
   function capSnippet(snippet) {
@@ -2379,7 +2402,40 @@ ${request.renderClaim(request.claim)}`;
       }
     }
   }
-  async function run(rt, input) {
+  function unacceptedTaskDetail(vt) {
+    const reason = vt.verdict === "refuted" ? vt.votes.flatMap((v) => v !== null && v.verdict === "refuted" ? [v.reason] : []).join("; ") : vt.votes.flatMap((v) => v !== null ? [`${v.verdict}: ${v.reason}`] : []).join("; ") || vt.verdict;
+    return `${vt.claim.title} \u2014 files: ${vt.claim.files.map((f) => f.path).join(", ")} \u2014 ${vt.verdict}: ${reason}`;
+  }
+  function hasAcceptingVote(vt) {
+    return (vt.verdict === "confirmed" || vt.verdict === "partially-confirmed") && vt.votes.some((v) => v !== null && (v.verdict === "confirmed" || v.verdict === "partially-confirmed"));
+  }
+  function requireAcceptedTask(verifiedTasks, candidateCount) {
+    if (verifiedTasks.some(hasAcceptingVote)) return;
+    const details = candidateCount === 0 ? "Plan phase produced no candidate tasks." : verifiedTasks.map(unacceptedTaskDetail).join("\n");
+    throw new Error(
+      `dev-plan: 0 of ${candidateCount} candidate tasks accepted. No plan is emitted.
+${details}
+Amend the goal using these reasons and run again; resumeFromRunId replays the same verdicts and stops again.`
+    );
+  }
+  function critiqueSurvivors(verifiedTasks, rejected, candidateCount) {
+    const keptTasks = [];
+    for (const vt of verifiedTasks) {
+      if (vt.verdict === "refuted") {
+        rejected.push({
+          title: vt.claim.title,
+          files: vt.claim.files.map((f) => f.path),
+          verdict: vt.verdict,
+          reason: vt.votes.flatMap((v) => v !== null && v.verdict === "refuted" ? [v.reason] : []).join("; ")
+        });
+      } else {
+        keptTasks.push(vt.claim);
+      }
+    }
+    requireAcceptedTask(verifiedTasks, candidateCount);
+    return keptTasks;
+  }
+  function resolvePlanSettings(input) {
     const agentType = (role, current) => input.agentTypes?.[role] ?? input.defaultAgentType ?? current;
     const roleTypes = {
       discoverTask: agentType("discoverTask"),
@@ -2390,8 +2446,6 @@ ${request.renderClaim(request.claim)}`;
       critique: agentType("critique", input.verifierType),
       synthesize: agentType("synthesize")
     };
-    const warnings = [];
-    const stats = {};
     const discoverTaskEffort = resolveEffort(input.effort?.["discoverTask"], DISCOVER_TASK_EFFORT);
     const discoverSynthesisEffort = resolveEffort(input.effort?.["discoverSynthesis"], DISCOVER_SYNTHESIS_EFFORT);
     const planEffort = resolveEffort(input.effort?.["plan"], PLAN_EFFORT);
@@ -2399,8 +2453,21 @@ ${request.renderClaim(request.claim)}`;
     const planSynthesisEffort = resolveEffort(input.effort?.["planSynthesis"], PLAN_SYNTHESIS_EFFORT);
     const critiqueEffort = resolveVerifierEffort(input.effort?.["critique"], CRITIQUE_EFFORT_DEFAULT);
     const synthesizeEffort = resolveEffort(input.effort?.["synthesize"], SYNTHESIZE_EFFORT);
+    return {
+      roleTypes,
+      discoverTaskEffort,
+      discoverSynthesisEffort,
+      planEffort,
+      planWorkEffort,
+      planSynthesisEffort,
+      critiqueEffort,
+      synthesizeEffort
+    };
+  }
+  function discover(rt, input, settings) {
+    const { roleTypes, discoverTaskEffort, discoverSynthesisEffort } = settings;
     rt.phase("Discover");
-    const discoverResult = await fanOutAndSynthesize(rt, {
+    return fanOutAndSynthesize(rt, {
       tasks: input.areas,
       taskPrompt: (area) => `Explore this repository area to ground a development plan.
 Goal: ${input.goal}
@@ -2422,8 +2489,12 @@ Return { "testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "con
       ...roleTypes.discoverSynthesis !== void 0 ? { synthesisType: roleTypes.discoverSynthesis } : {},
       phase: "Discover"
     });
-    for (const w of discoverResult.warnings) warnings.push(w);
-    stats["discover"] = discoverResult.stats;
+  }
+  function collectPhaseStats(result, phase, warnings, stats) {
+    for (const w of result.warnings) warnings.push(w);
+    stats[phase] = result.stats;
+  }
+  function discoveredContext(rt, discoverResult, warnings) {
     if (discoverResult.value === null) {
       warn(
         rt,
@@ -2431,14 +2502,17 @@ Return { "testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "con
         "Discover phase produced no consolidated context (synthesis dropped) \u2014 planning continues with an EMPTY context; expect a weaker artifact"
       );
     }
-    const context = discoverResult.value ?? {
+    return discoverResult.value ?? {
       testCommand: "",
       buildCommand: "",
       conventions: "",
       repoBrief: ""
     };
+  }
+  function plan(rt, input, context, settings) {
+    const { roleTypes, planEffort, planWorkEffort, planSynthesisEffort } = settings;
     rt.phase("Plan");
-    const planResult = await planAndExecute(rt, {
+    return planAndExecute(rt, {
       planPrompt: `Decompose the development goal into independent implementation subtasks.
 Goal: ${input.goal}
 Project brief: ${context.repoBrief}
@@ -2447,7 +2521,23 @@ Each subtask must be one coherent unit of work a single developer could TDD in i
 Return { "subtasks": [{ "description": "<subtask description>" }] }`,
       planEffort,
       ...roleTypes.plan !== void 0 ? { planType: roleTypes.plan } : {},
-      workerPrompt: (subtask) => `Detail the implementation task: ${subtask.description}
+      workerPrompt: (subtask) => planWorkerPrompt(subtask, input, context),
+      workerSchema: CANDIDATE_TASKS_SCHEMA,
+      workerEffort: planWorkEffort,
+      ...roleTypes.planWork !== void 0 ? { workerType: roleTypes.planWork } : {},
+      // Draft consumers need task records, with navigation snippets stripped.
+      synthesisPrompt: (results) => `Compose a short draft plan narrative from these candidate implementation tasks.
+Goal: ${input.goal}
+Candidate tasks: ${JSON.stringify(results.map((r) => ({ tasks: r.tasks.map((t) => taskForPrompt(t, false)) })))}
+Plain text. This is a working note for the final synthesis, not the artifact.`,
+      synthesisEffort: planSynthesisEffort,
+      ...roleTypes.planSynthesis !== void 0 ? { synthesisType: roleTypes.planSynthesis } : {},
+      maxSubtasks: 8,
+      phase: "Plan"
+    });
+  }
+  function planWorkerPrompt(subtask, input, context) {
+    return `Detail the implementation task: ${subtask.description}
 Goal: ${input.goal}
 Project brief: ${context.repoBrief}
 Conventions: ${context.conventions}
@@ -2461,30 +2551,10 @@ BEFORE committing to an approach for this task, ENUMERATE the plausible alternat
 - risk: "low" ONLY for an isolated change (a new file or a single-file edit with no public API or cross-module contract); "medium" or "high" otherwise. Risk decides how much independent scrutiny the task gets in the Critique phase \u2014 understating it ships unverified mistakes into the plan, so when unsure pick the higher value.
 - snippet: quote VERBATIM the most load-bearing existing code this task will modify (the function or call site it changes), copied from the file, plus a precise file + line-range location (e.g. "src/cli.ts:12-24"); empty string ONLY when the task creates new code and no relevant existing code exists
 - alternativesConsidered: the plausible alternative routes you ENUMERATED for THIS task before picking one, each as { "route", "killReason" } \u2014 the one-line reason it lost. Fill it with the REAL runners-up, not filler: at least one entry whenever the task has a genuine choice surface (more than one plausible way to do it). An empty array is allowed ONLY when there is truly no plausible alternative route to this task's approach \u2014 in that case say so explicitly in intent or contracts, do not just leave it silently empty. "More effort/work" is NEVER a valid killReason on its own: when routes differ mainly in effort versus long-term robustness, simplicity or maintainability, the MORE ROBUST route is the default and effort alone never kills it \u2014 pair an effort observation with a concrete robustness/risk/simplicity reason or drop it as a kill reason.
-Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": ["<criterion>"], "risk": "<low|medium|high>", "snippet", "alternativesConsidered": [{ "route", "killReason" }] }] }`,
-      workerSchema: CANDIDATE_TASKS_SCHEMA,
-      workerEffort: planWorkEffort,
-      ...roleTypes.planWork !== void 0 ? { workerType: roleTypes.planWork } : {},
-      // Draft-narrative synthesis is a checker-style consumer: it needs the task
-      // list, not navigation — snippets are STRIPPED (withSnippet=false), which
-      // is also this path's cap (no snippet text can reach the prompt at all).
-      synthesisPrompt: (results) => `Compose a short draft plan narrative from these candidate implementation tasks.
-Goal: ${input.goal}
-Candidate tasks: ${JSON.stringify(results.map((r) => ({ tasks: r.tasks.map((t) => taskForPrompt(t, false)) })))}
-Plain text. This is a working note for the final synthesis, not the artifact.`,
-      synthesisEffort: planSynthesisEffort,
-      ...roleTypes.planSynthesis !== void 0 ? { synthesisType: roleTypes.planSynthesis } : {},
-      maxSubtasks: 8,
-      phase: "Plan"
-    });
-    for (const w of planResult.warnings) warnings.push(w);
-    stats["plan"] = planResult.stats;
-    const candidateTasks = planResult.workerResults.flatMap((r) => r.tasks);
-    rt.phase("Critique");
-    let verifiedTasks = [];
-    const rejected = [];
-    let critiqueResult = null;
-    const isIsolatedLowRisk = (task) => task.risk === "low" && task.files.length <= 1;
+Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": ["<criterion>"], "risk": "<low|medium|high>", "snippet", "alternativesConsidered": [{ "route", "killReason" }] }] }`;
+  }
+  var isIsolatedLowRisk = (task) => task.risk === "low" && task.files.length <= 1;
+  function warnCandidateRisk(rt, candidateTasks, warnings) {
     const flooredCount = candidateTasks.filter(
       (t) => t.risk === "low" && !isIsolatedLowRisk(t)
     ).length;
@@ -2503,6 +2573,8 @@ Plain text. This is a working note for the final synthesis, not the artifact.`,
         `${selfRatedLow} of ${candidateTasks.length} candidate tasks self-rate risk "low" \u2014 an implausibly high fraction; the self-assessed risk gates verification scrutiny, so treat this plan with suspicion`
       );
     }
+  }
+  function warnCandidateEvidence(rt, candidateTasks, warnings) {
     const emptySnippetOnExisting = candidateTasks.filter(
       (t) => t.snippet === "" && t.files.some((f) => f.status === "existing")
     ).length;
@@ -2523,10 +2595,12 @@ Plain text. This is a working note for the final synthesis, not the artifact.`,
         `${emptyAlternatives} of ${candidateTasks.length} candidate tasks carry an empty "alternativesConsidered" \u2014 an implausibly high fraction; the contract allows an empty array ONLY for a task with no plausible alternative route, so the enumeration-then-choice lever is probably being skipped \u2014 treat the plan's route choices with suspicion`
       );
     }
-    if (candidateTasks.length > 0) {
-      critiqueResult = await adversarialVerification(rt, {
-        claims: candidateTasks,
-        renderClaim: (task) => `Plan task claim: "${task.title}"
+  }
+  function critique(rt, candidateTasks, settings) {
+    const { roleTypes, critiqueEffort } = settings;
+    return adversarialVerification(rt, {
+      claims: candidateTasks,
+      renderClaim: (task) => `Plan task claim: "${task.title}"
 Intent: ${task.intent}
 Files: ${JSON.stringify(task.files)}
 Contracts: ${task.contracts}
@@ -2540,41 +2614,28 @@ IMPORTANT: Do NOT trust this task record. The quoted snippet (when present) is p
 (3) each done criterion is concretely checkable (a test or an inspectable fact);
 (4) each killReason in alternativesConsidered is a substantive reason, never bare "more effort/work" alone, and no plausible alternative route was left out \u2014 refute the task if a killReason is effort-only or a real alternative route is missing.
 Refute the task if any claim is wrong.`,
-        // Risk-aware votes: a low-risk task gets 1 refute-first vote; medium/high
-        // keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
-        // The single-vote path additionally requires the STRUCTURAL isolation
-        // the "low" label claims (single file) — see the floor above.
-        votesPerClaim: (task) => isIsolatedLowRisk(task) ? 1 : 3,
-        maxVerifyClaims: 12,
-        effort: critiqueEffort,
-        ...roleTypes.critique !== void 0 ? { verifierType: roleTypes.critique } : {},
-        phase: "Critique"
-      });
-      for (const w of critiqueResult.warnings) warnings.push(w);
-      stats["critique"] = critiqueResult.stats;
-      verifiedTasks = critiqueResult.value;
-    } else {
-      warn(rt, warnings, "Plan phase produced no candidate tasks \u2014 Critique phase skipped");
-      emitDigest(rt, {
-        stage: "dev-plan:critique",
-        phase: "Critique",
-        output: "Plan phase produced no candidate tasks \u2014 Critique skipped",
-        counts: { candidates: 0 }
-      });
-    }
-    const keptTasks = [];
-    for (const vt of verifiedTasks) {
-      if (vt.verdict === "refuted") {
-        rejected.push({
-          title: vt.claim.title,
-          files: vt.claim.files.map((f) => f.path),
-          verdict: vt.verdict,
-          reason: vt.votes.flatMap((v) => v !== null && v.verdict === "refuted" ? [v.reason] : []).join("; ")
-        });
-      } else {
-        keptTasks.push(vt.claim);
-      }
-    }
+      // Risk-aware votes: a low-risk task gets 1 refute-first vote; medium/high
+      // keep the full 2-of-3 quorum (effectiveThreshold = min(2, claimVotes)).
+      // The single-vote path additionally requires the STRUCTURAL isolation
+      // the "low" label claims (single file) — see the floor above.
+      votesPerClaim: (task) => isIsolatedLowRisk(task) ? 1 : 3,
+      maxVerifyClaims: 12,
+      effort: critiqueEffort,
+      ...roleTypes.critique !== void 0 ? { verifierType: roleTypes.critique } : {},
+      phase: "Critique"
+    });
+  }
+  function skipCritique(rt, warnings) {
+    warn(rt, warnings, "Plan phase produced no candidate tasks \u2014 Critique phase skipped");
+    emitDigest(rt, {
+      stage: "dev-plan:critique",
+      phase: "Critique",
+      output: "Plan phase produced no candidate tasks \u2014 Critique skipped",
+      counts: { candidates: 0 }
+    });
+  }
+  function synthesize(rt, input, context, keptTasks, planResult, settings) {
+    const { roleTypes, synthesizeEffort } = settings;
     rt.phase("Synthesize");
     const synthesizePrompt = `Produce the final PlanArtifact from these verified implementation tasks.
 Goal: ${input.goal}
@@ -2588,20 +2649,32 @@ Echo each task's "snippet" UNCHANGED from its kept task (it is the downstream im
 Echo each task's "alternativesConsidered" UNCHANGED from its kept task (the runners-up and kill reasons the planner weighed \u2014 the human reviewer must see them, not just the pick).
 OUTPUT BUDGET (hard): the complete JSON is ONE model response and must stay comfortably under the output-token cap \u2014 write "intent", "contracts" and "testPlan" as terse engineering prose (a few sentences each), reference repo locations as path:line instead of restating file contents, and NEVER inline file bodies beyond the echoed "snippet".
 Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conventions" }, "tasks": [{ "id", "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": [], "snippet", "alternativesConsidered": [{ "route", "killReason" }], "dependsOn": [] }], "risks": [], "outOfScope": [] }`;
-    const synthesized = await rt.agent(synthesizePrompt, {
-      schema: PLAN_ARTIFACT_SCHEMA,
+    return rt.agent(synthesizePrompt, {
+      schema: SYNTHESIZED_PLAN_SCHEMA,
       label: "dev-plan:synthesize",
       phase: "Synthesize",
       effort: synthesizeEffort,
       ...roleTypes.synthesize !== void 0 ? { agentType: roleTypes.synthesize } : {}
     });
+  }
+  function finalizeArtifact(rt, input, synthesized, rejected, warnings) {
     if (synthesized === null) {
       throw new Error(
         "dev-plan: final PlanArtifact synthesis failed \u2014 the synthesis agent died. Use resumeFromRunId to retry from the Synthesize phase (all prior work is cached)."
       );
     }
     validateArtifact(synthesized);
-    const normalizedTasks = synthesized.tasks.map((task) => {
+    const normalizedTasks = normalizePlanTasks(rt, input, synthesized, warnings);
+    return {
+      ...synthesized,
+      goal: input.goal,
+      context: { ...synthesized.context, projectDir: input.projectDir },
+      tasks: normalizedTasks,
+      rejected
+    };
+  }
+  function normalizePlanTasks(rt, input, synthesized, warnings) {
+    return synthesized.tasks.map((task) => {
       let changed = false;
       const files = task.files.map((file) => {
         if (!file.path.startsWith("/")) return file;
@@ -2620,12 +2693,33 @@ Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conv
       });
       return changed ? { ...task, files } : task;
     });
-    const artifact = {
-      ...synthesized,
-      goal: input.goal,
-      context: { ...synthesized.context, projectDir: input.projectDir },
-      tasks: normalizedTasks
-    };
+  }
+  async function run(rt, input) {
+    const settings = resolvePlanSettings(input);
+    const warnings = [];
+    const stats = {};
+    const discoverResult = await discover(rt, input, settings);
+    collectPhaseStats(discoverResult, "discover", warnings, stats);
+    const context = discoveredContext(rt, discoverResult, warnings);
+    const planResult = await plan(rt, input, context, settings);
+    collectPhaseStats(planResult, "plan", warnings, stats);
+    const candidateTasks = planResult.workerResults.flatMap((r) => r.tasks);
+    rt.phase("Critique");
+    let verifiedTasks = [];
+    const rejected = [];
+    let critiqueResult = null;
+    warnCandidateRisk(rt, candidateTasks, warnings);
+    warnCandidateEvidence(rt, candidateTasks, warnings);
+    if (candidateTasks.length > 0) {
+      critiqueResult = await critique(rt, candidateTasks, settings);
+      collectPhaseStats(critiqueResult, "critique", warnings, stats);
+      verifiedTasks = critiqueResult.value;
+    } else {
+      skipCritique(rt, warnings);
+    }
+    const keptTasks = critiqueSurvivors(verifiedTasks, rejected, candidateTasks.length);
+    const synthesized = await synthesize(rt, input, context, keptTasks, planResult, settings);
+    const artifact = finalizeArtifact(rt, input, synthesized, rejected, warnings);
     return { artifact, rejected, stats, envelope: { trail: collectTrail(discoverResult, planResult, critiqueResult) }, warnings };
   }
   var dev_plan_workflow_default = defineWorkflow({

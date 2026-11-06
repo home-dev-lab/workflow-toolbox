@@ -514,6 +514,22 @@ describe('dev-full happy chain', () => {
 // Gates — every abort RETURNS (never throws after the first child call)
 // ---------------------------------------------------------------------------
 
+describe('dev-full zero-survivor plan child', () => {
+  it('aborts at plan preserving all rejection details and never calls implementation', async () => {
+    const reasons = ['Validation helper: already implemented', 'CLI wiring: contract is incorrect']
+    const message = `dev-plan: 0 of 2 candidate tasks accepted. No plan is emitted. ${reasons.join('; ')}`
+    const { rt, calls } = makeRuntime({ plan: () => { throw new Error(message) } })
+    const out = await run(rt, VALID_INPUT)
+    expect(out.outcome).toBe('aborted-at-plan')
+    expect(out.reason).toContain(message)
+    for (const reason of reasons) expect(out.reason).toContain(reason)
+    expect(out.plan).toBeNull()
+    expect(out.implement).toBeNull()
+    expect(out.review).toBeNull()
+    expect(calls.implement).toHaveLength(0)
+  })
+})
+
 describe('dev-full gates', () => {
   it('aborts at plan when the plan child rejects, preserving the error text', async () => {
     const { rt, calls } = makeRuntime({
