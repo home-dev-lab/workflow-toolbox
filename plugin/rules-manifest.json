@@ -46,7 +46,7 @@
       ]
     },
     {
-      "source": "rules/wt-sdlc.md",
+      "source": "rules/wt-sdlc-at-act.md",
       "heading": "## Revise only blocking critic findings",
       "recipients": [
         "pilot"

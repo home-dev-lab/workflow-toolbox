@@ -37,6 +37,22 @@ the other project itself.
 Observe an assumption about the host before building anything on it; treat the observation as
 evidence, not the assumption as a premise.
 
+## Revise only blocking critic findings
+
+Revise only for the blocking findings. Keep every previously accepted part unchanged. Do not
+restart the plan from scratch. For each blocking finding, state what changed.
+
+## Proportionality
+
+| Change range | Required judgment shape |
+| --- | --- |
+| Feature, production logic, or high risk | Full five-lens review plus independent refuter |
+| Follow-up implementing an approved finding | One targeted independent verifier, or the arbiter's diff-read plus gates, stated explicitly |
+| Test-only or docs-only | Diff-read plus gates; no agents |
+
+Classify mechanically, not by feel: the lightweight range requires at most three files, at most
+one hundred lines, no untested caller, and no risk category. Otherwise use the higher range.
+
 ## Independent review and refutation
 
 **implementer → independent reviewer(s) → independent refuter → implementer.** The implementer
