@@ -23,6 +23,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Quota watch help names the five-hour window as optional and says each window is watched
+  on its own, matching plans whose only bound is the seven-day window.
 - External lanes default `pnpm_config_verify_deps_before_run=false` through the worker and sandboxed child environment, preserving explicit caller overrides. Launches warn when a brief names only the ineffective `npm_config_verify_deps_before_run` spelling, with the exact pnpm variable to use.
 - The delegated-arc watch no longer reports a normally finished sub-agent as STALE when harness records (SubagentStop hook attachments, request bookkeeping, system records) follow its final end_turn; it now skips every non-conversational trailing record instead of only observer heartbeats.
 - Lane launch admission now uses FIFO waiting without a default burst deadline, recovers dead
