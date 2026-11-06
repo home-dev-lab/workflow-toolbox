@@ -220,7 +220,7 @@ const CANDIDATE_TASKS_SCHEMA = {
 type CandidateTasksOutput = FromSchema<typeof CANDIDATE_TASKS_SCHEMA>
 type CandidateTask = CandidateTasksOutput['tasks'][number]
 
-// Schema for the final PlanArtifact (Synthesize phase) — the L3 handoff contract.
+// Model schema for the Synthesize phase; the published handoff adds provenance below.
 // Output bounds (maxLength/maxItems on THIS schema only): the synthesize agent emits
 // the COMPLETE artifact as one API response, so unbounded prose fields let a rich
 // plan overrun the hard output-token cap (observed live — the run dies at the last
@@ -235,8 +235,8 @@ type CandidateTask = CandidateTasksOutput['tasks'][number]
 // INLINE here (never on the shared items consts, per the same resume-cache
 // reasoning) — `dependsOn`'s item schema is already inline (not shared), so its
 // string also gets a maxLength, matching sibling `id`'s bound (task ids).
-// Exported for the schema-bounds test in dev-plan.test.ts.
-export const PLAN_ARTIFACT_SCHEMA = {
+// The exported PLAN_ARTIFACT_SCHEMA below retains these bounds for contract tests.
+const SYNTHESIZED_PLAN_SCHEMA = {
   type: 'object',
   properties: {
     goal: { type: 'string', maxLength: 8000 },
@@ -294,7 +294,36 @@ export const PLAN_ARTIFACT_SCHEMA = {
   additionalProperties: false,
 } as const satisfies JsonSchema
 
-type PlanArtifact = FromSchema<typeof PLAN_ARTIFACT_SCHEMA>
+// The deterministic validator consumes the model's original PlanArtifact shape.
+type PlanArtifact = FromSchema<typeof SYNTHESIZED_PLAN_SCHEMA>
+
+// Published handoff: rejection provenance is code-owned, outside the model schema.
+export const PLAN_ARTIFACT_SCHEMA = {
+  ...SYNTHESIZED_PLAN_SCHEMA,
+  properties: {
+    ...SYNTHESIZED_PLAN_SCHEMA.properties,
+    rejected: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          files: { type: 'array', items: { type: 'string' } },
+          verdict: { type: 'string' },
+          // The refuting verifiers' reasons, joined: a human arbitrates each
+          // rejection, and a title alone does not say whether it was right.
+          reason: { type: 'string' },
+        },
+        required: ['title', 'files', 'verdict', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: [...SYNTHESIZED_PLAN_SCHEMA.required, 'rejected'],
+} as const satisfies JsonSchema
+
+type PublishedPlanArtifact = FromSchema<typeof PLAN_ARTIFACT_SCHEMA>
+type RejectedTask = PublishedPlanArtifact['rejected'][number]
 
 // ---------------------------------------------------------------------------
 // Snippet machinery (lever 1 — ported verbatim from dev-review-fix, the
@@ -378,18 +407,8 @@ const taskForPrompt = (task: CandidateTask, withSnippet: boolean): Record<string
 // Final workflow output
 // ---------------------------------------------------------------------------
 
-interface RejectedTask {
-  title: string
-  files: string[]
-  verdict: string
-  /** The refuting verifiers' reasons — the human arbitrates rejections, so the
-   *  WHY must survive into the output (live-run lesson: title alone is not
-   *  enough to decide whether a rejection was right). */
-  reason: string
-}
-
 interface DevPlanOutput {
-  artifact: PlanArtifact
+  artifact: PublishedPlanArtifact
   rejected: readonly RejectedTask[]
   /** Per-phase pattern envelope stats — kept typed so callers can calibrate
    *  budgets from real runs (arch §8: budgetFloor calibration). */
@@ -554,7 +573,52 @@ function validateArtifact(artifact: PlanArtifact): void {
 // Workflow body
 // ---------------------------------------------------------------------------
 
-async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOutput> {
+function unacceptedTaskDetail(vt: VerifiedClaim<CandidateTask>): string {
+  const reason = vt.verdict === 'refuted'
+    ? vt.votes.flatMap(v => v !== null && v.verdict === 'refuted' ? [v.reason] : []).join('; ')
+    : vt.votes.flatMap(v => v !== null ? [`${v.verdict}: ${v.reason}`] : []).join('; ') || vt.verdict
+  return `${vt.claim.title} — files: ${vt.claim.files.map(f => f.path).join(', ')} — ${vt.verdict}: ${reason}`
+}
+
+function hasAcceptingVote(vt: VerifiedClaim<CandidateTask>): boolean {
+  return (vt.verdict === 'confirmed' || vt.verdict === 'partially-confirmed') &&
+    vt.votes.some(v => v !== null && (v.verdict === 'confirmed' || v.verdict === 'partially-confirmed'))
+}
+
+function requireAcceptedTask(verifiedTasks: Array<VerifiedClaim<CandidateTask>>, candidateCount: number): void {
+  if (verifiedTasks.some(hasAcceptingVote)) return
+  const details = candidateCount === 0
+    ? 'Plan phase produced no candidate tasks.'
+    : verifiedTasks.map(unacceptedTaskDetail).join('\n')
+  throw new Error(
+    `dev-plan: 0 of ${candidateCount} candidate tasks accepted. No plan is emitted.\n${details}\n` +
+    'Amend the goal using these reasons and run again; resumeFromRunId replays the same verdicts and stops again.',
+  )
+}
+
+function critiqueSurvivors(
+  verifiedTasks: Array<VerifiedClaim<CandidateTask>>, rejected: RejectedTask[], candidateCount: number,
+): CandidateTask[] {
+  const keptTasks: CandidateTask[] = []
+  for (const vt of verifiedTasks) {
+    if (vt.verdict === 'refuted') {
+      rejected.push({
+        title: vt.claim.title,
+        files: vt.claim.files.map((f) => f.path),
+        verdict: vt.verdict,
+        reason: vt.votes
+          .flatMap((v) => (v !== null && v.verdict === 'refuted' ? [v.reason] : []))
+          .join('; '),
+      })
+    } else {
+      keptTasks.push(vt.claim)
+    }
+  }
+  requireAcceptedTask(verifiedTasks, candidateCount)
+  return keptTasks
+}
+
+function resolvePlanSettings(input: DevPlanInput) {
   const agentType = (role: string, current?: string): string | undefined =>
     input.agentTypes?.[role] ?? input.defaultAgentType ?? current
   const roleTypes = {
@@ -566,8 +630,6 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     critique: agentType('critique', input.verifierType),
     synthesize: agentType('synthesize'),
   }
-  const warnings: string[] = []
-  const stats: Record<string, PatternStats> = {}
 
   // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
   // override wins when valid, else the stage-class default declared above.
@@ -579,6 +641,18 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
   const planSynthesisEffort = resolveEffort(input.effort?.['planSynthesis'], PLAN_SYNTHESIS_EFFORT)
   const critiqueEffort = resolveVerifierEffort(input.effort?.['critique'], CRITIQUE_EFFORT_DEFAULT)
   const synthesizeEffort = resolveEffort(input.effort?.['synthesize'], SYNTHESIZE_EFFORT)
+
+  return { roleTypes, discoverTaskEffort, discoverSynthesisEffort, planEffort, planWorkEffort,
+    planSynthesisEffort, critiqueEffort, synthesizeEffort }
+}
+
+type PlanSettings = ReturnType<typeof resolvePlanSettings>
+type DiscoverResult = Awaited<ReturnType<typeof fanOutAndSynthesize<string, DiscoveryOutput, ContextOutput>>>
+type PlanResult = Awaited<ReturnType<typeof planAndExecute<CandidateTasksOutput, string>>>
+type CritiqueResult = Awaited<ReturnType<typeof adversarialVerification<CandidateTask>>>
+
+function discover(rt: WorkflowRuntime, input: DevPlanInput, settings: PlanSettings) {
+  const { roleTypes, discoverTaskEffort, discoverSynthesisEffort } = settings
 
   // -------------------------------------------------------------------------
   // Phase 'Discover' — fanOutAndSynthesize
@@ -592,7 +666,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
 
   rt.phase('Discover')
 
-  const discoverResult = await fanOutAndSynthesize<string, DiscoveryOutput, ContextOutput>(rt, {
+  return fanOutAndSynthesize<string, DiscoveryOutput, ContextOutput>(rt, {
     tasks: input.areas,
     taskPrompt: (area) =>
       `Explore this repository area to ground a development plan.\n` +
@@ -627,10 +701,17 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     ...(roleTypes.discoverSynthesis !== undefined ? { synthesisType: roleTypes.discoverSynthesis } : {}),
     phase: 'Discover',
   })
+}
 
-  for (const w of discoverResult.warnings) warnings.push(w)
-  stats['discover'] = discoverResult.stats
+function collectPhaseStats(
+  result: { warnings: readonly string[]; stats: PatternStats }, phase: string,
+  warnings: string[], stats: Record<string, PatternStats>,
+): void {
+  for (const w of result.warnings) warnings.push(w)
+  stats[phase] = result.stats
+}
 
+function discoveredContext(rt: WorkflowRuntime, discoverResult: DiscoverResult, warnings: string[]): ContextOutput {
   // Total Discover failure must never be silently masked — degrade loudly.
   if (discoverResult.value === null) {
     warn(
@@ -640,13 +721,16 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
         'planning continues with an EMPTY context; expect a weaker artifact',
     )
   }
-  const context: ContextOutput = discoverResult.value ?? {
+  return discoverResult.value ?? {
     testCommand: '',
     buildCommand: '',
     conventions: '',
     repoBrief: '',
   }
+}
 
+function plan(rt: WorkflowRuntime, input: DevPlanInput, context: ContextOutput, settings: PlanSettings) {
+  const { roleTypes, planEffort, planWorkEffort, planSynthesisEffort } = settings
   // -------------------------------------------------------------------------
   // Phase 'Plan' — planAndExecute
   //
@@ -661,7 +745,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
 
   rt.phase('Plan')
 
-  const planResult = await planAndExecute<CandidateTasksOutput, string>(rt, {
+  return planAndExecute<CandidateTasksOutput, string>(rt, {
     planPrompt:
       `Decompose the development goal into independent implementation subtasks.\n` +
       `Goal: ${input.goal}\n` +
@@ -672,8 +756,25 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `Return { "subtasks": [{ "description": "<subtask description>" }] }`,
     planEffort,
     ...(roleTypes.plan !== undefined ? { planType: roleTypes.plan } : {}),
-    workerPrompt: (subtask) =>
-      `Detail the implementation task: ${subtask.description}\n` +
+    workerPrompt: (subtask) => planWorkerPrompt(subtask, input, context),
+    workerSchema: CANDIDATE_TASKS_SCHEMA,
+    workerEffort: planWorkEffort,
+    ...(roleTypes.planWork !== undefined ? { workerType: roleTypes.planWork } : {}),
+    // Draft consumers need task records, with navigation snippets stripped.
+    synthesisPrompt: (results) =>
+      `Compose a short draft plan narrative from these candidate implementation tasks.\n` +
+      `Goal: ${input.goal}\n` +
+      `Candidate tasks: ${JSON.stringify(results.map((r) => ({ tasks: r.tasks.map((t) => taskForPrompt(t, false)) })))}\n` +
+      `Plain text. This is a working note for the final synthesis, not the artifact.`,
+    synthesisEffort: planSynthesisEffort,
+    ...(roleTypes.planSynthesis !== undefined ? { synthesisType: roleTypes.planSynthesis } : {}),
+    maxSubtasks: 8,
+    phase: 'Plan',
+  })
+}
+
+function planWorkerPrompt(subtask: { description: string }, input: DevPlanInput, context: ContextOutput): string {
+  return `Detail the implementation task: ${subtask.description}\n` +
       `Goal: ${input.goal}\n` +
       `Project brief: ${context.repoBrief}\n` +
       `Conventions: ${context.conventions}\n` +
@@ -709,29 +810,13 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `drop it as a kill reason.\n` +
       `Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], ` +
       `"contracts", "testPlan", "doneCriteria": ["<criterion>"], "risk": "<low|medium|high>", ` +
-      `"snippet", "alternativesConsidered": [{ "route", "killReason" }] }] }`,
-    workerSchema: CANDIDATE_TASKS_SCHEMA,
-    workerEffort: planWorkEffort,
-    ...(roleTypes.planWork !== undefined ? { workerType: roleTypes.planWork } : {}),
-    // Draft-narrative synthesis is a checker-style consumer: it needs the task
-    // list, not navigation — snippets are STRIPPED (withSnippet=false), which
-    // is also this path's cap (no snippet text can reach the prompt at all).
-    synthesisPrompt: (results) =>
-      `Compose a short draft plan narrative from these candidate implementation tasks.\n` +
-      `Goal: ${input.goal}\n` +
-      `Candidate tasks: ${JSON.stringify(results.map((r) => ({ tasks: r.tasks.map((t) => taskForPrompt(t, false)) })))}\n` +
-      `Plain text. This is a working note for the final synthesis, not the artifact.`,
-    synthesisEffort: planSynthesisEffort,
-    ...(roleTypes.planSynthesis !== undefined ? { synthesisType: roleTypes.planSynthesis } : {}),
-    maxSubtasks: 8,
-    phase: 'Plan',
-  })
+      `"snippet", "alternativesConsidered": [{ "route", "killReason" }] }] }`
+}
 
-  for (const w of planResult.warnings) warnings.push(w)
-  stats['plan'] = planResult.stats
+const isIsolatedLowRisk = (task: CandidateTask): boolean =>
+  task.risk === 'low' && task.files.length <= 1
 
-  const candidateTasks: CandidateTask[] = planResult.workerResults.flatMap((r) => r.tasks)
-
+function warnCandidateRisk(rt: WorkflowRuntime, candidateTasks: CandidateTask[], warnings: string[]): void {
   // -------------------------------------------------------------------------
   // Phase 'Critique' — adversarialVerification
   //
@@ -741,14 +826,6 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
   // code — never trust the task record (fresh-evidence checker). Refuted tasks
   // are EXCLUDED from the artifact but REPORTED in rejected.
   // -------------------------------------------------------------------------
-
-  rt.phase('Critique')
-
-  let verifiedTasks: Array<VerifiedClaim<CandidateTask>> = []
-  const rejected: RejectedTask[] = []
-  // Hoisted so the final envelope.trail can fold it in — stays null (skipped,
-  // not fabricated) when Critique never ran (zero candidate tasks).
-  let critiqueResult: Awaited<ReturnType<typeof adversarialVerification<CandidateTask>>> | null = null
 
   // The risk label is SELF-assessed by the very worker whose task it gates
   // (it decides the verification vote budget below), so the prompt's
@@ -763,8 +840,6 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
   //  - implausibility warning — when >80% of a real plan's tasks self-rate
   //    "low" (4+ tasks, so one task cannot trip it), the cheap single-vote
   //    path is probably being gamed; the human should re-read the plan.
-  const isIsolatedLowRisk = (task: CandidateTask): boolean =>
-    task.risk === 'low' && task.files.length <= 1
   const flooredCount = candidateTasks.filter(
     (t) => t.risk === 'low' && !isIsolatedLowRisk(t),
   ).length
@@ -786,7 +861,9 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
         'so treat this plan with suspicion',
     )
   }
+}
 
+function warnCandidateEvidence(rt: WorkflowRuntime, candidateTasks: CandidateTask[], warnings: string[]): void {
   // The snippet contract allows '' ONLY when the task creates new code and no
   // relevant existing code exists. The schema can only enforce `type: string`,
   // and the Critique verifiers are never asked to refute a MISSING snippet —
@@ -832,9 +909,11 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
         'choices with suspicion',
     )
   }
+}
 
-  if (candidateTasks.length > 0) {
-    critiqueResult = await adversarialVerification<CandidateTask>(rt, {
+function critique(rt: WorkflowRuntime, candidateTasks: CandidateTask[], settings: PlanSettings) {
+  const { roleTypes, critiqueEffort } = settings
+  return adversarialVerification<CandidateTask>(rt, {
       claims: candidateTasks,
       renderClaim: (task) =>
         `Plan task claim: "${task.title}"\n` +
@@ -872,12 +951,10 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
         ? { verifierType: roleTypes.critique }
         : {}),
       phase: 'Critique',
-    })
+  })
+}
 
-    for (const w of critiqueResult.warnings) warnings.push(w)
-    stats['critique'] = critiqueResult.stats
-    verifiedTasks = critiqueResult.value
-  } else {
+function skipCritique(rt: WorkflowRuntime, warnings: string[]): void {
     warn(rt, warnings, 'Plan phase produced no candidate tasks — Critique phase skipped')
     // Tier-2 skip-digest: Critique is entered (rt.phase('Critique')) but
     // adversarialVerification never runs when there are zero candidate tasks
@@ -890,24 +967,13 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       output: 'Plan phase produced no candidate tasks — Critique skipped',
       counts: { candidates: 0 },
     })
-  }
+}
 
-  const keptTasks: CandidateTask[] = []
-  for (const vt of verifiedTasks) {
-    if (vt.verdict === 'refuted') {
-      rejected.push({
-        title: vt.claim.title,
-        files: vt.claim.files.map((f) => f.path),
-        verdict: vt.verdict,
-        reason: vt.votes
-          .flatMap((v) => (v !== null && v.verdict === 'refuted' ? [v.reason] : []))
-          .join('; '),
-      })
-    } else {
-      keptTasks.push(vt.claim)
-    }
-  }
-
+function synthesize(
+  rt: WorkflowRuntime, input: DevPlanInput, context: ContextOutput,
+  keptTasks: CandidateTask[], planResult: PlanResult, settings: PlanSettings,
+) {
+  const { roleTypes, synthesizeEffort } = settings
   // -------------------------------------------------------------------------
   // Phase 'Synthesize' — final PlanArtifact agent + deterministic validation.
   //
@@ -947,14 +1013,19 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     `"testPlan", "doneCriteria": [], "snippet", "alternativesConsidered": [{ "route", "killReason" }], ` +
     `"dependsOn": [] }], "risks": [], "outOfScope": [] }`
 
-  const synthesized = await rt.agent<PlanArtifact>(synthesizePrompt, {
-    schema: PLAN_ARTIFACT_SCHEMA,
+  return rt.agent<PlanArtifact>(synthesizePrompt, {
+    schema: SYNTHESIZED_PLAN_SCHEMA,
     label: 'dev-plan:synthesize',
     phase: 'Synthesize',
     effort: synthesizeEffort,
     ...(roleTypes.synthesize !== undefined ? { agentType: roleTypes.synthesize } : {}),
   })
+}
 
+function finalizeArtifact(
+  rt: WorkflowRuntime, input: DevPlanInput, synthesized: PlanArtifact | null,
+  rejected: RejectedTask[], warnings: string[],
+): PublishedPlanArtifact {
   if (synthesized === null) {
     throw new Error(
       'dev-plan: final PlanArtifact synthesis failed — the synthesis agent died. ' +
@@ -964,6 +1035,21 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
 
   validateArtifact(synthesized)
 
+  const normalizedTasks = normalizePlanTasks(rt, input, synthesized, warnings)
+
+  // Deterministic override: exact echo of goal/projectDir is code's job.
+  return {
+    ...synthesized,
+    goal: input.goal,
+    context: { ...synthesized.context, projectDir: input.projectDir },
+    tasks: normalizedTasks,
+    rejected,
+  }
+}
+
+function normalizePlanTasks(
+  rt: WorkflowRuntime, input: DevPlanInput, synthesized: PlanArtifact, warnings: string[],
+): PlanArtifact['tasks'] {
   // Path hygiene (POSIX): artifacts must be born with RELATIVE file paths —
   // dev-implement REJECTS unmappable absolutes at its parse boundary. Under an
   // absolute projectDir, absolute paths are relativized here (boundary-safe
@@ -971,7 +1057,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
   // cannot be mapped is KEPT but warned: this output goes to a human gate, and
   // discarding a full planning run over a path a human can edit would be worse
   // than surfacing it.
-  const normalizedTasks = synthesized.tasks.map((task) => {
+  return synthesized.tasks.map((task) => {
     let changed = false
     const files = task.files.map((file) => {
       if (!file.path.startsWith('/')) return file
@@ -995,15 +1081,34 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     })
     return changed ? { ...task, files } : task
   })
+}
 
-  // Deterministic override: exact echo of goal/projectDir is code's job.
-  const artifact: PlanArtifact = {
-    ...synthesized,
-    goal: input.goal,
-    context: { ...synthesized.context, projectDir: input.projectDir },
-    tasks: normalizedTasks,
+async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOutput> {
+  const settings = resolvePlanSettings(input)
+  const warnings: string[] = []
+  const stats: Record<string, PatternStats> = {}
+  const discoverResult = await discover(rt, input, settings)
+  collectPhaseStats(discoverResult, 'discover', warnings, stats)
+  const context = discoveredContext(rt, discoverResult, warnings)
+  const planResult = await plan(rt, input, context, settings)
+  collectPhaseStats(planResult, 'plan', warnings, stats)
+  const candidateTasks = planResult.workerResults.flatMap(r => r.tasks)
+  rt.phase('Critique')
+  let verifiedTasks: Array<VerifiedClaim<CandidateTask>> = []
+  const rejected: RejectedTask[] = []
+  let critiqueResult: CritiqueResult | null = null
+  warnCandidateRisk(rt, candidateTasks, warnings)
+  warnCandidateEvidence(rt, candidateTasks, warnings)
+  if (candidateTasks.length > 0) {
+    critiqueResult = await critique(rt, candidateTasks, settings)
+    collectPhaseStats(critiqueResult, 'critique', warnings, stats)
+    verifiedTasks = critiqueResult.value
+  } else {
+    skipCritique(rt, warnings)
   }
-
+  const keptTasks = critiqueSurvivors(verifiedTasks, rejected, candidateTasks.length)
+  const synthesized = await synthesize(rt, input, context, keptTasks, planResult, settings)
+  const artifact = finalizeArtifact(rt, input, synthesized, rejected, warnings)
   return { artifact, rejected, stats, envelope: { trail: collectTrail(discoverResult, planResult, critiqueResult) }, warnings }
 }
 
