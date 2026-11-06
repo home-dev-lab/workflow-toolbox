@@ -1006,10 +1006,10 @@ describe('quota-window-completeness: a reading is usable per window, never with 
 })
 
 // Card 1898619335555942069: its process-level regressions stay standalone `node --test` files; these
-// runners put all three under the gate (the window-state file had no runner before this merge).
+// runners put both under the gate (the window-state file had no runner before this merge). The
+// completeness selftest was removed: its assertions live in quota-window-completeness.test.ts.
 describe('wt-quota-watch.mjs: standalone window regressions under node --test', () => {
   it.each([
-    QUOTA_WINDOW_COMPLETENESS_LIB.replace('.mjs', '.selftest.mjs'),
     fileURLToPath(new URL('./quota-watch-windows.selftest.mjs', import.meta.url)),
     fileURLToPath(new URL('./quota-window-state.selftest.mjs', import.meta.url)),
   ])('%s passes', (script) => {
