@@ -3,7 +3,7 @@
 import path from 'node:path'
 import { hostProcfs } from '../host/procfs.mjs'
 import { hostLoadedVersionFiles } from '../host/loaded-version-files.mjs'
-import { UnjudgeableError, ancestors, assertInspectable, errorCode, readCensus, realUid } from './census.mjs'
+import { UnjudgeableError, assertInspectable, errorCode, readCensus, realUid } from './census.mjs'
 import { inspectSession } from './session.mjs'
 
 const PLUGIN_NAME = /^(?!\.{1,2}$)[A-Za-z0-9._-]+$/
@@ -37,18 +37,18 @@ function inProfiles(session, options) {
   return own.some(dir => options.profiles.includes(dir))
 }
 
-// A reader started from inside a Claude session must find that session in its own ancestry.
-function assertSeesOwnSession(census, options, sessionPids) {
-  if (options.env.CLAUDECODE !== '1') return
-  if (ancestors(census, options.selfPid).some(pid => sessionPids.includes(pid))) return
-  throw new UnjudgeableError('the reader runs inside a Claude session (CLAUDECODE=1) that the /proc census cannot see')
+// A reader launched from a Claude session (CLAUDECODE=1, inherited even by a detached job) that sees no
+// session at all is looking at a /proc that hides them (a fresh PID namespace): never read that as clean.
+function assertSeesSessions(options, sessionPids) {
+  if (options.env.CLAUDECODE !== '1' || sessionPids.length) return
+  throw new UnjudgeableError('the reader was launched from a Claude session (CLAUDECODE=1) but the /proc census shows none')
 }
 
 function scanOnce(options) {
   const census = readCensus(options)
   const pids = [...census.rows.values()]
     .filter(row => row.comm === 'claude' && realUid(options.procfs, row.pid) === options.uid).map(row => row.pid)
-  assertSeesOwnSession(census, options, pids)
+  assertSeesSessions(options, pids)
   return pids
     .map(pid => inspectSession(options.procfs, census, pid, options.plugin, options.files))
     .filter(session => inProfiles(session, options))
