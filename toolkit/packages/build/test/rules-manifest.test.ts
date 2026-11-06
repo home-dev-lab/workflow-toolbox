@@ -117,7 +117,7 @@ describe('SDK role rules manifest', () => {
     const selected = rules.filter((entry: { recipients: string[], triggers: string[] }) =>
       entry.recipients.includes('pilot') && phaseTransitionTriggers('critic', 'plan').some((trigger: string) => entry.triggers.includes(trigger)))
     expect(selected.map((entry: { source: string, heading: string }) => `${entry.source} :: ${entry.heading}`))
-      .toEqual(['rules/wt-sdlc.md :: ## Revise only blocking critic findings'])
+      .toEqual(['rules/wt-sdlc-at-act.md :: ## Revise only blocking critic findings'])
     for (const from of PHASES) for (const next of PHASES) {
       if (from !== 'critic' || next !== 'plan') expect(phaseTransitionTriggers(from, next)).toEqual([`phase:${next}`])
     }
