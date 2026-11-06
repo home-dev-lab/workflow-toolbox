@@ -134,6 +134,20 @@ builder's session proves the tool, not the agent; the builder never applies the 
 the other project itself.`],
   ['wt-sdlc', 'wt-sdlc', `Observe an assumption about the host before building anything on it; treat the observation as
 evidence, not the assumption as a premise.`],
+  ['wt-sdlc', 'wt-sdlc', `## Revise only blocking critic findings
+
+Revise only for the blocking findings. Keep every previously accepted part unchanged. Do not
+restart the plan from scratch. For each blocking finding, state what changed.`],
+  ['wt-sdlc', 'wt-sdlc', `## Proportionality
+
+| Change range | Required judgment shape |
+| --- | --- |
+| Feature, production logic, or high risk | Full five-lens review plus independent refuter |
+| Follow-up implementing an approved finding | One targeted independent verifier, or the arbiter's diff-read plus gates, stated explicitly |
+| Test-only or docs-only | Diff-read plus gates; no agents |
+
+Classify mechanically, not by feel: the lightweight range requires at most three files, at most
+one hundred lines, no untested caller, and no risk category. Otherwise use the higher range.`],
   ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `## Summary asserting a guarantee is verified against its body, SAME pass
 
 Docstring, header, comment claim a PROPERTY — "this path is literal", "cursor derive from
@@ -215,6 +229,12 @@ const SERVED_BEFORE_TOOL = [
   ['wt-proportionate-verification', 'Skill', { skill: 'second-opinion' }],
   ['wt-proportionate-verification', 'Skill', { skill: 'independent-analysis' }],
   ['wt-sdlc', 'Edit', { file_path: 'src/example.ts' }],
+  ['wt-sdlc', 'Write', { file_path: 'src/example.ts' }],
+  ['wt-sdlc', 'Agent', {}],
+  ['wt-sdlc', 'Task', {}],
+  ['wt-sdlc', 'Workflow', {}],
+  ['wt-sdlc', 'Skill', { skill: 'second-opinion' }],
+  ['wt-sdlc', 'Skill', { skill: 'independent-analysis' }],
   ['wt-verify-by-ground-truth', 'Edit', { file_path: 'src/example.ts' }],
 ] as const
 
@@ -272,7 +292,9 @@ function checkServedBeforeTool(name: typeof ACT_RULES[number], tool: string, inp
 
 const STATIC_ANCHORS = {
   'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
-  'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
+  // The before-coding sections govern inspection and planning, which precede the first edit, so they stay static.
+  'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason',
+    'Inspect the real code, tests, configuration', 'Name real consumers where they exist'],
   'wt-verify-by-ground-truth': [
     'claims a property against the body under it in the same pass',
     "Read the platform's own documentation FIRST, and QUOTE the reference in the claim.",
@@ -283,6 +305,14 @@ const STATIC_ANCHORS = {
   ],
   'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
   'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
+}
+
+const SDLC_POINTERS = ['Revise only blocking critic findings', 'Proportionality']
+
+function checkCorePointer(heading: string) {
+  const pointer = readRuleFile('wt-sdlc.md').split('\n').find((line) => line.includes(`**${heading}**`))
+  expect(pointer, `wt-sdlc core pointer to ${heading}`).toMatch(/^- Served at act, before the first /)
+  expect(readRuleFile('wt-sdlc-at-act.md'), `wt-sdlc at-act heading ${heading}`).toContain(`\n## ${heading}\n`)
 }
 
 function checkStaticAnchors() {
@@ -598,6 +628,8 @@ describe('shipped at-act moves', () => {
   })
 
   it('keeps a static anchor for every moved duty', checkStaticAnchors)
+
+  it.each(SDLC_POINTERS)('keeps a core pointer that names when %s is served', checkCorePointer)
 
   it.each(PLATFORM_AND_SHIPPING_ACTS)('serves the hosted-platform and three-answers half on %s', (command) => {
     expect(matchesBash('wt-verify-by-ground-truth', command)).toBe(true)
