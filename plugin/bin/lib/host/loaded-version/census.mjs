@@ -1,13 +1,13 @@
 // The process census the loaded-version check runs on: Linux /proc only, living rows only.
 // A failure to read is never turned into an empty census: it raises a named reason instead.
 
-export const GONE_CODES = new Set(['ENOENT', 'ESRCH'])
+const GONE_CODES = new Set(['ENOENT', 'ESRCH'])
 
 export class UnjudgeableError extends Error {}
 
 export const errorCode = error => error?.code ?? error?.message ?? 'read-failed'
 
-export function isGone(error) {
+function isGone(error) {
   return GONE_CODES.has(error?.code)
 }
 

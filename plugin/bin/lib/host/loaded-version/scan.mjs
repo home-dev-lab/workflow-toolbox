@@ -7,9 +7,9 @@ import { UnjudgeableError, assertInspectable, errorCode, readCensus, realUid } f
 import { inspectSession } from './session.mjs'
 
 const PLUGIN_NAME = /^(?!\.{1,2}$)[A-Za-z0-9._-]+$/
-export const NO_SESSION_REASON = 'no live Claude session found; pass --allow-none when none is expected'
+const NO_SESSION_REASON = 'no live Claude session found; pass --allow-none when none is expected'
 
-export function sessionStatus(session, expect) {
+function sessionStatus(session, expect) {
   const versions = [...new Set(session.modules.map(module => module.version))].sort()
   const mismatch = expect !== null && versions.some(version => version !== expect)
   if (mismatch) return { status: 'stale', versions }
@@ -18,7 +18,7 @@ export function sessionStatus(session, expect) {
   return { status: expect === null ? 'loaded' : 'current', versions }
 }
 
-export function exitCodeFor(sessions, reason) {
+function exitCodeFor(sessions, reason) {
   if (sessions.some(session => session.status === 'stale')) return 1
   if (reason) return 2
   return sessions.some(session => session.status === 'unknown') ? 2 : 0

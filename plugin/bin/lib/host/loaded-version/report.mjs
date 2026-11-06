@@ -3,7 +3,7 @@
 const printable = value => [...String(value)].map(char => (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? '?' : char)).join('')
 const STATUSES = ['current', 'stale', 'absent', 'unknown']
 
-export function summaryLine(result) {
+function summaryLine(result) {
   const statuses = result.expect === null ? ['loaded', ...STATUSES.slice(2)] : STATUSES
   const counts = statuses.map(status => `${status}=${result.sessions.filter(session => session.status === status).length}`)
   const head = `loaded-version: plugin=${result.plugin} expect=${result.expect ?? 'none'} sessions=${result.sessions.length}`
@@ -11,7 +11,7 @@ export function summaryLine(result) {
   return printable(`${head} ${counts.join(' ')} EXIT=${result.exitCode}${tail}`)
 }
 
-export function sessionLine(session) {
+function sessionLine(session) {
   const version = session.versions.length ? session.versions.join(',') : 'none'
   const fields = [
     session.status, `session=${session.sessionId ?? 'unknown'}`, `profile=${session.profile ?? 'unknown'}`,

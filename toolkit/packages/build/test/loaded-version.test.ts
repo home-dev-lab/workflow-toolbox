@@ -213,7 +213,7 @@ lit('a census with no session of this user is exit 2 unless --allow-none', () =>
   ], { uid: 12345 })
   expect(result.sessions).toEqual([])
   expect(result.exitCode).toBe(2)
-  expect(result.reason).toBe(scan!.NO_SESSION_REASON)
+  expect(result.reason).toBe('no live Claude session found; pass --allow-none when none is expected')
 })
 
 lit('shows the descriptor profile and still matches a --profile naming the module profile', () => {
