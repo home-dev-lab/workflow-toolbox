@@ -435,16 +435,21 @@ describe.skipIf(process.platform === 'win32')('loaded-version check', () => {
     expect(result.reason).toMatch(/--profile .*missing does not exist/)
   })
 
-  it('a reader inside a Claude session that the census cannot see is exit 2', () => {
+  it('a reader launched from a Claude session that sees no session is exit 2, even with --allow-none', () => {
     const w = world()
-    const hidden = run(w, [session(100, w.home, SID_A), server(101, 100, serverScript(w.home, '1.0.1'))], { env: { CLAUDECODE: '1' } })
+    const hidden = run(w, [{ pid: 300, ppid: 1, comm: 'node', argv: ['node'], cwd: '/' }], { env: { CLAUDECODE: '1' }, allowNone: true })
     expect(hidden.result.exitCode).toBe(2)
-    expect(hidden.result.reason).toMatch(/census cannot see/)
-    const seen = run(world(), [
+    expect(hidden.result.reason).toMatch(/launched from a Claude session .* census shows none/)
+  })
+
+  it('a detached reader outside any session ancestry still judges the sessions it sees', () => {
+    const w = world()
+    const seen = run(w, [
       session(100, w.home, SID_A), server(101, 100, serverScript(w.home, '1.0.1')),
-      { pid: 150, ppid: 100, comm: 'zsh', argv: ['zsh'], cwd: '/' }, { pid: SELF, ppid: 150, comm: 'node', argv: ['node'], cwd: '/' },
+      { pid: SELF, ppid: 1, comm: 'node', argv: ['node'], cwd: '/' },
     ], { env: { CLAUDECODE: '1' } })
     expect(seen.result.exitCode).toBe(0)
+    expect(seen.result.sessions.map((s: { status: string }) => s.status)).toEqual(['current'])
   })
 
   it('parses a stat line whose command name holds spaces and parentheses', () => {

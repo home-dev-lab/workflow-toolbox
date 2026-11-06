@@ -80,14 +80,3 @@ export function readCensus({ procfs }) {
   }
   return { rows, children }
 }
-
-// The reader's own ancestor chain inside the census, nearest first.
-export function ancestors(census, pid) {
-  const chain = []
-  let current = census.rows.get(String(pid))
-  while (current && !chain.includes(current.ppid) && chain.length < 4096) {
-    chain.push(current.ppid)
-    current = census.rows.get(current.ppid)
-  }
-  return chain
-}
