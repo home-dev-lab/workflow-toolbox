@@ -111,6 +111,7 @@ export const spawningTestFiles = [
   'packages/build/test/lifecycle-session-server.test.ts',
   'packages/build/test/live-config-tree-guard-hook.test.ts',
   'packages/build/test/liveness.test.ts',
+  'packages/build/test/loaded-version-cli.test.ts',
   'packages/build/test/main-guard-hook.test.ts',
   'packages/build/test/memory-index-check.test.ts',
   'packages/build/test/merge-chain-guard-hook.test.ts',
