@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- wt-loaded-version lists every live Claude Code session of the current user, on every profile, with the version of a named plugin that its server processes actually load (read from each process's module path), and exits 0 when all load --expect, 1 when one is stale, 2 when it cannot judge (a process unreadable, no session visible without --allow-none, or a platform without /proc)
 - Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
   to bound verification work. It prioritizes the most severe critiques and reports
   every critique beyond the cap as not verified, with its reason and a count.
@@ -23,6 +24,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - Dev-plan stops before synthesis unless a candidate has both an accepting Critique verdict and an accepting verifier vote, reports every rejection or unaccepted verdict with vote reasons and rerun guidance, and includes code-owned rejection reasons in every emitted plan artifact.
+- Quota watch help names the five-hour window as optional and says each window is watched
+  on its own, matching plans whose only bound is the seven-day window.
 - External lanes default `pnpm_config_verify_deps_before_run=false` through the worker and sandboxed child environment, preserving explicit caller overrides. Launches warn when a brief names only the ineffective `npm_config_verify_deps_before_run` spelling, with the exact pnpm variable to use.
 - The delegated-arc watch no longer reports a normally finished sub-agent as STALE when harness records (SubagentStop hook attachments, request bookkeeping, system records) follow its final end_turn; it now skips every non-conversational trailing record instead of only observer heartbeats.
 - Lane launch admission now uses FIFO waiting without a default burst deadline, recovers dead
