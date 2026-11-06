@@ -1,0 +1,1592 @@
+{
+  "source": {
+    "runId": "wf_e88ba14c-3e2",
+    "journalSha256": "a25f33cf5f78c2ecfdac623b378af7eee4181ae9592e15509ec6c44c4895d6e3",
+    "scrubbed": true,
+    "recordedStatus": "completed",
+    "recordedRejectedCount": 8,
+    "recordedTaskCount": 8
+  },
+  "input": {
+    "goal": "input:goal",
+    "areas": [
+      "area-0",
+      "area-1",
+      "area-2"
+    ],
+    "projectDir": "/replay/project"
+  },
+  "agents": {
+    "adversarialVerification:verify:0:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:0:0/reason"
+    },
+    "adversarialVerification:verify:0:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:0:1/reason"
+    },
+    "adversarialVerification:verify:0:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:0:2/reason"
+    },
+    "adversarialVerification:verify:1:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:1:0/reason"
+    },
+    "adversarialVerification:verify:1:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:1:1/reason"
+    },
+    "adversarialVerification:verify:1:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:1:2/reason"
+    },
+    "adversarialVerification:verify:2:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:2:0/reason"
+    },
+    "adversarialVerification:verify:2:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:2:1/reason"
+    },
+    "adversarialVerification:verify:2:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:2:2/reason"
+    },
+    "adversarialVerification:verify:3:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:3:0/reason"
+    },
+    "adversarialVerification:verify:3:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:3:1/reason"
+    },
+    "adversarialVerification:verify:3:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:3:2/reason"
+    },
+    "adversarialVerification:verify:4:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:4:0/reason"
+    },
+    "adversarialVerification:verify:4:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:4:1/reason"
+    },
+    "adversarialVerification:verify:4:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:4:2/reason"
+    },
+    "adversarialVerification:verify:5:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:5:0/reason"
+    },
+    "adversarialVerification:verify:5:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:5:1/reason"
+    },
+    "adversarialVerification:verify:5:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:5:2/reason"
+    },
+    "adversarialVerification:verify:6:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:6:0/reason"
+    },
+    "adversarialVerification:verify:6:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:6:1/reason"
+    },
+    "adversarialVerification:verify:6:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:6:2/reason"
+    },
+    "adversarialVerification:verify:7:0": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:7:0/reason"
+    },
+    "adversarialVerification:verify:7:1": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:7:1/reason"
+    },
+    "adversarialVerification:verify:7:2": {
+      "verdict": "refuted",
+      "reason": "adversarialVerification:verify:7:2/reason"
+    },
+    "adversarialVerification:warm": "adversarialVerification:warm",
+    "dev-plan:synthesize": {
+      "goal": "dev-plan:synthesize/goal",
+      "context": {
+        "projectDir": "dev-plan:synthesize/context/projectDir",
+        "testCommand": "dev-plan:synthesize/context/testCommand",
+        "buildCommand": "",
+        "conventions": "dev-plan:synthesize/context/conventions"
+      },
+      "tasks": [
+        {
+          "id": "T1",
+          "title": "dev-plan:synthesize/tasks/0/title",
+          "intent": "dev-plan:synthesize/tasks/0/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/0/files/0/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/0/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/0/files/1/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/0/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/0/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/0/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/0/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/0/files/4/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/0/files/5/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/0/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/0/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/0/doneCriteria/0",
+            "dev-plan:synthesize/tasks/0/doneCriteria/1",
+            "dev-plan:synthesize/tasks/0/doneCriteria/2",
+            "dev-plan:synthesize/tasks/0/doneCriteria/3"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": []
+        },
+        {
+          "id": "T2",
+          "title": "dev-plan:synthesize/tasks/1/title",
+          "intent": "dev-plan:synthesize/tasks/1/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/1/files/0/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/1/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/1/files/1/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/1/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/1/files/2/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/1/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/1/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/1/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/1/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/1/files/4/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/1/files/5/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/1/files/5/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/1/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/1/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/1/doneCriteria/0",
+            "dev-plan:synthesize/tasks/1/doneCriteria/1",
+            "dev-plan:synthesize/tasks/1/doneCriteria/2",
+            "dev-plan:synthesize/tasks/1/doneCriteria/3"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T1"
+          ]
+        },
+        {
+          "id": "T3",
+          "title": "dev-plan:synthesize/tasks/2/title",
+          "intent": "dev-plan:synthesize/tasks/2/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/2/files/0/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/2/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/2/files/1/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/2/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/2/files/2/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/2/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/2/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/2/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/2/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/2/files/4/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/2/files/5/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/2/files/5/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/2/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/2/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/2/doneCriteria/0",
+            "dev-plan:synthesize/tasks/2/doneCriteria/1",
+            "dev-plan:synthesize/tasks/2/doneCriteria/2"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T1",
+            "T2"
+          ]
+        },
+        {
+          "id": "T4",
+          "title": "dev-plan:synthesize/tasks/3/title",
+          "intent": "dev-plan:synthesize/tasks/3/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/0/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/3/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/1/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/3/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/2/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/3/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/3/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/3/files/4/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/5/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/3/files/5/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/3/files/6/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/3/files/6/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/3/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/3/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/3/doneCriteria/0",
+            "dev-plan:synthesize/tasks/3/doneCriteria/1",
+            "dev-plan:synthesize/tasks/3/doneCriteria/2",
+            "dev-plan:synthesize/tasks/3/doneCriteria/3"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T1"
+          ]
+        },
+        {
+          "id": "T5",
+          "title": "dev-plan:synthesize/tasks/4/title",
+          "intent": "dev-plan:synthesize/tasks/4/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/0/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/1/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/2/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/4/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/5/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/5/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/6/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/4/files/6/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/4/files/7/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/4/files/7/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/4/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/4/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/4/doneCriteria/0",
+            "dev-plan:synthesize/tasks/4/doneCriteria/1",
+            "dev-plan:synthesize/tasks/4/doneCriteria/2"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T2",
+            "T3",
+            "T4"
+          ]
+        },
+        {
+          "id": "T6",
+          "title": "dev-plan:synthesize/tasks/5/title",
+          "intent": "dev-plan:synthesize/tasks/5/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/5/files/0/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/5/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/5/files/1/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/5/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/5/files/2/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/5/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/5/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/5/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/5/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/5/files/4/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/5/files/5/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/5/files/5/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/5/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/5/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/5/doneCriteria/0",
+            "dev-plan:synthesize/tasks/5/doneCriteria/1",
+            "dev-plan:synthesize/tasks/5/doneCriteria/2",
+            "dev-plan:synthesize/tasks/5/doneCriteria/3"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T4",
+            "T5"
+          ]
+        },
+        {
+          "id": "T7",
+          "title": "dev-plan:synthesize/tasks/6/title",
+          "intent": "dev-plan:synthesize/tasks/6/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/6/files/0/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/6/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/6/files/1/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/6/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/6/files/2/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/6/files/2/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/6/files/3/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/6/files/3/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/6/files/4/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/6/files/4/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/6/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/6/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/6/doneCriteria/0",
+            "dev-plan:synthesize/tasks/6/doneCriteria/1",
+            "dev-plan:synthesize/tasks/6/doneCriteria/2",
+            "dev-plan:synthesize/tasks/6/doneCriteria/3"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T6"
+          ]
+        },
+        {
+          "id": "T8",
+          "title": "dev-plan:synthesize/tasks/7/title",
+          "intent": "dev-plan:synthesize/tasks/7/intent",
+          "files": [
+            {
+              "path": "dev-plan:synthesize/tasks/7/files/0/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/7/files/0/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/7/files/1/path",
+              "status": "new",
+              "role": "dev-plan:synthesize/tasks/7/files/1/role"
+            },
+            {
+              "path": "dev-plan:synthesize/tasks/7/files/2/path",
+              "status": "existing",
+              "role": "dev-plan:synthesize/tasks/7/files/2/role"
+            }
+          ],
+          "contracts": "dev-plan:synthesize/tasks/7/contracts",
+          "testPlan": "dev-plan:synthesize/tasks/7/testPlan",
+          "doneCriteria": [
+            "dev-plan:synthesize/tasks/7/doneCriteria/0",
+            "dev-plan:synthesize/tasks/7/doneCriteria/1",
+            "dev-plan:synthesize/tasks/7/doneCriteria/2"
+          ],
+          "snippet": "",
+          "alternativesConsidered": [],
+          "dependsOn": [
+            "T7"
+          ]
+        }
+      ],
+      "risks": [
+        "dev-plan:synthesize/risks/0",
+        "dev-plan:synthesize/risks/1",
+        "dev-plan:synthesize/risks/2",
+        "dev-plan:synthesize/risks/3",
+        "dev-plan:synthesize/risks/4",
+        "dev-plan:synthesize/risks/5",
+        "dev-plan:synthesize/risks/6",
+        "dev-plan:synthesize/risks/7",
+        "dev-plan:synthesize/risks/8",
+        "dev-plan:synthesize/risks/9"
+      ],
+      "outOfScope": [
+        "dev-plan:synthesize/outOfScope/0",
+        "dev-plan:synthesize/outOfScope/1",
+        "dev-plan:synthesize/outOfScope/2",
+        "dev-plan:synthesize/outOfScope/3",
+        "dev-plan:synthesize/outOfScope/4",
+        "dev-plan:synthesize/outOfScope/5",
+        "dev-plan:synthesize/outOfScope/6",
+        "dev-plan:synthesize/outOfScope/7",
+        "dev-plan:synthesize/outOfScope/8"
+      ]
+    },
+    "fanOutAndSynthesize:synthesize": {
+      "testCommand": "fanOutAndSynthesize:synthesize/testCommand",
+      "buildCommand": "",
+      "conventions": "fanOutAndSynthesize:synthesize/conventions",
+      "repoBrief": "fanOutAndSynthesize:synthesize/repoBrief"
+    },
+    "fanOutAndSynthesize:task:0": {
+      "observations": [
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/0/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/0/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/1/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/1/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/2/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/2/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/3/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/3/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/4/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/4/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/5/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/5/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/6/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/6/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/7/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/7/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/8/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/8/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/9/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/9/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/10/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/10/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/11/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/11/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/12/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/12/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/13/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/13/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/14/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/14/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:0/observations/15/file",
+          "detail": "fanOutAndSynthesize:task:0/observations/15/detail"
+        }
+      ],
+      "testCommand": "fanOutAndSynthesize:task:0/testCommand",
+      "buildCommand": "",
+      "conventions": "fanOutAndSynthesize:task:0/conventions"
+    },
+    "fanOutAndSynthesize:task:1": {
+      "observations": [
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/0/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/0/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/1/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/1/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/2/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/2/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/3/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/3/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/4/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/4/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/5/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/5/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/6/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/6/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/7/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/7/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/8/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/8/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/9/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/9/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/10/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/10/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/11/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/11/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/12/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/12/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/13/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/13/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:1/observations/14/file",
+          "detail": "fanOutAndSynthesize:task:1/observations/14/detail"
+        }
+      ],
+      "testCommand": "fanOutAndSynthesize:task:1/testCommand",
+      "buildCommand": "",
+      "conventions": "fanOutAndSynthesize:task:1/conventions"
+    },
+    "fanOutAndSynthesize:task:2": {
+      "observations": [
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/0/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/0/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/1/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/1/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/2/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/2/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/3/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/3/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/4/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/4/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/5/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/5/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/6/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/6/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/7/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/7/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/8/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/8/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/9/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/9/detail"
+        },
+        {
+          "file": "fanOutAndSynthesize:task:2/observations/10/file",
+          "detail": "fanOutAndSynthesize:task:2/observations/10/detail"
+        }
+      ],
+      "testCommand": "fanOutAndSynthesize:task:2/testCommand",
+      "buildCommand": "",
+      "conventions": "fanOutAndSynthesize:task:2/conventions"
+    },
+    "planAndExecute:plan": {
+      "subtasks": [
+        {
+          "description": "planAndExecute:plan/subtasks/0/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/1/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/2/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/3/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/4/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/5/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/6/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/7/description"
+        },
+        {
+          "description": "planAndExecute:plan/subtasks/8/description"
+        }
+      ]
+    },
+    "planAndExecute:synthesize": "planAndExecute:synthesize",
+    "planAndExecute:work:0": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:0/tasks/0/title",
+          "intent": "planAndExecute:work:0/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/0/path",
+              "status": "new",
+              "role": "planAndExecute:work:0/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/1/path",
+              "status": "new",
+              "role": "planAndExecute:work:0/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/4/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/5/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/6/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/6/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/7/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/7/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/8/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/8/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/9/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/9/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/10/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/10/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/11/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/11/role"
+            },
+            {
+              "path": "planAndExecute:work:0/tasks/0/files/12/path",
+              "status": "existing",
+              "role": "planAndExecute:work:0/tasks/0/files/12/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:0/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:0/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:0/tasks/0/doneCriteria/0",
+            "planAndExecute:work:0/tasks/0/doneCriteria/1",
+            "planAndExecute:work:0/tasks/0/doneCriteria/2",
+            "planAndExecute:work:0/tasks/0/doneCriteria/3",
+            "planAndExecute:work:0/tasks/0/doneCriteria/4",
+            "planAndExecute:work:0/tasks/0/doneCriteria/5",
+            "planAndExecute:work:0/tasks/0/doneCriteria/6",
+            "planAndExecute:work:0/tasks/0/doneCriteria/7",
+            "planAndExecute:work:0/tasks/0/doneCriteria/8",
+            "planAndExecute:work:0/tasks/0/doneCriteria/9",
+            "planAndExecute:work:0/tasks/0/doneCriteria/10"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:0/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:0/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:0/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:0/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:0/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:0/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:0/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:0/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:0/tasks/0/alternativesConsidered/3/killReason"
+            },
+            {
+              "route": "planAndExecute:work:0/tasks/0/alternativesConsidered/4/route",
+              "killReason": "planAndExecute:work:0/tasks/0/alternativesConsidered/4/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:1": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:1/tasks/0/title",
+          "intent": "planAndExecute:work:1/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/0/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/1/path",
+              "status": "new",
+              "role": "planAndExecute:work:1/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/2/path",
+              "status": "new",
+              "role": "planAndExecute:work:1/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/4/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/5/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/6/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/6/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/7/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/7/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/8/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/8/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/9/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/9/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/10/path",
+              "status": "new",
+              "role": "planAndExecute:work:1/tasks/0/files/10/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/11/path",
+              "status": "new",
+              "role": "planAndExecute:work:1/tasks/0/files/11/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/12/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/12/role"
+            },
+            {
+              "path": "planAndExecute:work:1/tasks/0/files/13/path",
+              "status": "existing",
+              "role": "planAndExecute:work:1/tasks/0/files/13/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:1/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:1/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:1/tasks/0/doneCriteria/0",
+            "planAndExecute:work:1/tasks/0/doneCriteria/1",
+            "planAndExecute:work:1/tasks/0/doneCriteria/2",
+            "planAndExecute:work:1/tasks/0/doneCriteria/3",
+            "planAndExecute:work:1/tasks/0/doneCriteria/4",
+            "planAndExecute:work:1/tasks/0/doneCriteria/5",
+            "planAndExecute:work:1/tasks/0/doneCriteria/6",
+            "planAndExecute:work:1/tasks/0/doneCriteria/7",
+            "planAndExecute:work:1/tasks/0/doneCriteria/8",
+            "planAndExecute:work:1/tasks/0/doneCriteria/9",
+            "planAndExecute:work:1/tasks/0/doneCriteria/10"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:1/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:1/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:1/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:1/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:1/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:1/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:1/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:1/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:1/tasks/0/alternativesConsidered/3/killReason"
+            },
+            {
+              "route": "planAndExecute:work:1/tasks/0/alternativesConsidered/4/route",
+              "killReason": "planAndExecute:work:1/tasks/0/alternativesConsidered/4/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:2": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:2/tasks/0/title",
+          "intent": "planAndExecute:work:2/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/0/path",
+              "status": "existing",
+              "role": "planAndExecute:work:2/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/1/path",
+              "status": "existing",
+              "role": "planAndExecute:work:2/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:2/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:2/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/4/path",
+              "status": "new",
+              "role": "planAndExecute:work:2/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:2/tasks/0/files/5/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/6/path",
+              "status": "existing",
+              "role": "planAndExecute:work:2/tasks/0/files/6/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/7/path",
+              "status": "new",
+              "role": "planAndExecute:work:2/tasks/0/files/7/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/8/path",
+              "status": "new",
+              "role": "planAndExecute:work:2/tasks/0/files/8/role"
+            },
+            {
+              "path": "planAndExecute:work:2/tasks/0/files/9/path",
+              "status": "new",
+              "role": "planAndExecute:work:2/tasks/0/files/9/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:2/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:2/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:2/tasks/0/doneCriteria/0",
+            "planAndExecute:work:2/tasks/0/doneCriteria/1",
+            "planAndExecute:work:2/tasks/0/doneCriteria/2",
+            "planAndExecute:work:2/tasks/0/doneCriteria/3",
+            "planAndExecute:work:2/tasks/0/doneCriteria/4",
+            "planAndExecute:work:2/tasks/0/doneCriteria/5",
+            "planAndExecute:work:2/tasks/0/doneCriteria/6"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:2/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:2/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:2/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:2/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:2/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:2/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:2/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:2/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:2/tasks/0/alternativesConsidered/3/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:3": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:3/tasks/0/title",
+          "intent": "planAndExecute:work:3/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/0/path",
+              "status": "new",
+              "role": "planAndExecute:work:3/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/1/path",
+              "status": "new",
+              "role": "planAndExecute:work:3/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/4/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/5/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/6/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/6/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/7/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/7/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/8/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/8/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/9/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/9/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/10/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/10/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/11/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/11/role"
+            },
+            {
+              "path": "planAndExecute:work:3/tasks/0/files/12/path",
+              "status": "existing",
+              "role": "planAndExecute:work:3/tasks/0/files/12/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:3/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:3/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:3/tasks/0/doneCriteria/0",
+            "planAndExecute:work:3/tasks/0/doneCriteria/1",
+            "planAndExecute:work:3/tasks/0/doneCriteria/2",
+            "planAndExecute:work:3/tasks/0/doneCriteria/3",
+            "planAndExecute:work:3/tasks/0/doneCriteria/4",
+            "planAndExecute:work:3/tasks/0/doneCriteria/5",
+            "planAndExecute:work:3/tasks/0/doneCriteria/6",
+            "planAndExecute:work:3/tasks/0/doneCriteria/7",
+            "planAndExecute:work:3/tasks/0/doneCriteria/8"
+          ],
+          "risk": "medium",
+          "snippet": "planAndExecute:work:3/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:3/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:3/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:3/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:3/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:3/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:3/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:3/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:3/tasks/0/alternativesConsidered/3/killReason"
+            },
+            {
+              "route": "planAndExecute:work:3/tasks/0/alternativesConsidered/4/route",
+              "killReason": "planAndExecute:work:3/tasks/0/alternativesConsidered/4/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:4": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:4/tasks/0/title",
+          "intent": "planAndExecute:work:4/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/0/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/1/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/4/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/5/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/6/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/6/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/7/path",
+              "status": "new",
+              "role": "planAndExecute:work:4/tasks/0/files/7/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/8/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/8/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/9/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/9/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/10/path",
+              "status": "existing",
+              "role": "planAndExecute:work:4/tasks/0/files/10/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/11/path",
+              "status": "new",
+              "role": "planAndExecute:work:4/tasks/0/files/11/role"
+            },
+            {
+              "path": "planAndExecute:work:4/tasks/0/files/12/path",
+              "status": "new",
+              "role": "planAndExecute:work:4/tasks/0/files/12/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:4/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:4/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:4/tasks/0/doneCriteria/0",
+            "planAndExecute:work:4/tasks/0/doneCriteria/1",
+            "planAndExecute:work:4/tasks/0/doneCriteria/2",
+            "planAndExecute:work:4/tasks/0/doneCriteria/3",
+            "planAndExecute:work:4/tasks/0/doneCriteria/4",
+            "planAndExecute:work:4/tasks/0/doneCriteria/5",
+            "planAndExecute:work:4/tasks/0/doneCriteria/6",
+            "planAndExecute:work:4/tasks/0/doneCriteria/7",
+            "planAndExecute:work:4/tasks/0/doneCriteria/8",
+            "planAndExecute:work:4/tasks/0/doneCriteria/9"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:4/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:4/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:4/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:4/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:4/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:4/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:4/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:4/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:4/tasks/0/alternativesConsidered/3/killReason"
+            },
+            {
+              "route": "planAndExecute:work:4/tasks/0/alternativesConsidered/4/route",
+              "killReason": "planAndExecute:work:4/tasks/0/alternativesConsidered/4/killReason"
+            },
+            {
+              "route": "planAndExecute:work:4/tasks/0/alternativesConsidered/5/route",
+              "killReason": "planAndExecute:work:4/tasks/0/alternativesConsidered/5/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:5": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:5/tasks/0/title",
+          "intent": "planAndExecute:work:5/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/0/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/1/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/4/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/5/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/6/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/6/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/7/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/7/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/8/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/8/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/9/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/9/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/10/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/10/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/11/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/11/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/12/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/12/role"
+            },
+            {
+              "path": "planAndExecute:work:5/tasks/0/files/13/path",
+              "status": "existing",
+              "role": "planAndExecute:work:5/tasks/0/files/13/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:5/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:5/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:5/tasks/0/doneCriteria/0",
+            "planAndExecute:work:5/tasks/0/doneCriteria/1",
+            "planAndExecute:work:5/tasks/0/doneCriteria/2",
+            "planAndExecute:work:5/tasks/0/doneCriteria/3",
+            "planAndExecute:work:5/tasks/0/doneCriteria/4",
+            "planAndExecute:work:5/tasks/0/doneCriteria/5",
+            "planAndExecute:work:5/tasks/0/doneCriteria/6",
+            "planAndExecute:work:5/tasks/0/doneCriteria/7",
+            "planAndExecute:work:5/tasks/0/doneCriteria/8",
+            "planAndExecute:work:5/tasks/0/doneCriteria/9",
+            "planAndExecute:work:5/tasks/0/doneCriteria/10"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:5/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:5/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:5/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:5/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:5/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:5/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:5/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:5/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:5/tasks/0/alternativesConsidered/3/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:6": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:6/tasks/0/title",
+          "intent": "planAndExecute:work:6/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:6/tasks/0/files/0/path",
+              "status": "new",
+              "role": "planAndExecute:work:6/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:6/tasks/0/files/1/path",
+              "status": "existing",
+              "role": "planAndExecute:work:6/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:6/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:6/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:6/tasks/0/files/3/path",
+              "status": "new",
+              "role": "planAndExecute:work:6/tasks/0/files/3/role"
+            },
+            {
+              "path": "planAndExecute:work:6/tasks/0/files/4/path",
+              "status": "new",
+              "role": "planAndExecute:work:6/tasks/0/files/4/role"
+            },
+            {
+              "path": "planAndExecute:work:6/tasks/0/files/5/path",
+              "status": "existing",
+              "role": "planAndExecute:work:6/tasks/0/files/5/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:6/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:6/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:6/tasks/0/doneCriteria/0",
+            "planAndExecute:work:6/tasks/0/doneCriteria/1",
+            "planAndExecute:work:6/tasks/0/doneCriteria/2",
+            "planAndExecute:work:6/tasks/0/doneCriteria/3",
+            "planAndExecute:work:6/tasks/0/doneCriteria/4",
+            "planAndExecute:work:6/tasks/0/doneCriteria/5",
+            "planAndExecute:work:6/tasks/0/doneCriteria/6",
+            "planAndExecute:work:6/tasks/0/doneCriteria/7",
+            "planAndExecute:work:6/tasks/0/doneCriteria/8"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:6/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/3/killReason"
+            },
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/4/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/4/killReason"
+            },
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/5/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/5/killReason"
+            },
+            {
+              "route": "planAndExecute:work:6/tasks/0/alternativesConsidered/6/route",
+              "killReason": "planAndExecute:work:6/tasks/0/alternativesConsidered/6/killReason"
+            }
+          ]
+        }
+      ]
+    },
+    "planAndExecute:work:7": {
+      "tasks": [
+        {
+          "title": "planAndExecute:work:7/tasks/0/title",
+          "intent": "planAndExecute:work:7/tasks/0/intent",
+          "files": [
+            {
+              "path": "planAndExecute:work:7/tasks/0/files/0/path",
+              "status": "new",
+              "role": "planAndExecute:work:7/tasks/0/files/0/role"
+            },
+            {
+              "path": "planAndExecute:work:7/tasks/0/files/1/path",
+              "status": "new",
+              "role": "planAndExecute:work:7/tasks/0/files/1/role"
+            },
+            {
+              "path": "planAndExecute:work:7/tasks/0/files/2/path",
+              "status": "existing",
+              "role": "planAndExecute:work:7/tasks/0/files/2/role"
+            },
+            {
+              "path": "planAndExecute:work:7/tasks/0/files/3/path",
+              "status": "existing",
+              "role": "planAndExecute:work:7/tasks/0/files/3/role"
+            }
+          ],
+          "contracts": "planAndExecute:work:7/tasks/0/contracts",
+          "testPlan": "planAndExecute:work:7/tasks/0/testPlan",
+          "doneCriteria": [
+            "planAndExecute:work:7/tasks/0/doneCriteria/0",
+            "planAndExecute:work:7/tasks/0/doneCriteria/1",
+            "planAndExecute:work:7/tasks/0/doneCriteria/2",
+            "planAndExecute:work:7/tasks/0/doneCriteria/3",
+            "planAndExecute:work:7/tasks/0/doneCriteria/4",
+            "planAndExecute:work:7/tasks/0/doneCriteria/5",
+            "planAndExecute:work:7/tasks/0/doneCriteria/6",
+            "planAndExecute:work:7/tasks/0/doneCriteria/7"
+          ],
+          "risk": "high",
+          "snippet": "planAndExecute:work:7/tasks/0/snippet",
+          "alternativesConsidered": [
+            {
+              "route": "planAndExecute:work:7/tasks/0/alternativesConsidered/0/route",
+              "killReason": "planAndExecute:work:7/tasks/0/alternativesConsidered/0/killReason"
+            },
+            {
+              "route": "planAndExecute:work:7/tasks/0/alternativesConsidered/1/route",
+              "killReason": "planAndExecute:work:7/tasks/0/alternativesConsidered/1/killReason"
+            },
+            {
+              "route": "planAndExecute:work:7/tasks/0/alternativesConsidered/2/route",
+              "killReason": "planAndExecute:work:7/tasks/0/alternativesConsidered/2/killReason"
+            },
+            {
+              "route": "planAndExecute:work:7/tasks/0/alternativesConsidered/3/route",
+              "killReason": "planAndExecute:work:7/tasks/0/alternativesConsidered/3/killReason"
+            },
+            {
+              "route": "planAndExecute:work:7/tasks/0/alternativesConsidered/4/route",
+              "killReason": "planAndExecute:work:7/tasks/0/alternativesConsidered/4/killReason"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

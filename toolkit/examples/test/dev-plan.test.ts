@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import wf, { PLAN_ARTIFACT_SCHEMA } from '../dev-plan.workflow.js'
+import { assertSchema } from './dev-plan-test-schema.js'
 
 // ---------------------------------------------------------------------------
 // PLAN_ARTIFACT_SCHEMA bounds (arbiter review finding, fix round, card
@@ -86,6 +87,7 @@ const HAPPY_ARTIFACT = {
       doneCriteria: ['validate() unit tests pass', 'no any types introduced'],
       // New file — nothing existing to quote, so the REQUIRED snippet is empty.
       snippet: '',
+      alternativesConsidered: [],
       dependsOn: [],
     },
     {
@@ -97,6 +99,7 @@ const HAPPY_ARTIFACT = {
       testPlan: 'Write a failing CLI test for the bad-input path first.',
       doneCriteria: ['CLI bad-input test passes'],
       snippet: 'function main(argv) { return dispatch(argv) } // src/cli.ts:12-14',
+      alternativesConsidered: [],
       dependsOn: ['T1'],
     },
   ],
@@ -197,6 +200,160 @@ function makeRuntime(overrides?: {
 }
 
 const VALID_INPUT = { goal: 'Add input validation to the CLI', areas: ['src', 'test'] }
+
+function twoCandidates(prompt: string) {
+  const task = HAPPY_ARTIFACT.tasks[prompt.includes('Create the validation helper module') ? 0 : 1]!
+  return { tasks: [{ ...task, risk: 'medium' }] }
+}
+
+async function expectStopped(rt: FakeRuntime, expected: RegExp): Promise<string> {
+  const promise = wf.run(rt, JSON.stringify(VALID_INPUT))
+  await expect(promise).rejects.toThrow(expected)
+  const error = await promise.catch((failure: unknown) => failure) as Error
+  expect(rt.calls.filter(call => /final planartifact/i.test(call.prompt))).toHaveLength(0)
+  expect(rt.phases).not.toContain('Synthesize')
+  expect(error.message).toMatch(/amend the goal using these reasons and run again/i)
+  expect(error.message).toMatch(/resumeFromRunId.*same verdicts.*stops again/)
+  return error.message
+}
+
+describe('dev-plan published artifact contract', () => {
+  it('rejects an otherwise valid artifact without the required rejected field', () => {
+    assertSchema({ ...HAPPY_ARTIFACT, rejected: [] }, PLAN_ARTIFACT_SCHEMA)
+    assertSchema(HAPPY_ARTIFACT, PLAN_ARTIFACT_SCHEMA, false)
+  })
+
+  it('emits rejected even on the happy path and validates the published schema', async () => {
+    const rt = makeRuntime()
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.artifact.rejected).toEqual([])
+    expect(result.artifact.rejected).toEqual(result.rejected)
+    assertSchema(result.artifact, PLAN_ARTIFACT_SCHEMA)
+    const synthesis = rt.calls.find(call => call.opts?.label === 'dev-plan:synthesize')!
+    expect(synthesis.opts?.schema).not.toHaveProperty('properties.rejected')
+    expect(synthesis.prompt).not.toContain('rejected')
+  })
+
+  it('overwrites any model-supplied rejected field with the code-owned list', async () => {
+    const rt = makeRuntime({ synthesize: () => ({ ...HAPPY_ARTIFACT,
+      rejected: [{ title: 'Invented by synthesis', files: [], verdict: 'refuted', reason: 'Untrusted' }],
+    }) })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.artifact.rejected).toEqual([])
+    expect(result.artifact.rejected).toEqual(result.rejected)
+    assertSchema(result.artifact, PLAN_ARTIFACT_SCHEMA)
+  })
+})
+
+describe('dev-plan zero accepted tasks', () => {
+  it('stops all-refuted tasks with every title, file and full verifier reason', async () => {
+    const reason = `Already implemented: ${'complete evidence; '.repeat(200)}`
+    const rt = makeRuntime({ worker: twoCandidates, verifier: () => ({ verdict: 'refuted', reason }) })
+    const message = await expectStopped(rt, /0 of 2.*accepted.*no plan is emitted/is)
+    for (const task of HAPPY_ARTIFACT.tasks) {
+      expect(message).toContain(task.title)
+      for (const file of task.files) expect(message).toContain(file.path)
+    }
+    expect(message).toContain([reason, reason, reason].join('; '))
+  })
+
+  it('stops when every verifier failed, although no task was refuted', async () => {
+    const rt = makeRuntime({ worker: twoCandidates, verifier: () => null })
+    const message = await expectStopped(rt, /0 of 2.*accepted.*no plan is emitted/is)
+    for (const task of HAPPY_ARTIFACT.tasks) expect(message).toContain(task.title)
+    expect(message).toContain('unverifiable')
+  })
+})
+
+describe('dev-plan unaccepted verdict diagnostics', () => {
+  it('lists refuted and unverifiable tasks together when neither was accepted', async () => {
+    const reason = 'Helper already exists'
+    const rt = makeRuntime({ worker: twoCandidates, verifier: prompt =>
+      prompt.includes(HAPPY_ARTIFACT.tasks[0]!.title) ? { verdict: 'refuted', reason } : null,
+    })
+    const message = await expectStopped(rt, /0 of 2.*accepted/i)
+    for (const task of HAPPY_ARTIFACT.tasks) {
+      expect(message).toContain(task.title)
+      for (const file of task.files) expect(message).toContain(file.path)
+    }
+    expect(message).toContain(reason)
+    expect(message).toContain('refuted')
+    expect(message).toContain('unverifiable')
+  })
+
+  it('includes cap-excluded tasks in the stop diagnostics', async () => {
+    const rt = makeRuntime({ verifier: () => null, worker: prompt => ({ tasks:
+      Array.from({ length: 7 }, (_, index) => ({ ...twoCandidates(prompt).tasks[0],
+        title: `${twoCandidates(prompt).tasks[0]!.title} ${index}`, risk: 'medium',
+      })),
+    }) })
+    const message = await expectStopped(rt, /0 of 14.*accepted/i)
+    expect(message).toContain('unverified-by-cap')
+    for (const task of HAPPY_ARTIFACT.tasks) {
+      for (let index = 0; index < 7; index++) expect(message).toContain(`${task.title} ${index}`)
+    }
+  })
+})
+
+type TestVote = { verdict: string; reason: string } | null
+
+function runtimeWithVotes(votes: readonly TestVote[], otherVotes = votes): FakeRuntime {
+  const counts = [0, 0]
+  return makeRuntime({ worker: twoCandidates, verifier: prompt => {
+    const claim = prompt.includes(HAPPY_ARTIFACT.tasks[0]!.title) ? 0 : 1
+    const sequence = claim === 0 ? votes : otherVotes
+    return sequence[counts[claim]!++ % sequence.length]
+  } })
+}
+
+const UNVERIFIABLE_VOTES = [
+  { verdict: 'unverifiable', reason: 'Cannot inspect the implementation' },
+  { verdict: 'unverifiable', reason: 'Required source is unavailable' },
+  { verdict: 'unverifiable', reason: 'Evidence cannot establish the claim' },
+]
+
+describe('dev-plan acceptance requires an accepting vote', () => {
+  it.each([
+    ['three unverifiable votes', UNVERIFIABLE_VOTES],
+    ['one refuted and two unverifiable votes', [
+      { verdict: 'refuted', reason: 'Contradicted by the existing implementation' },
+      ...UNVERIFIABLE_VOTES.slice(1),
+    ]],
+  ] as const)('stops every task with %s and reports every vote', async (_name, votes) => {
+    const rt = runtimeWithVotes(votes)
+    const message = await expectStopped(rt, /0 of 2.*accepted.*no plan is emitted/is)
+    for (const task of HAPPY_ARTIFACT.tasks) {
+      const line = message.split('\n').find(detail => detail.startsWith(task.title))!
+      expect(line).toContain('partially-confirmed')
+      for (const file of task.files) expect(line).toContain(file.path)
+      for (const vote of votes) expect(line).toContain(`${vote.verdict}: ${vote.reason}`)
+    }
+  })
+
+  it('accepts one confirmed vote with two unverifiable votes on one task', async () => {
+    const rt = runtimeWithVotes([
+      { verdict: 'confirmed', reason: 'The implementation supports this claim' },
+      ...UNVERIFIABLE_VOTES.slice(1),
+    ], [null, null, null])
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.artifact.rejected).toEqual([])
+    assertSchema(result.artifact, PLAN_ARTIFACT_SCHEMA)
+    expect(rt.calls.filter(call => /final planartifact/i.test(call.prompt))).toHaveLength(1)
+  })
+})
+
+describe('dev-plan acceptance and legacy kept fold', () => {
+  it.each(['confirmed', 'partially-confirmed'])('accepts %s and retains non-refuted unverifiable tasks', async verdict => {
+    const rt = makeRuntime({ worker: twoCandidates, verifier: prompt =>
+      prompt.includes(HAPPY_ARTIFACT.tasks[0]!.title) ? { verdict, reason: 'Accepted evidence' } : null,
+    })
+    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
+    expect(result.artifact.rejected).toEqual([])
+    assertSchema(result.artifact, PLAN_ARTIFACT_SCHEMA)
+    const prompt = rt.calls.find(call => call.opts?.label === 'dev-plan:synthesize')!.prompt
+    for (const task of HAPPY_ARTIFACT.tasks) expect(prompt).toContain(task.title)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Test: workflow metadata
@@ -351,19 +508,22 @@ describe('dev-plan happy path', () => {
 // ---------------------------------------------------------------------------
 
 describe('dev-plan refuted task claims', () => {
-  it('reports refuted candidate tasks in rejected', async () => {
+  it('reports the refuted task and its reasons in both rejected lists after partial survival', async () => {
+    const reason = `src/validate.ts already exists — status "new" is wrong. ${'Evidence; '.repeat(500)}`
     const rt = makeRuntime({
-      verifier: () => ({ verdict: 'refuted', reason: 'src/validate.ts already exists — status "new" is wrong' }),
+      worker: twoCandidates,
+      verifier: prompt => prompt.includes(HAPPY_ARTIFACT.tasks[0]!.title)
+        ? { verdict: 'refuted', reason } : { verdict: 'confirmed', reason: 'Wiring is needed' },
     })
     const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
 
-    expect(result.rejected.length).toBeGreaterThan(0)
-    for (const r of result.rejected) {
-      expect(typeof r.title).toBe('string')
-      expect(typeof r.verdict).toBe('string')
-      // The human arbitrates rejections — the verifier's reason must survive.
-      expect(r.reason).toMatch(/already exists/)
-    }
+    expect(result.rejected).toEqual([{
+      title: HAPPY_ARTIFACT.tasks[0]!.title, files: ['src/validate.ts'], verdict: 'refuted',
+      reason: [reason, reason, reason].join('; '),
+    }])
+    expect(result.artifact.rejected).toEqual(result.rejected)
+    expect(result.artifact.rejected.map(task => task.title)).not.toContain(HAPPY_ARTIFACT.tasks[1]!.title)
+    assertSchema(result.artifact, PLAN_ARTIFACT_SCHEMA)
   })
 })
 
@@ -433,16 +593,13 @@ describe('dev-plan artifact validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('dev-plan with no candidate tasks', () => {
-  it('warns, skips Critique stats, and still synthesizes from an empty kept list', async () => {
+  it('stops with the zero-candidate message and still emits the skipped Critique digest', async () => {
     // All Plan workers die → zero candidate tasks → Critique is skipped.
     const rt = makeRuntime({ worker: () => null })
-    const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
-
-    expect(result.warnings.some((w: string) => /no candidate tasks/i.test(w))).toBe(true)
-    expect(result.stats).not.toHaveProperty('critique')
-    expect(result.rejected).toEqual([])
-    // The synthesize agent still ran (fake returns a valid artifact).
-    expect(result.artifact.tasks.length).toBeGreaterThan(0)
+    const message = await expectStopped(rt, /Plan phase produced no candidate tasks/i)
+    expect(message).toMatch(/0 of 0.*accepted.*no plan is emitted/is)
+    expect(rt.calls.some(call => call.opts?.label?.startsWith('adversarialVerification:'))).toBe(false)
+    expect(rt.logs.some(log => /no candidate tasks/i.test(log))).toBe(true)
 
     // Critique is still ENTERED (rt.phase('Critique')) with zero agents when
     // skipped — a tier-2 digest reports the real why instead of a bare empty
@@ -451,7 +608,8 @@ describe('dev-plan with no candidate tasks', () => {
     const critiqueDigest = digests.find((d) => d?.phase === 'Critique')
     expect(critiqueDigest).toBeDefined()
     expect(critiqueDigest?.stage).toBe('dev-plan:critique')
-    expect(critiqueDigest?.output).toBeTruthy()
+    expect(critiqueDigest?.counts?.candidates).toBe(0)
+    expect(critiqueDigest?.output).toMatch(/Plan phase produced no candidate tasks/i)
   })
 })
 
@@ -538,35 +696,35 @@ describe('dev-plan task file path hygiene', () => {
 // Test: risk-aware verification votes — low:1, medium/high:3
 // ---------------------------------------------------------------------------
 
-describe('dev-plan risk-aware votes', () => {
-  const helperTask = {
-    title: 'Add validate() helper',
-    intent: 'Create a pure validation helper for CLI args.',
-    files: [{ path: 'src/validate.ts', status: 'new', role: 'implementation' }],
-    contracts: 'export function validate(raw: unknown): { ok: boolean; error?: string }',
-    testPlan: 'Failing test for validate(null) first.',
-    doneCriteria: ['validate() unit tests pass'],
-    snippet: '',
-    // Non-empty on purpose: these fixtures build 4-5-task plans, and an
-    // all-empty alternativesConsidered would trip the empty-alternatives
-    // fraction warn and cross-talk with the risk-warn assertions below.
-    alternativesConsidered: [
-      { route: 'Validate inline at each call site', killReason: 'duplicates the rules across commands' },
-    ],
-  }
-  const wireTask = {
-    title: 'Wire validate() into the CLI entry',
-    intent: 'Call validate() before dispatch so bad input fails fast.',
-    files: [{ path: 'src/cli.ts', status: 'existing', role: 'integration point' }],
-    contracts: 'cli main() exits non-zero and prints the validation error on bad input',
-    testPlan: 'Failing CLI bad-input test first.',
-    doneCriteria: ['CLI bad-input test passes'],
-    snippet: 'function main(argv) { return dispatch(argv) } // src/cli.ts:12-14',
-    alternativesConsidered: [
-      { route: 'Validate inside dispatch()', killReason: 'dispatch has other callers that must not double-validate' },
-    ],
-  }
+const helperTask = {
+  title: 'Add validate() helper',
+  intent: 'Create a pure validation helper for CLI args.',
+  files: [{ path: 'src/validate.ts', status: 'new', role: 'implementation' }],
+  contracts: 'export function validate(raw: unknown): { ok: boolean; error?: string }',
+  testPlan: 'Failing test for validate(null) first.',
+  doneCriteria: ['validate() unit tests pass'],
+  snippet: '',
+  // Non-empty on purpose: these fixtures build 4-5-task plans, and an
+  // all-empty alternativesConsidered would trip the empty-alternatives
+  // fraction warn and cross-talk with the risk-warn assertions below.
+  alternativesConsidered: [
+    { route: 'Validate inline at each call site', killReason: 'duplicates the rules across commands' },
+  ],
+}
+const wireTask = {
+  title: 'Wire validate() into the CLI entry',
+  intent: 'Call validate() before dispatch so bad input fails fast.',
+  files: [{ path: 'src/cli.ts', status: 'existing', role: 'integration point' }],
+  contracts: 'cli main() exits non-zero and prints the validation error on bad input',
+  testPlan: 'Failing CLI bad-input test first.',
+  doneCriteria: ['CLI bad-input test passes'],
+  snippet: 'function main(argv) { return dispatch(argv) } // src/cli.ts:12-14',
+  alternativesConsidered: [
+    { route: 'Validate inside dispatch()', killReason: 'dispatch has other callers that must not double-validate' },
+  ],
+}
 
+describe('dev-plan risk-aware votes', () => {
   it('spends 1 verifier vote on a low-risk task and 3 on a high-risk task', async () => {
     const rt = makeRuntime({
       worker: (prompt) =>
@@ -591,10 +749,14 @@ describe('dev-plan risk-aware votes', () => {
     )?.prompt
     expect(soloPrompt).toContain('Add validate() helper')
   })
+})
 
+describe('dev-plan risk-aware votes: cross-model routing', () => {
   it('routes Critique verifiers through verifierType (cross-model) while producers stay on the session model', async () => {
     const rt = makeRuntime()
-    await wf.run(rt, JSON.stringify({ ...VALID_INPUT, verifierType: 'codex:codex-rescue' }))
+    // This fake does not attest external provenance, so its votes are unverifiable.
+    await expect(wf.run(rt, JSON.stringify({ ...VALID_INPUT, verifierType: 'codex:codex-rescue' })))
+      .rejects.toThrow(/0 of 2 candidate tasks accepted/)
 
     // The prefix is 'adversarialVerification:' (not just '...:verify:') so it
     // also catches the pattern's own cache-warm agent, which mirrors the real
@@ -626,7 +788,9 @@ describe('dev-plan risk-aware votes', () => {
       wf.run(rt, JSON.stringify({ ...VALID_INPUT, verifierType: '   ' })),
     ).rejects.toThrow(/verifierType/)
   })
+})
 
+describe('dev-plan risk-aware votes: quorum', () => {
   it('a medium-risk task keeps 3 votes and a 2-of-3 refutation still rejects (regression)', async () => {
     let wireVotes = 0
     const rt = makeRuntime({
@@ -654,7 +818,9 @@ describe('dev-plan risk-aware votes', () => {
     expect(result.rejected).toHaveLength(1)
     expect(result.rejected[0]).toMatchObject({ title: 'Wire validate() into the CLI entry' })
   })
+})
 
+describe('dev-plan risk-aware votes: structural floor', () => {
   it('floors a multi-file task off the single-vote path even when self-rated "low", and warns', async () => {
     // risk is SELF-assessed by the worker whose task it gates — a structural
     // floor (multi-file ≠ isolated) must keep the full quorum regardless of
@@ -684,7 +850,9 @@ describe('dev-plan risk-aware votes', () => {
     expect(verifyLabels).toHaveLength(6)
     expect(result.warnings.some((w: string) => /not an isolated change/i.test(w))).toBe(true)
   })
+})
 
+describe('dev-plan risk-aware votes: fraction warnings', () => {
   it('warns when an implausibly high fraction of tasks self-rate risk "low"', async () => {
     // 2 subtasks × 2 tasks = 4 candidate tasks, all "low" → >80% on 4+ tasks.
     const rt = makeRuntime({
@@ -723,7 +891,9 @@ describe('dev-plan risk-aware votes', () => {
     const result = await wf.run(rt, JSON.stringify(VALID_INPUT))
     expect(result.warnings.some((w: string) => /implausibly high/i.test(w))).toBe(false)
   })
+})
 
+describe('dev-plan risk-aware votes: strict boundary', () => {
   it('does NOT warn at EXACTLY the 0.8 low fraction (4 of 5) — the threshold is strict', async () => {
     // Pins the strict `> 0.8` comparison: flipping it to `>= 0.8` would make
     // this legitimate 4-of-5 plan warn.
