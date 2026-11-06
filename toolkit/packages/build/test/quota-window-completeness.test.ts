@@ -11,6 +11,7 @@ describe('isUsableReading', () => {
     expect(isUsableReading({ seven_day: { pct: 40 } })).toBe(true)
     expect(isUsableReading({ five_hour: { pct: 40 } })).toBe(true)
     expect(isUsableReading({ five_hour: { pct: 1 }, seven_day: { pct: 1 } })).toBe(true)
+    expect(isUsableReading({ five_hour: { pct: 0 }, seven_day: { pct: 0 } })).toBe(true)
   })
 
   it.each([
@@ -18,6 +19,8 @@ describe('isUsableReading', () => {
     ['only an unrelated key', { weekly_scoped: [] }],
     ['null', null],
     ['a string', 'none'],
+    ['an array', []],
+    ['undefined', undefined],
   ])('%s, with no window at all, is never usable', (_label, windows) => {
     expect(isUsableReading(windows)).toBe(false)
   })
