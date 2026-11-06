@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Quota watcher for the Monitor tool (persistent: true), shipped as a plugin monitor.
 //
-// WHAT IT WATCHES: the account's five-hour and seven-day usage windows, via a
+// WHAT IT WATCHES: the account's seven-day and optional five-hour usage windows, via a
 // PROBE script. Each window is watched on its own: one the probe does not report is said once,
 // in words, keeps its history, and never blinds the other. A probe is BUNDLED (`wt-quota-probe.mjs`, same directory); a user probe at `<configDir>/scripts/quota-usage.mjs` takes precedence when it
 // exists, and `--probe` overrides both.
@@ -71,8 +71,9 @@ const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
 const DEFAULT_TIMEOUT_SECONDS = 60
 
-const HELP = `wt-quota-watch — poll the account's five-hour and seven-day usage windows and emit
-only on threshold crossing (80/90/95 default, ascending) and on RESET. Meant to be armed as a
+const HELP = `wt-quota-watch — poll the account's seven-day and optional five-hour usage windows
+(each watched on its own; one the probe does not report is named once) and emit only on
+threshold crossing (80/90/95 default, ascending) and on RESET. Meant to be armed as a
 persistent Monitor. Model-token cost: zero, it is a script.
 
 Options:

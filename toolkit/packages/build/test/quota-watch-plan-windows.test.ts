@@ -197,6 +197,23 @@ describe('point 1: a window without a reading never blinds the other one', () =>
   })
 })
 
+// Ported from card 1898619335555942069: zero usage is a reading, never a missing window; and the help
+// names the five-hour window as optional (the owner's plan has a weekly window only).
+describe('zero usage and the optional five-hour window in the help', () => {
+  it('0 % on both windows watches both and names neither as not reported', () => {
+    const res = runSequence([{ five_hour: win(0), seven_day: win(0) }, { five_hour: win(0), seven_day: win(0) }])
+    expect(armedLine(res.stdout)).toMatch(/ \| watching 5h,7d( \||$)/)
+    expect(res.stdout).not.toContain('not reported by the probe')
+    expect(res.stdout).not.toContain('DEGRADED')
+  })
+
+  it('--help describes the five-hour window as optional', () => {
+    const res = spawnSync(process.execPath, [WATCH, '--help'], { encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toMatch(/seven-day and optional five-hour usage windows/)
+  })
+})
+
 describe('point 2: a window without a reading is reported once, in words, and keeps its history', () => {
   for (const [name, shape] of UNREPORTED_SHAPES) {
     it(`five_hour ${name}: said ONCE per run to be not reported by the probe, never "absent"`, () => {
@@ -646,7 +663,9 @@ describe('a partial reading recovers from DEGRADED back to the normal poll', () 
 // Pins the CURRENT choice: a window that is present but malformed is treated exactly like a missing
 // one (said once to be "not reported by the probe"), next to a numeric window, live and cached.
 describe('one malformed window beside one numeric window', () => {
-  const MALFORMED: Array<[string, unknown]> = [['a string pct', { pct: 'unavailable', resets_at: FUTURE }], ['an empty object', {}], ['an array', []]]
+  // 'a boolean pct' and 'a string window' are ported from card 1898619335555942069's malformed-window locks.
+  const MALFORMED: Array<[string, unknown]> = [['a string pct', { pct: 'unavailable', resets_at: FUTURE }], ['an empty object', {}], ['an array', []],
+    ['a boolean pct', { pct: false, resets_at: FUTURE }], ['a string window', 'invalid']]
   for (const [name, shape] of MALFORMED) {
     it(`live: five_hour as ${name} is watched as seven-day only, said once, never DEGRADED`, () => {
       const res = runSequence([{ five_hour: shape, seven_day: win(70) }, { five_hour: shape, seven_day: win(91) }])
