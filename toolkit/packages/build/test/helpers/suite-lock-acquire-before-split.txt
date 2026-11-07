@@ -1,0 +1,80 @@
+async function acquireSuiteLock(options = {}) {
+  const env = options.env ?? process.env
+  const priority = acquisitionPriority(options, env)
+  throwIfAborted(options.signal)
+  const domain = suiteLeaseDomain({ ...options, env })
+  const id = coveredSuiteLease(env, domain)
+  if (id) return { inherited: true, holder: { leaseId: id }, domain }
+  const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' ? env.WT_SUITE_LOCK_BROKER.trim() : ''
+  if (broker && !options.root) return acquireBrokerSuiteLock(broker, options)
+  const root = domain
+  const lockDir = path.join(root, 'lock.d')
+  const queueDir = path.join(root, 'queue.d')
+  const waitMs = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(env), '--wait-s') * 1000
+  const headWaitMs = waitMs === 0 ? 0 : Math.max(waitMs, positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000)
+  const pollMs = options.pollMs ?? 2000
+  const noticeMs = options.noticeMs ?? 30_000
+  const startedWaiting = Date.now()
+  let nextNoticeAt = startedWaiting
+  let lastProgressAt = startedWaiting
+  let bestAhead = Infinity
+  let lastPlace = null
+  let lastHolderId = null
+  let holderPriority
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority, p0QueueFields(root, priority))
+  const ticket = await retryTransient(() => takeParkTicket(queueDir, record, options, parkOwnerJudge(options)), HEAD_OF_QUEUE_POLL_MS)
+  const state = { root, lockDir, queueDir, ticket, record, ...parkQueueMetadata(record) }
+  try {
+    while (true) {
+      throwIfAborted(options.signal)
+      const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
+      if (step.lease) return grantParkState(state, step.lease)
+      const current = step.again ? readSuiteLock({ root }) : step.current
+      const now = Date.now()
+      const holderId = current.holder?.leaseId ?? null
+      if (holderId && holderId !== lastHolderId) {
+        holderPriority = current.holder.priority
+        options.onHandover?.(holderId, current.holder.priority)
+        if (lastHolderId || holderPriority === 'release') {
+          lastProgressAt = now
+          if (step.place) options.onProgress?.(progressPlace(step.place))
+        }
+      }
+      if (holderId) lastHolderId = holderId
+      if (step.place) {
+        if (suiteQueueAdvanced(lastPlace, step.place)) {
+          lastProgressAt = now
+          options.onRenew?.(progressPlace(step.place))
+        }
+        lastPlace = step.place
+        if (lastPlace.aheadExcludingRelease < bestAhead) {
+          bestAhead = lastPlace.aheadExcludingRelease
+          lastProgressAt = now
+          options.onProgress?.(progressPlace(lastPlace))
+          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record)}`)
+          nextNoticeAt = now + noticeMs
+        }
+      }
+      const budget = waiterBudget(waitMs, headWaitMs, bestAhead, holderPriority)
+      const remaining = budget - (now - lastProgressAt)
+      if (remaining <= 0) {
+        const position = lastPlace ? `position ${lastPlace.ahead + 1} of ${lastPlace.total}` : 'position unknown'
+        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}; no queue progress for ${((now - lastProgressAt) / 1000).toFixed(1)} s at ${position}; inspect with wt-suite-lock status`)
+        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+        timeout.holder = current.holder
+        throw timeout
+      }
+      if (step.again) continue
+      const { place } = step
+      if (now >= nextNoticeAt) {
+        options.onWait?.(`waiting for suite lock: ${describeWait(place, current, record)}`)
+        nextNoticeAt = now + noticeMs
+      }
+      const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
+      await sleep(Math.min(delay, budget / 4, remaining), options.signal)
+    }
+  } finally {
+    finishParkQueue(state, options.park, () => removeTicket(queueDir, ticket))
+  }
+}

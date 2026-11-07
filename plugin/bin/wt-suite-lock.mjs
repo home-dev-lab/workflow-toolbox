@@ -12,6 +12,8 @@ import {
   operatorReleaseSuiteLock,
   readBrokerSuiteLock,
   readSuiteLockStatus,
+  readSuiteLockParked,
+  parkAttemptIsGone,
   releaseSuiteLock,
   suiteLeaseMarker,
   suiteLeaseDomain,
@@ -25,9 +27,12 @@ import { suiteLockJournalCli } from './lib/suite-lock-journal.mjs'
 import { staticLaneStatusLines } from './lib/suite-lock-static.mjs'
 import { acquireCliLease, cliInheritedLease, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
 import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
+import { acquireParkCliLease, clearParkRequest, finishParkRun, parkChildEnvironment, publishParkOutcome, shouldYieldParkLease, spawnParkEnvironment } from './lib/suite-lock-park.mjs'
+import { claimParkAttempt, parkSignalExit, watchParkChildSignals } from './lib/host/suite-lock-park-files.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
   node wt-suite-lock.mjs journal [--json] [--since <ISO>]
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
@@ -72,38 +77,46 @@ function applyRunPriority(priority) {
 }
 
 async function run(args) {
-  const { command, staticRun, waitS, staleS, light, priority } = parseSuiteRunOptions(args,
+  const { command, staticRun, waitS, staleS, light, priority, park } = parseSuiteRunOptions(args,
     { parseSeconds, parsePriority: parseRunPriority, waitSeconds: suiteLockWaitSeconds, defaultStaleS: DEFAULT_SUITE_LOCK_STALE_S })
-  if (priority === 'release' && process.env.WT_SUITE_LOCK_BROKER?.trim()) {
-    process.stderr.write('wt-suite-lock: release priority is not available inside a lane sandbox\n')
-    return 2
-  }
-  applyRunPriority(priority)
-  // A reader that exits mid-run must not kill the run: the lease outlives its diagnostics.
-  process.stderr.on('error', () => { /* a diagnostic failure must leave the covered command running */ })
-  if (process.env.WT_SUITE_LOCK === '0') {
-    process.stderr.write('wt-suite-lock: bypassed because WT_SUITE_LOCK=0\n')
-    return spawnCommand(command)
-  }
+  const attempt = { outcome: 'not-parked\n' }
+  const releaseAttempt = claimParkAttempt(park, parkAttemptIsGone)
+  try {
+    clearParkRequest(park)
+    if (priority === 'release' && process.env.WT_SUITE_LOCK_BROKER?.trim()) {
+      process.stderr.write('wt-suite-lock: release priority is not available inside a lane sandbox\n')
+      return 2
+    }
+    applyRunPriority(priority)
+    // A reader that exits mid-run must not kill the run: the lease outlives its diagnostics.
+    process.stderr.on('error', () => { /* a diagnostic failure must leave the covered command running */ })
+    if (process.env.WT_SUITE_LOCK === '0') {
+      process.stderr.write('wt-suite-lock: bypassed because WT_SUITE_LOCK=0\n')
+      return await spawnCommand(command, null, null, parkChildEnvironment(park))
+    }
 
-  const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
-  if (inherited === 75) return 75
-  if (inherited) return spawnCommand(command)
-  const lease = await acquireCliLease(acquireSuiteLock, { waitS, staleS, argv: command, light, static: staticRun, priority, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
-  if (typeof lease === 'number') return lease
-  if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
-  return runLeasedCommand(command, lease, { light, staticRun })
+    const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
+    if (inherited === 75) return 75
+    if (inherited) return await spawnCommand(command, null, null, parkChildEnvironment(park))
+    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, light, static: staticRun, priority, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+    if (typeof lease === 'number') return lease
+    if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
+    return await runLeasedCommand(command, lease, { light, staticRun, park, attempt })
+  } finally { try { publishParkOutcome(park, attempt.outcome) } finally { releaseAttempt() } }
 }
 
 async function runLeasedCommand(command, lease, requested) {
   const stopWarning = watchGrantedLease(lease, requested, command)
   let exit = 1
+  let yielded = false
   try {
-    exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease))
+    yielded = shouldYieldParkLease(lease, requested.park, readSuiteLockParked)
+    if (yielded) { exit = 75; return exit }
+    exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park))
     return exit
   } finally {
     stopWarning()
-    releaseSuiteLock(lease, { exit })
+    try { requested.attempt.outcome = finishParkRun(lease, requested.park, yielded) } finally { releaseSuiteLock(lease, { exit }) }
   }
 }
 
@@ -111,9 +124,10 @@ async function runLeasedCommand(command, lease, requested) {
 // is never a light lease past its class. A fallback behind an older broker is exclusive (holder.light false).
 // A static request the main queue took instead (static lane off, or a broker host that did not classify the
 // command as static) was asked for as light (acquireJournalLease), so it is watched as light.
+// A park lease carries its saved queue record; its class wins over the new invocation's flags.
 function watchGrantedLease(lease, requested, command) {
   if (grantedStaticLane(lease)) return () => {}
-  return watchLightSuiteLease({ ...lease.holder, light: lease.holder.light ?? (requested.light || requested.staticRun), argv: command })
+  return watchLightSuiteLease({ ...lease.holder, light: lease.record ? lease.record.light === true : lease.holder.light ?? (requested.light || requested.staticRun), argv: command })
 }
 
 // Direct static grants carry staticDomain; a broker's static grant arrives as `granted static:<id>`.
@@ -121,7 +135,7 @@ function grantedStaticLane(lease) {
   return lease.staticDomain === true || String(lease.holder?.leaseId ?? '').startsWith('static:')
 }
 
-function spawnCommand(command, leaseLost = null, marker = null) {
+function spawnCommand(command, leaseLost = null, marker = null, envOverrides) {
   return new Promise((resolve, reject) => {
     const refusal = windowsShimArgumentRefusal(command)
     if (refusal) { reject(new Error(refusal)); return }
@@ -129,7 +143,7 @@ function spawnCommand(command, leaseLost = null, marker = null) {
     const group = Boolean(leaseLost)
     const child = spawn(command[0], command.slice(1), {
       stdio: 'inherit',
-      ...(marker ? { env: { ...process.env, WT_SUITE_LEASE: marker } } : {}),
+      ...spawnParkEnvironment(marker, envOverrides, process.env),
       // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
       // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
       shell: spawnNeedsShell(command[0]),
@@ -143,10 +157,7 @@ function spawnCommand(command, leaseLost = null, marker = null) {
       if (marker) signalCoveredCommand(child, signal, { group })
       else child.kill(signal)
     }
-    const forwardInterrupt = () => forward('SIGINT')
-    const forwardTerminate = () => forward('SIGTERM')
-    process.once('SIGINT', forwardInterrupt)
-    process.once('SIGTERM', forwardTerminate)
+    const stopSignals = watchParkChildSignals(forward)
     leaseLost?.then((reason) => {
       lockLost = true
       process.stderr.write(`wt-suite-lock: suite lock lost (${reason || 'broker gone'}); command stopped\n`)
@@ -155,11 +166,10 @@ function spawnCommand(command, leaseLost = null, marker = null) {
     })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
-      process.removeListener('SIGINT', forwardInterrupt)
-      process.removeListener('SIGTERM', forwardTerminate)
+      stopSignals()
       if (lockLost) { treeStopped.then(() => resolve(75)); return }
       if (code !== null) resolve(code)
-      else resolve((signal ?? forwardedSignal) === 'SIGINT' ? 130 : 143)
+      else resolve(parkSignalExit(signal ?? forwardedSignal))
     })
   })
 }

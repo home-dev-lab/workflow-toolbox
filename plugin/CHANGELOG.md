@@ -7,6 +7,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Suite-lock host clients can park and resume a ticket within a bounded window using
+  `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
+  shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.
 - wt-loaded-version lists every live Claude Code session of the current user, on every profile, with the version of a named plugin that its server processes actually load (read from each process's module path), and exits 0 when all load --expect, 1 when one is stale, 2 when it cannot judge (a process unreadable, no session visible without --allow-none, or a platform without /proc)
 - Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
   to bound verification work. It prioritizes the most severe critiques and reports
