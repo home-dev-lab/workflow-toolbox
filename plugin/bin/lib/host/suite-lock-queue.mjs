@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 // The file layer of the suite lock's FIFO queue (policy: ../suite-lock.mjs). Two files per ticket,
@@ -17,11 +17,13 @@ const recordFile = (queueDir, number) => `${ticketBase(queueDir, number)}.json`
 function listTickets(queueDir) {
   const markers = []
   const records = []
+  const parked = []
   for (const name of readdirSync(queueDir)) {
     const match = TICKET_FILE.exec(name)
     if (match) (match[2] === 'ticket' ? markers : records).push(Number(match[1]))
+    else if (/^\d{16}\.parked$/.test(name)) parked.push(Number(name.slice(0, TICKET_DIGITS)))
   }
-  return { markers, records: records.sort((a, b) => a - b) }
+  return { markers, records: records.sort((a, b) => a - b), parked }
 }
 
 function createExclusive(file, content) {
@@ -50,10 +52,11 @@ export function takeTicket(queueDir, record, seams = {}) {
   const list = seams.list ?? listTickets
   mkdirSync(queueDir, { recursive: true, mode: 0o700 })
   while (true) {
-    const { markers, records } = list(queueDir)
-    let number = Math.max(0, ...markers, ...records) + 1
+    const { markers, records, parked = [] } = list(queueDir)
+    let number = Math.max(0, ...markers, ...records, ...parked) + 1
     while (!createExclusive(`${ticketBase(queueDir, number)}.ticket`, '')) number += 1
-    const pruneBelow = Math.min(number - TICKET_MARKERS_KEPT + 1, ...records)
+    if (existsSync(`${ticketBase(queueDir, number)}.parked`)) continue
+    const pruneBelow = Math.min(number - TICKET_MARKERS_KEPT + 1, ...records, ...parked)
     for (const old of markers) {
       if (old < pruneBelow) rmSync(`${ticketBase(queueDir, old)}.ticket`, { force: true })
     }
@@ -62,11 +65,12 @@ export function takeTicket(queueDir, record, seams = {}) {
 }
 
 /** Refreshes the record's mtime; a record someone removed is put back under the same number. */
-export function heartbeatTicket(queueDir, number, record) {
+export function heartbeatTicket(queueDir, number, record, recreate = true) {
   const file = recordFile(queueDir, number)
   const now = new Date()
   try { utimesSync(file, now, now) } catch (error) {
     if (error?.code !== 'ENOENT') throw error
+    if (!recreate) throw Object.assign(new Error('resumed suite ticket was reclaimed; retry wt-suite-lock run'), { code: 'WT_SUITE_LOCK_UNAVAILABLE' })
     createExclusive(file, `${JSON.stringify(record)}\n`)
   }
 }
