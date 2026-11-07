@@ -7,6 +7,8 @@ import { readGit } from './git.mjs'
 
 const readFailure = error => error.code ?? error.message
 const pathIdentity = options => options.identity ?? sweepPathIdentity(options)
+const noRepository = stderr => stderr === 'fatal: not a git repository (or any of the parent directories): .git'
+  || /^fatal: not a git repository \(or any parent up to mount point [^\r\n]+\)\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.$/.test(stderr)
 
 function registryFlag(field, name) {
   return field === name || field.startsWith(`${name} `)
@@ -54,17 +56,26 @@ function addRegistryRecord(record, boundary, records, outside) {
   mergeRegistration(records, record, identity, names)
 }
 
+function readRegistry(project, options, identity) {
+  const env = { ...(options.env ?? process.env), LC_ALL: 'C' }
+  const result = readGit(project, ['worktree', 'list', '--porcelain', '-z'], { ...options, env })
+  // Only Git's explicit discovery result proves absence; missing .git does not.
+  const absent = result.status === 128 && !result.error && !existsSync(path.join(project, '.git'))
+    && noRepository(result.stderr?.trim())
+  if (absent) return []
+  if (result.status !== 0 || result.error) throw new Error('worktree registry unavailable')
+  return parseRegistry(result.stdout, identity)
+}
+
 function worktreeRegistry(project, boundary, options) {
   const records = new Map()
   const outside = new Set()
   let unknown = false
   const repositories = [project, ...boundary.names.map(name => path.join(boundary.source, name))
-    .filter(file => entryBoundary(file, boundary).allowed)]
-  for (const repo of repositories.filter(file => existsSync(path.join(file, '.git')))) {
+    .filter(file => entryBoundary(file, boundary).allowed && existsSync(path.join(file, '.git')))]
+  for (const repo of repositories) {
     try {
-      const result = readGit(repo, ['worktree', 'list', '--porcelain', '-z'], options)
-      if (result.status !== 0 || result.error) throw new Error('worktree registry unavailable')
-      for (const record of parseRegistry(result.stdout, boundary.identity)) addRegistryRecord(record, boundary, records, outside)
+      for (const record of readRegistry(repo, options, boundary.identity)) addRegistryRecord(record, boundary, records, outside)
     } catch { unknown = true }
   }
   return { records, unknown, outside: [...outside] }
@@ -115,7 +126,7 @@ function scanExceeded(visited, options) {
 
 export function isIndexLock(file, node, indexLock, identity = sweepPathIdentity(), indexLockKey) {
   if (!node.isFile() || !indexLock) return false
-  if (identity.foldName(identity.paths.basename(file)) !== 'index.lock') return false
+  if (!identity.isIndexLockName(file)) return false
   return identity.key(file) === (indexLockKey ?? identity.key(indexLock))
 }
 
@@ -144,11 +155,8 @@ export function inventoryTree(root, supplied) {
 
 function outsideRegistry(project, options, identity) {
   if (options.registry) return options.registry
-  if (!existsSync(path.join(project, '.git'))) return { outside: [], unknown: false }
   try {
-    const result = readGit(project, ['worktree', 'list', '--porcelain', '-z'], options)
-    if (result.status !== 0 || result.error) return { outside: [], unknown: true }
-    return { outside: parseRegistry(result.stdout, identity).map(record => record.path), unknown: false }
+    return { outside: readRegistry(project, options, identity).map(record => record.path), unknown: false }
   } catch { return { outside: [], unknown: true } }
 }
 
