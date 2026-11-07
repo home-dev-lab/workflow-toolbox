@@ -26,6 +26,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Worktree sweep discovers enclosing and bare worktree registries without a local `.git`, reports failed discovery as unknown, and retains differently cased index-lock filenames as activity evidence.
+- Worktree sweep shares parent-only native path identity across registry and index-lock checks, keeps unmatched registrations, and reports incomplete outside counts as unknown.
 - Dev-plan stops before synthesis unless a candidate has both an accepting Critique verdict and an accepting verifier vote, reports every rejection or unaccepted verdict with vote reasons and rerun guidance, and includes code-owned rejection reasons in every emitted plan artifact.
 - Quota watch help names the five-hour window as optional and says each window is watched
   on its own, matching plans whose only bound is the seven-day window.
@@ -44,6 +46,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   reserve slots under its mutex. Other exact-name opencode/codex processes are still counted.
 - Routine lane gates use one priority resolver across worker environments, brokers, direct/light leases and static package-script wrappers. Missing, empty or malformed lane priorities warn and default to P2; valid declarations retain P1 or P0, including without a broker and through gate-chain children. Ordinary callers keep their existing defaults, static FIFO and release behavior; sandboxed release remains refused.
 - The quota watcher watches each numeric window independently, names unreported windows once, and preserves their history. Partial live readings cannot weaken later cache requirements or postpone live rechecks beyond the cache tolerance; login caches require the current account fingerprint. Drops baseline only their own window, advancing reset deadlines on the same verified account re-arm thresholds even when usage rises, and recovery names the watched windows. A deadline that moves later before the previous one has passed is no longer announced as a reset: a drop before the deadline is still reported as "reset unverified", and a rise is checked against the thresholds as usual; a reset time too large to be a date counts as no reset time. A reading taken while the login account changed is discarded with a one-line notice and probed again on the next poll, instead of being cached or becoming the new account's starting point; a cached reading counts for the account checked around the cache read. Empty bundled-probe responses degrade with backoff instead of claiming no subscription and stopping; repeated readings emit each crossing once.
+- Worktree sweep reports now name unavailable mount-boundary discovery on macOS and
+  Windows instead of treating an empty mount list as verified. Cross-platform sweep
+  fixtures use an actual isolated Git config file, and hook crash-safety checks wait
+  for detached report workers to exit before removing their sandboxes. Windows path
+  spelling is normalized when identifying Git index locks, merging registrations,
+  and counting outside-sweep entries. Explicit report outputs reject occupied paths,
+  including dangling symlinks, before opening them. Prunable-state fixtures also
+  cover alternate Windows path spellings without relying on exact-string rewrites.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.

@@ -49,7 +49,10 @@ function setup() { const f = fixture(execFileSync(process.platform === 'win32' ?
     worker!.reportWorker(f.project, f.root, f.env)
     expect(fingerprint(f.project)).toEqual(before)
     expect(state!.lockHeld(f.root)).toBe(false)
-    expect(JSON.parse(readFileSync(join(f.root, 'last.json'), 'utf8'))).toMatchObject({ mode: 'report', entries: [{ name: 'clean', verdict: 'KEEP' }] })
+    const report = JSON.parse(readFileSync(join(f.root, 'last.json'), 'utf8'))
+    expect(report).toMatchObject(process.platform === 'linux'
+      ? { mode: 'report', entries: [{ name: 'clean', verdict: 'KEEP' }] }
+      : { mode: 'report', reason: `mount boundary unavailable on ${process.platform}`, entries: [] })
   })
   it('the direct worker refuses apply before producing any report or claim', () => {
     const f = setup(); repository(f); const before = fingerprint(f.project)

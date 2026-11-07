@@ -1,23 +1,19 @@
 import { statSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { createProcfs } from './procfs.mjs'
+import { sweepPathIdentity } from './sweep-path-identity.mjs'
 
 export function platformCanonicalPath(value, platform) {
-  if (platform === 'darwin') return value.replace(/^\/var(?=\/|$)/, '/private/var').toLowerCase()
-  return platform === 'win32' ? value.toLowerCase() : value
+  return sweepPathIdentity({ platform }).fold(value)
 }
 
 export function pathContains(root, target, platform = process.platform) {
-  const paths = platform === 'win32' ? path.win32 : path.posix
-  const normalize = value => platform === 'linux' ? paths.resolve(value) : paths.resolve(value).toLowerCase()
-  const a = normalize(root)
-  const b = normalize(target)
-  return a === b || b.startsWith(a.endsWith(paths.sep) ? a : `${a}${paths.sep}`)
+  return sweepPathIdentity({ platform }).lexicalContains(root, target)
 }
 
 export function sweepMounts({ procfs = createProcfs(), platform = process.platform } = {}) {
-  // The planner cross-checks device boundaries; junctions are rejected by lstat.
-  if (platform !== 'linux') return { status: 'known', mounts: [] }
+  // Device checks alone cannot prove the absence of same-device mount boundaries.
+  if (platform !== 'linux') return { status: 'unknown', reason: `mount boundary unavailable on ${platform}` }
   try {
     const mounts = procfs.readMountInfo('utf8').trim().split('\n').filter(Boolean).map(line => {
       const fields = line.split(' ')

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
-import { devNull, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createProcfs } from '../../plugin/bin/lib/host/procfs.mjs'
@@ -19,10 +19,12 @@ export function fixture(gitExecutable) {
   const source = join(project, '.claude', 'worktrees')
   mkdirSync(source, { recursive: true })
   mkdirSync(join(root, 'bin'))
+  const globalConfig = join(root, 'git-global.config')
+  writeFileSync(globalConfig, '')
   const env = { HOME: root, CLAUDE_PROJECT_DIR: project, CLAUDE_CONFIG_DIR: join(root, 'config'),
     XDG_STATE_HOME: join(root, 'state'), SystemRoot: process.env.SystemRoot, TZ: 'UTC', LC_ALL: 'C',
     WT_WORKTREE_SWEEP_MODE: 'report',
-    GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0',
+    GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0',
     GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.test',
     GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.test' }
   // Resolve git once; application invocations can then pin PATH to this directory.
@@ -43,6 +45,12 @@ export function fixture(gitExecutable) {
 
 export function git(dir, env, ...args) {
   return execFileSync('git', ['-C', dir, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+}
+
+export function sweepDiagnostics(f, dir, report) {
+  return JSON.stringify({ root: f.root, nativeRoot: realpathSync.native(f.root),
+    registry: git(dir, f.env, 'worktree', 'list', '--porcelain', '-z'),
+    gitDir: git(dir, f.env, 'rev-parse', '--absolute-git-dir'), outsidePaths: report.outsideSweep.paths })
 }
 
 export function repository(f, name = 'clean') {
