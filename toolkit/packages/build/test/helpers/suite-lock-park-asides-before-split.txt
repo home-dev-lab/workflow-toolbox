@@ -1,0 +1,29 @@
+import { existsSync, linkSync, lstatSync, readdirSync, rmSync } from 'node:fs'
+import path from 'node:path'
+
+// Pre-extraction source fixture. The reader is supplied so both copies use the same bounded
+// control-file contract; retain the original branch shape as data for the execution comparison.
+export function beforeSplit(readParkJson) {
+  function asideCreator(name) {
+    const encoded = name.split('.parked.reclaimed-')[1]?.split('.')[0]
+    try { return JSON.parse(Buffer.from(encoded, 'hex').toString('utf8')) } catch { return null }
+  }
+  function restoreParkAside(aside, file, link = linkSync) {
+    try { link(aside, file) } catch (error) { if (error?.code !== 'EEXIST') throw error }
+  }
+  return function recoverParkAsides(queueDir, now, ownerIsStale, parkIsLive) {
+    let names
+    try { names = readdirSync(queueDir) } catch (error) { if (error?.code === 'ENOENT') return; throw error }
+    for (const name of names) {
+      if (!/^\d{16}\.parked\.reclaimed-/.test(name)) continue
+      const aside = path.join(queueDir, name)
+      const creator = asideCreator(name)
+      const judged = Number.isSafeInteger(creator?.pid) && typeof creator === 'object'
+      if (judged ? !ownerIsStale(creator) : now - lstatSync(aside).mtimeMs <= 60_000) continue
+      const file = aside.slice(0, aside.indexOf('.parked.reclaimed-') + '.parked'.length)
+      const park = readParkJson(aside)
+      if (parkIsLive(park) && !existsSync(file) && !existsSync(file.replace(/\.parked$/, '.json'))) restoreParkAside(aside, file)
+      rmSync(aside, { force: true })
+    }
+  }
+}

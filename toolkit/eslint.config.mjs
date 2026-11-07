@@ -207,6 +207,15 @@ export default tseslint.config(
     },
   },
   {
+    files: ['plugin/bin/lib/suite-lock-park.mjs', '../plugin/bin/lib/suite-lock-park.mjs',
+      'plugin/bin/lib/host/suite-lock-park-files.mjs', '../plugin/bin/lib/host/suite-lock-park-files.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
     // Warn-first areas use the same ceilings; a follow-up sets their warning ratchets.
     // Espree enforces JavaScript parse errors (the TypeScript parser permits top-level return).
     files: newAreaQualityFiles,
