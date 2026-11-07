@@ -1,6 +1,6 @@
 // A fake /proc tree for the loaded-version check: real directories, files and symlinks under
 // os.tmpdir(), shaped like the Linux entries the scanner reads (stat, cmdline, cwd, exe, fd/<n>, self).
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,7 +29,8 @@ function writeProcess(proc, row) {
 }
 
 export function fixtureRoot() {
-  return mkdtempSync(join(tmpdir(), 'wt-loaded-version-'))
+  // Kernel descriptor targets use canonical paths, even when the temp directory is a symlink.
+  return realpathSync(mkdtempSync(join(tmpdir(), 'wt-loaded-version-')))
 }
 
 // spec: { selfPid, selfLink?, processes: [{ pid, ppid, comm, state?, argv?, cwd?, exe?, fds?, ... }] }
