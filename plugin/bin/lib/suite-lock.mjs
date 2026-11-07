@@ -14,7 +14,8 @@ import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
 import { requestBrokerLease } from './suite-lock-broker-client.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
 import { suiteJournalEvent } from './suite-lock-journal.mjs'
-import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord, takeJournalTicket as takeTicket } from './suite-lock-journal-lifecycle.mjs'
+import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord } from './suite-lock-journal-lifecycle.mjs'
+import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, parkQueueMetadata, parkStatusEntries, suiteLeaseWithPark, takeParkTicket } from './suite-lock-park.mjs'
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
@@ -78,6 +79,7 @@ export function readSuiteLockStatus(options = {}) {
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
   const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root))
+  snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
 }
@@ -112,6 +114,16 @@ function pidProvesGone(holder, options) {
   if (platformOf(options) === 'win32' || !Number.isFinite(holder.startTime)) return false
   const start = (options.processStartTime ?? processStartTime)(holder.pid)
   return start !== null && start !== holder.startTime
+}
+
+const parkOwnerJudge = (options) => (owner) => foreignNamespaceStale({ holder: owner }, options) ?? pidProvesGone(owner, options)
+export const parkAttemptIsGone = (holder) => parkOwnerJudge({})(holder)
+
+export function readSuiteLockParked(queueDir, options = {}, now = suiteLockNow(options)) {
+  const parked = liveParkedTickets(queueDir, now, parkOwnerJudge(options))
+  if (parked.length === 0) return parked
+  const waiting = new Set(readQueueSnapshot(queueDir, now).filter((ticket) => !ticketIsStale(ticket, options)).map((ticket) => ticket.number))
+  return parked.filter((entry) => !waiting.has(entry.number))
 }
 
 // A lock.d with no valid holder.json was left by an acquirer that died between `mkdir` and publishing
@@ -197,6 +209,7 @@ const progressPlace = ({ ahead, aheadExcludingRelease, total }) => ({ ahead, ahe
 // Reclaims dead tickets and returns my place: how many live tickets are ahead, and how many in all.
 function queuePlace(queueDir, mine, mineRecord, counter, options) {
   const now = suiteLockNow(options)
+  readSuiteLockParked(queueDir, options, now)
   const live = [{ number: mine, record: mineRecord }]
   for (const ticket of readQueueSnapshot(queueDir, now)) {
     const { number } = ticket
@@ -361,9 +374,10 @@ async function retryTransient(operation, pauseMs) {
 // Revalidate after winning the atomic mutex, before counting any grant or returning a lease.
 // Ordering/light-counter failures give back the provisional lease before the outer transient retry.
 function confirmAdmission(state, holder, place, options) {
-  const { root, lockDir, queueDir, ticket, record } = state
-  const lease = { root, lockDir, holder }
+  const { root, queueDir, ticket, record } = state
+  const lease = suiteLeaseWithPark(state, holder, options.park)
   try {
+    assertParkClaim(state)
     const confirmed = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
     if (confirmed.ahead > 0) {
       releaseSuiteLock(lease)
@@ -386,7 +400,8 @@ function confirmAdmission(state, holder, place, options) {
 // `{ place, current }` to wait.
 function pollQueue(state, options) {
   const { root, lockDir, queueDir, ticket, record } = state
-  heartbeatTicket(queueDir, ticket, record)
+  assertParkClaim(state)
+  heartbeatTicket(queueDir, ticket, record, !state.resumed)
   const place = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
   if (place.ahead === 0) {
     const holder = journalHolder(record, options, suiteLockNow(options))
@@ -440,9 +455,37 @@ async function acquireSuiteLock(options = {}) {
   if (id) return { inherited: true, holder: { leaseId: id }, domain }
   // Inside a lane sandbox the host lock directory is not writable: the host-side broker takes the
   // lock for this process and holds it while the connection stays open (host/lane-suite-lock-broker.mjs).
-  const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' ? env.WT_SUITE_LOCK_BROKER.trim() : ''
+  const broker = suiteBroker(env)
   if (broker && !options.root) return acquireBrokerSuiteLock(broker, options)
   const root = domain
+  const waiting = prepareSuiteWait(root, options, env, priority)
+  const { lockDir, queueDir, record } = waiting
+  const ticket = await retryTransient(() => takeParkTicket(queueDir, record, options, parkOwnerJudge(options)), HEAD_OF_QUEUE_POLL_MS)
+  const state = { root, lockDir, queueDir, ticket, record, ...parkQueueMetadata(record) }
+  try {
+    while (true) {
+      throwIfAborted(options.signal)
+      const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
+      if (step.lease) return grantParkState(state, step.lease)
+      const current = step.again ? readSuiteLock({ root }) : step.current
+      const now = Date.now()
+      observeSuiteHandover(waiting, step, current, now, options)
+      observeSuitePlace(waiting, step, current, now, options)
+      const { budget, remaining } = remainingSuiteWait(waiting, current, now)
+      if (step.again) continue
+      const delay = noticeSuiteWait(waiting, step, current, now, options)
+      await sleep(Math.min(delay, budget / 4, remaining), options.signal)
+    }
+  } finally {
+    finishParkQueue(state, options.park, () => removeTicket(queueDir, ticket))
+  }
+}
+
+function suiteBroker(env) {
+  return typeof env.WT_SUITE_LOCK_BROKER === 'string' ? env.WT_SUITE_LOCK_BROKER.trim() : ''
+}
+
+function prepareSuiteWait(root, options, env, priority) {
   const lockDir = path.join(root, 'lock.d')
   const queueDir = path.join(root, 'queue.d')
   const waitMs = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(env), '--wait-s') * 1000
@@ -451,75 +494,68 @@ async function acquireSuiteLock(options = {}) {
   const pollMs = options.pollMs ?? 2000
   const noticeMs = options.noticeMs ?? 30_000
   const startedWaiting = Date.now()
-  let nextNoticeAt = startedWaiting
-  let lastProgressAt = startedWaiting
-  let bestAhead = Infinity
-  let lastPlace = null
-  let lastHolderId = null
-  let holderPriority
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority, p0QueueFields(root, priority))
-  const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
-  const state = { root, lockDir, queueDir, ticket, record }
+  return { lockDir, queueDir, record, waitMs, headWaitMs, pollMs, noticeMs, nextNoticeAt: startedWaiting, lastProgressAt: startedWaiting,
+    bestAhead: Infinity, lastPlace: null, lastHolderId: null, holderPriority: undefined }
+}
 
-  try {
-    while (true) {
-      throwIfAborted(options.signal)
-      const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
-      if (step.lease) return step.lease
-      // An immediate hand-back retry also honours the deadline; only a NEW best place renews it.
-      const current = step.again ? readSuiteLock({ root }) : step.current
-      const now = Date.now()
-      const holderId = current.holder?.leaseId ?? null
-      if (holderId && holderId !== lastHolderId) {
-        holderPriority = current.holder.priority
-        options.onHandover?.(holderId, current.holder.priority)
-        if (lastHolderId || holderPriority === 'release') {
-          lastProgressAt = now
-          if (step.place) options.onProgress?.(progressPlace(step.place))
-        }
-      }
-      if (holderId) lastHolderId = holderId
-      // An immediate retry carries the place it was decided at: reaching the head there is progress too.
-      if (step.place) {
-        if (suiteQueueAdvanced(lastPlace, step.place)) {
-          lastProgressAt = now
-          options.onRenew?.(progressPlace(step.place))
-        }
-        lastPlace = step.place
-        if (lastPlace.aheadExcludingRelease < bestAhead) {
-          bestAhead = lastPlace.aheadExcludingRelease
-          lastProgressAt = now
-          options.onProgress?.(progressPlace(lastPlace))
-          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record)}`)
-          nextNoticeAt = now + noticeMs
-        }
-      }
-      // Once all non-release tickets ahead are gone, the head budget holds even if a
-      // release ticket passes it. Only actual head (ahead === 0) may acquire.
-      // A release can legitimately hold longer than the ordinary wait window. Bound its
-      // uninterrupted hold by the stale/head window; a normal stuck holder keeps waitMs.
-      const budget = waiterBudget(waitMs, headWaitMs, bestAhead, holderPriority)
-      const remaining = budget - (now - lastProgressAt)
-      if (remaining <= 0) {
-        const position = lastPlace ? `position ${lastPlace.ahead + 1} of ${lastPlace.total}` : 'position unknown'
-        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}; no queue progress for ${((now - lastProgressAt) / 1000).toFixed(1)} s at ${position}; inspect with wt-suite-lock status`)
-        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-        timeout.holder = current.holder
-        throw timeout
-      }
-      if (step.again) continue
-      const { place } = step
-      if (now >= nextNoticeAt) {
-        options.onWait?.(`waiting for suite lock: ${describeWait(place, current, record)}`)
-        nextNoticeAt = now + noticeMs
-      }
-      const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
-      await sleep(Math.min(delay, budget / 4, remaining), options.signal)
-    }
-  } finally {
-    removeTicket(queueDir, ticket)
+function observeSuiteHandover(waiting, step, current, now, options) {
+  const holderId = current.holder?.leaseId ?? null
+  if (holderId && holderId !== waiting.lastHolderId) {
+    waiting.holderPriority = current.holder.priority
+    options.onHandover?.(holderId, current.holder.priority)
+    renewSuiteHandover(waiting, step, now, options)
   }
+  if (holderId) waiting.lastHolderId = holderId
+}
+
+function renewSuiteHandover(waiting, step, now, options) {
+  if (waiting.lastHolderId || waiting.holderPriority === 'release') {
+    waiting.lastProgressAt = now
+    if (step.place) options.onProgress?.(progressPlace(step.place))
+  }
+}
+
+function observeSuitePlace(waiting, step, current, now, options) {
+  // Immediate retries retain their place; only actual progress renews the budget.
+  if (step.place) {
+    if (suiteQueueAdvanced(waiting.lastPlace, step.place)) {
+      waiting.lastProgressAt = now
+      options.onRenew?.(progressPlace(step.place))
+    }
+    waiting.lastPlace = step.place
+    if (waiting.lastPlace.aheadExcludingRelease < waiting.bestAhead) {
+      waiting.bestAhead = waiting.lastPlace.aheadExcludingRelease
+      waiting.lastProgressAt = now
+      options.onProgress?.(progressPlace(waiting.lastPlace))
+      options.onWait?.(`waiting for suite lock: ${describeWait(waiting.lastPlace, current, waiting.record)}`)
+      waiting.nextNoticeAt = now + waiting.noticeMs
+    }
+  }
+}
+
+function remainingSuiteWait(waiting, current, now) {
+  // Once the non-release head is reached its budget holds, even while a release ticket passes.
+  const budget = waiterBudget(waiting.waitMs, waiting.headWaitMs, waiting.bestAhead, waiting.holderPriority)
+  const remaining = budget - (now - waiting.lastProgressAt)
+  if (remaining <= 0) {
+    const position = waiting.lastPlace ? `position ${waiting.lastPlace.ahead + 1} of ${waiting.lastPlace.total}` : 'position unknown'
+    const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}; no queue progress for ${((now - waiting.lastProgressAt) / 1000).toFixed(1)} s at ${position}; inspect with wt-suite-lock status`)
+    timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+    timeout.holder = current.holder
+    throw timeout
+  }
+  return { budget, remaining }
+}
+
+function noticeSuiteWait(waiting, step, current, now, options) {
+  const { place } = step
+  if (now >= waiting.nextNoticeAt) {
+    options.onWait?.(`waiting for suite lock: ${describeWait(place, current, waiting.record)}`)
+    waiting.nextNoticeAt = now + waiting.noticeMs
+  }
+  return Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, waiting.pollMs)
 }
 
 function inheritStaticLease(options, domain, id) {
