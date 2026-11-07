@@ -23,6 +23,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Worktree sweep shares parent-only native path identity across registry and index-lock checks, keeps unmatched registrations, and reports incomplete outside counts as unknown.
 - Dev-plan stops before synthesis unless a candidate has both an accepting Critique verdict and an accepting verifier vote, reports every rejection or unaccepted verdict with vote reasons and rerun guidance, and includes code-owned rejection reasons in every emitted plan artifact.
 - Quota watch help names the five-hour window as optional and says each window is watched
   on its own, matching plans whose only bound is the seven-day window.

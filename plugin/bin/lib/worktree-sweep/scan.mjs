@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createProcfs } from '../host/procfs.mjs'
 import { scanIdleWorktree } from '../host/lane-worktree-scan.mjs'
 import { pathContains } from '../host/sweep-evidence.mjs'
+import { sweepPathIdentity } from '../host/sweep-path-identity.mjs'
 import { hostNamespaceEvidence, recordedProcessPresence, scanSweepProcesses } from '../host/sweep-processes.mjs'
 import { archiveLimit, baseProven, gitIndexLock, gitVerdict, reachableObjects } from './git.mjs'
 import { entryBoundary, inventoryTree, isIndexLock, outsideSweep, sourceBoundary } from './paths.mjs'
@@ -35,7 +36,7 @@ function quietReason(file, inventory, options) {
     return stat
   }
   const idle = scanIdleWorktree(file, { maxEntries: 200000, readStat, readTargetStat: readStat,
-    readDirectory: (dir, args) => readdirSync(dir, args).filter(entry => !isIndexLock(path.join(dir, entry.name), entry, options.indexLock)) })
+    readDirectory: (dir, args) => readdirSync(dir, args).filter(entry => !isIndexLock(path.join(dir, entry.name), entry, options.indexLock, options.identity, options.indexLockKey)) })
   if (idle.status !== 'known' || inventory.reason) return UNKNOWN_PROCESS
   if (BigInt(options.now) * 1_000_000n - latestNs < 72n * 3600_000_000_000n) return 'recent'
   return null
@@ -75,6 +76,21 @@ function registrationAbsence(file, registration) {
   return registration.prunable ? 'registered-prunable' : null
 }
 
+function registrationUnmatched(file, registration, registry) {
+  return !registration && !registry.unknown && existsSync(path.join(file, '.git'))
+}
+
+function entryContext(file, boundary, options) {
+  const context = { ...options, indexLock: gitIndexLock(file, options), registryUnknown: boundary.registry.unknown }
+  context.indexLockKey = context.indexLock ? options.identity.key(context.indexLock) : null
+  return context
+}
+
+function measuredVerdict(entry, inventory, options, registration, verdict) {
+  return { ...entry, ...entryMeasurements(inventory, options), ...(registration ? { registration } : {}),
+    ...verdict, verdict: verdict.reason ? 'KEEP' : 'ELIGIBLE (report only)', reason: verdict.reason ?? 'eligible' }
+}
+
 function scanEntry(name, boundary, options) {
   const file = path.join(boundary.source, name)
   const entry = { name, path: file, verdict: 'KEEP', bytes: null, ageHours: null }
@@ -83,11 +99,11 @@ function scanEntry(name, boundary, options) {
   const absence = registrationAbsence(file, registration)
   if (absence) return { ...entry, registration, reason: absence }
   if (!entryBoundary(file, boundary).allowed) return { ...entry, reason: 'not-an-entry' }
-  const context = { ...options, indexLock: gitIndexLock(file, options), registryUnknown: boundary.registry.unknown }
-  const inventory = inventoryTree(file, { ...boundary, indexLock: context.indexLock, deadline: options.deadline, clock: options.clock })
+  if (registrationUnmatched(file, registration, boundary.registry)) return { ...entry, reason: 'registration-unmatched' }
+  const context = entryContext(file, boundary, options)
+  const inventory = inventoryTree(file, { ...boundary, indexLock: context.indexLock, indexLockKey: context.indexLockKey, deadline: options.deadline, clock: options.clock })
   const verdict = registration?.locked ? { reason: 'locked' } : candidate(file, inventory, context)
-  return { ...entry, ...entryMeasurements(inventory, options), ...(registration ? { registration } : {}),
-    ...verdict, verdict: verdict.reason ? 'KEEP' : 'ELIGIBLE (report only)', reason: verdict.reason ?? 'eligible' }
+  return measuredVerdict(entry, inventory, options, registration, verdict)
 }
 
 function scanOptions(options, boundary) {
@@ -118,6 +134,7 @@ export function scanProject(options) {
     scanBudgetMs: SCAN_BUDGET_MS, ...options, clock,
     procfs: options.procfs ?? createProcfs({ root: options.env?.WT_SWEEP_PROC_ROOT }) }
   config.scanDeadline = clock() + config.scanBudgetMs
+  config.identity = sweepPathIdentity(config)
   if (!Number.isSafeInteger(config.now)) throw new Error('worktree sweep: invalid observation clock')
   const project = path.resolve(options.project)
   const boundary = sourceBoundary(project, config)

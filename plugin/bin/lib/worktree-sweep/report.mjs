@@ -15,7 +15,8 @@ export function summaryLine(report) {
   if (report.reason) return `worktree sweep (${report.project}): report only; KEEP all (${report.reason})`
   const summary = report.summary
   const reasons = Object.entries(summary.counts).map(([reason, count]) => `${count} ${reason}`).join(', ')
-  return `worktree sweep (${report.project}): report only; ${summary.entries} entries; ${reasons}; moved 0; purged 0; ${report.outsideSweep.count} outside the sweep; excluded ${summary.nonDumpable} non-dumpable, ${summary.foreignUnreadable} foreign-unreadable, ${summary.mismatchExcluded} other-device references`
+  const outside = report.outsideSweep.complete === false ? `outside the sweep unknown (${report.outsideSweep.reason})` : `${report.outsideSweep.count} outside the sweep`
+  return `worktree sweep (${report.project}): report only; ${summary.entries} entries; ${reasons}; moved 0; purged 0; ${outside}; excluded ${summary.nonDumpable} non-dumpable, ${summary.foreignUnreadable} foreign-unreadable, ${summary.mismatchExcluded} other-device references`
 }
 
 // The caller explicitly designates this output. Inspect the pathname itself so
