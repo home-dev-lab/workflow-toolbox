@@ -27,6 +27,8 @@ function identity(options = {}) {
   return module!.sweepPathIdentity(options)
 }
 const missing = () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) }
+// The adapter folds case on hosts whose default file system ignores it: Windows and macOS.
+const hostKey = (value: string) => process.platform === 'win32' || process.platform === 'darwin' ? value.toLowerCase() : value
 
 it.skipIf(process.platform === 'win32')('retains a POSIX leaf whose final character is a backslash', () => {
   expect(identity({ platform: 'linux', realpath: missing }).key('/tree/leaf\\')).toBe('/tree/leaf\\')
@@ -53,7 +55,7 @@ it.skipIf(process.platform === 'win32')('never follows a leaf, including a symli
 it('uses native realpath from the IO facade on parents by default', () => {
   const { project } = setup(); const parent = path.join(project, 'parent'); mkdirSync(parent)
   const expected = path.join(realpathSync.native(parent), 'missing')
-  expect(identity().key(path.join(parent, 'missing'))).toBe(process.platform === 'win32' ? expected.toLowerCase() : expected)
+  expect(identity().key(path.join(parent, 'missing'))).toBe(hostKey(expected))
   expect(native).toHaveBeenCalledWith(parent)
 })
 
@@ -61,7 +63,7 @@ it('keeps a real leaf symlink at its location', () => {
   const { project } = setup(); const target = path.join(project, 'target'); mkdirSync(target)
   const leaf = path.join(project, 'link'); symlinkSync(target, leaf, 'junction')
   const expected = path.join(realpathSync.native(project), 'link')
-  expect(identity().key(leaf)).toBe(process.platform === 'win32' ? expected.toLowerCase() : expected)
+  expect(identity().key(leaf)).toBe(hostKey(expected))
 })
 
 it.skipIf(process.platform === 'win32')('folds Darwin aliases and case, preserves Linux case, and respects separator boundaries', () => {
@@ -75,7 +77,7 @@ it.skipIf(process.platform === 'win32')('folds Darwin aliases and case, preserve
 
 it('falls back only for filesystem errors and propagates programmer errors', () => {
   const expected = path.resolve('missing', 'x')
-  expect(identity({ realpath: missing }).key(expected)).toBe(process.platform === 'win32' ? expected.toLowerCase() : expected)
+  expect(identity({ realpath: missing }).key(expected)).toBe(hostKey(expected))
   expect(() => identity({ realpath: () => { throw new TypeError('bad adapter') } }).key('/missing/x')).toThrow('bad adapter')
 })
 
