@@ -629,7 +629,7 @@ it('reports unknown ownership without signalling an unverified group', () => {
   const stderr = new PassThrough(); let text = ''
   stderr.on('data', chunk => { text += chunk.toString() })
   const killGroup = vi.fn(), kill = vi.fn()
-  stop.signalTsBackend({ options: { groupOwnership: () => 'unknown', killGroup }, streams: { stderr } }, { child: { pid: 123, kill } }, 'SIGKILL')
+  stop.signalTsBackend({ options: { platform: 'linux', groupOwnership: () => 'unknown', killGroup }, streams: { stderr } }, { child: { pid: 123, kill } }, 'SIGKILL')
   expect(killGroup, 'unknown ownership must suppress the group signal').not.toHaveBeenCalled()
   expect(kill, 'the leader is still signalled through its ChildProcess').toHaveBeenCalledExactlyOnceWith('SIGKILL')
   expect(text).toContain('unknown')

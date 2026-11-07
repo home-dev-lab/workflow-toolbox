@@ -2201,7 +2201,22 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
   })
 })
 
+function setVerifyDepsEnv(env: NodeJS.ProcessEnv, value: string | undefined) {
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'pnpm_config_verify_deps_before_run') delete env[key]
+  }
+  if (value !== undefined) env.pnpm_config_verify_deps_before_run = value
+}
+
 describe('wt-lane pnpm dependency verification spellings', () => {
+  it.each([undefined, 'true', 'false', ''])('the fixture replaces every inherited spelling with %j', (value) => {
+    const env: NodeJS.ProcessEnv = { PATH: '/bin', PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'false', pnpm_config_verify_deps_before_run: 'false' }
+    setVerifyDepsEnv(env, value)
+    const spellings = Object.keys(env).filter(key => key.toLowerCase() === 'pnpm_config_verify_deps_before_run')
+    expect(spellings).toEqual(value === undefined ? [] : ['pnpm_config_verify_deps_before_run'])
+    if (value !== undefined) expect(env[spellings[0]!]).toBe(value)
+    expect(env.PATH).toBe('/bin')
+  })
   it.each(['pnpm_config_verify_deps_before_run', 'PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN'])('the model child env keeps a caller %s and gains no other spelling', (name) => {
     const caller = { PATH: '/bin', [name]: 'true' }
     const child = laneWorkerEnv(laneOpencodeChildEnv(caller, 'openai/example'), null)
@@ -2213,12 +2228,12 @@ describe('wt-lane pnpm dependency verification spellings', () => {
 describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
   it.each([undefined, 'true', 'false', ''])('passes pnpm dependency verification through every child env filter (%j)', (value) => {
     const f = fixture('pnpm-verify-deps-env')
-    delete f.env.pnpm_config_verify_deps_before_run
-    if (value !== undefined) f.env.pnpm_config_verify_deps_before_run = value
+    setVerifyDepsEnv(f.env, value)
     const res = run(f, ['--timeout', '1'])
-    expect(res.status, res.stderr).toBe(0)
+    const diagnostic = `verify-deps env keys=${JSON.stringify(Object.keys(f.env).filter(key => /verify.deps/i.test(key)))}; stderr=${res.stderr}`
+    expect(res.status, diagnostic).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
-    expect(readFileSync(join(f.dir, 'pnpm-verify-deps-env'), 'utf8')).toBe(value ?? 'false')
+    expect(readFileSync(join(f.dir, 'pnpm-verify-deps-env'), 'utf8'), diagnostic).toBe(value ?? 'false')
   })
 
   it.each([[['--lock-priority', 'p0'], 'P2', 'P0'], [['--lock-priority', 'p1'], 'P0', 'P1'], [['--lock-priority', 'p2'], 'P0', 'P2'], [[], undefined, 'P2'], [[], 'P0', 'P0'], [[], 'P1', 'P1'], [[], 'P2', 'P2']] as const)('the opencode child env carries the effective level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
