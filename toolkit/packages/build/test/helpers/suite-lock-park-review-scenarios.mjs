@@ -116,6 +116,12 @@ export const parkReviewScenarios = {
       assert.match(second.stderr, /another attempt holds this park directory/)
       assert(existsSync(f.file(parked.number + 10)), 'a refused second attempt cannot clean a newer park')
     } finally { waiting.child.kill('SIGTERM'); await waiting.exit; f.release(blocker) }
+    if (process.platform === 'win32') {
+      // Windows SIGTERM kills abruptly; a new attempt must take over the dead claim.
+      assert.equal(f.run().status, 0, 'a new attempt takes over the abruptly terminated Windows attempt')
+      assert(!existsSync(join(f.directory, 'attempt')), 'the Windows takeover releases its claim')
+      return
+    }
     assert(!existsSync(join(f.directory, 'attempt')), 'the completed attempt releases its claim')
   }),
   'rechecks the resumed claim after winning the mutex': async (cli) => fixture(cli, async (f) => {
