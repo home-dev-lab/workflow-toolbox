@@ -47,6 +47,12 @@ export function git(dir, env, ...args) {
   return execFileSync('git', ['-C', dir, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
+export function sweepDiagnostics(f, dir, report) {
+  return JSON.stringify({ root: f.root, nativeRoot: realpathSync.native(f.root),
+    registry: git(dir, f.env, 'worktree', 'list', '--porcelain', '-z'),
+    gitDir: git(dir, f.env, 'rev-parse', '--absolute-git-dir'), outsidePaths: report.outsideSweep.paths })
+}
+
 export function repository(f, name = 'clean') {
   const dir = join(f.source, name)
   mkdirSync(dir)

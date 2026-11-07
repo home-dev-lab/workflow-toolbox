@@ -1,10 +1,10 @@
 import { execFileSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
-import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime module
-import { fixture, fingerprint, git, repository, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
+import { fixture, fingerprint, git, repository, sweepDiagnostics, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
 const moduleUrl = sweepModule('bin/lib/worktree-sweep/scan.mjs')
 const sweep = await import(/* @vite-ignore */ moduleUrl).catch(() => null)
 const cli = fileURLToPath(sweepModule('bin/wt-worktree-sweep.mjs'))
@@ -14,6 +14,15 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.options).entries[0] }
 
   it('ships a report-only scanner', () => { expect(sweep, 'report-only scanner must ship').not.toBeNull() })
+  it('Darwin registration basename case protects the disk-named entry', () => {
+    const f = setup(); const dir = repository(f)
+    f.options.platform = 'darwin'; f.options.mounts = []
+    f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => args.includes('worktree')
+      ? { status: 0, stdout: `worktree ${join(f.source, 'Clean')}\0locked\0\0` } : spawnSync(cmd, args, options)
+    const report = sweep!.scanProject(f.options)
+    expect(report.entries).toHaveLength(1)
+    expect(report.entries[0]).toMatchObject({ path: dir, verdict: 'KEEP', reason: 'locked' })
+  })
   it('fixture Git config is a readable regular file, isolated from host configuration', () => {
     const f = setup()
     expect(lstatSync(f.env.GIT_CONFIG_GLOBAL).isFile(), 'Git global config must be a regular file').toBe(true)
@@ -134,9 +143,10 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
    })
    it('only the regular Git index lock is ignored, not an ignored namesake file', () => {
      const f = setup(); const dir = repository(f)
-     const lock = join(dir, '.git', 'index.lock'); writeFileSync(lock, 'git lock')
-     utimesSync(lock, f.now / 1000, f.now / 1000)
-     expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
+      const lock = join(dir, '.git', 'index.lock'); writeFileSync(lock, 'git lock')
+      utimesSync(lock, f.now / 1000, f.now / 1000)
+      const report = sweep!.scanProject(f.options)
+      expect(report.entries[0], sweepDiagnostics(f, dir, report)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
      mkdirSync(join(dir, 'ignored')); const namesake = join(dir, 'ignored', 'index.lock')
      writeFileSync(namesake, 'owner bytes'); utimesSync(namesake, f.now / 1000, f.now / 1000)
      expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'recent' })
@@ -155,8 +165,9 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
      const f = setup(); const main = repository(f, 'main'); const dir = join(f.source, 'locked linked')
      git(main, f.env, 'worktree', 'add', '-qb', 'linked', dir)
      git(main, f.env, 'worktree', 'lock', '--reason', 'owner lease', dir)
-     const before = fingerprint(f.project)
-     expect(sweep!.scanProject(f.options).entries.find((e: { path: string }) => e.path === dir))
+      const before = fingerprint(f.project)
+      const report = sweep!.scanProject(f.options)
+      expect(report.entries.find((e: { path: string }) => e.path === dir), sweepDiagnostics(f, dir, report))
        .toMatchObject({ verdict: 'KEEP', reason: 'locked' })
      expect(fingerprint(f.project)).toEqual(before)
    })
@@ -186,7 +197,8 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
         if (args.includes('worktree')) result.stdout = `worktree ${registryPath}\0prunable stale registration\0\0`
         return result
      }
-     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
+      const report = sweep!.scanProject(f.options)
+      expect(report.entries[0], sweepDiagnostics(f, dir, report)).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
    })
    it('registry paths outside the direct-child scope are counted outside the sweep, never made entries', () => {
      const f = setup(); const main = repository(f, 'main')
@@ -195,8 +207,11 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
      const before = fingerprint(f.root)
      const report = sweep!.scanProject(f.options)
      expect(report.entries.map((row: { name: string }) => row.name)).toEqual(['main'])
-     const normalized = (file: string) => process.platform === 'win32' ? resolve(file).toLowerCase() : resolve(file)
-     expect(report.outsideSweep.count).toBe(2)
+      const normalized = (file: string) => {
+        const location = join(realpathSync.native(dirname(file)), basename(file))
+        return process.platform === 'win32' ? location.toLowerCase() : location
+      }
+      expect(report.outsideSweep.count, sweepDiagnostics(f, main, report)).toBe(2)
      expect(report.outsideSweep.paths.map(normalized).sort()).toEqual([join(main, 'nested'), join(f.root, 'outside')].map(normalized).sort())
      expect(fingerprint(f.root)).toEqual(before)
    })
