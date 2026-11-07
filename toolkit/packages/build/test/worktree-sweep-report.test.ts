@@ -1,10 +1,10 @@
 import { execFileSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
-import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime module
-import { fixture, fingerprint, git, repository, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
+import { fixture, fingerprint, git, repository, sweepDiagnostics, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
 const moduleUrl = sweepModule('bin/lib/worktree-sweep/scan.mjs')
 const sweep = await import(/* @vite-ignore */ moduleUrl).catch(() => null)
 const cli = fileURLToPath(sweepModule('bin/wt-worktree-sweep.mjs'))
@@ -14,6 +14,22 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.options).entries[0] }
 
   it('ships a report-only scanner', () => { expect(sweep, 'report-only scanner must ship').not.toBeNull() })
+  it('Darwin registration basename case protects the disk-named entry', () => {
+    const f = setup(); const dir = repository(f)
+    f.options.platform = 'darwin'; f.options.mounts = []
+    f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => args.includes('worktree')
+      ? { status: 0, stdout: `worktree ${join(f.source, 'Clean')}\0locked\0\0` } : spawnSync(cmd, args, options)
+    const report = sweep!.scanProject(f.options)
+    expect(report.entries).toHaveLength(1)
+    expect(report.entries[0]).toMatchObject({ path: dir, verdict: 'KEEP', reason: 'locked' })
+  })
+  it('fixture Git config is a readable regular file, isolated from host configuration', () => {
+    const f = setup()
+    expect(lstatSync(f.env.GIT_CONFIG_GLOBAL).isFile(), 'Git global config must be a regular file').toBe(true)
+    expect(readFileSync(f.env.GIT_CONFIG_GLOBAL, 'utf8')).toBe('')
+    expect(f.env.GIT_CONFIG_NOSYSTEM).toBe('1')
+    expect(git(f.project, f.env, 'config', '--global', '--list')).toBe('')
+  })
   it('G1 tracked edits are KEEP uncommitted with path, branch, bytes, age and count', () => {
     const f = setup(); const dir = repository(f)
     writeFileSync(join(dir, 'tracked'), 'local change\n')
@@ -127,9 +143,10 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
    })
    it('only the regular Git index lock is ignored, not an ignored namesake file', () => {
      const f = setup(); const dir = repository(f)
-     const lock = join(dir, '.git', 'index.lock'); writeFileSync(lock, 'git lock')
-     utimesSync(lock, f.now / 1000, f.now / 1000)
-     expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
+      const lock = join(dir, '.git', 'index.lock'); writeFileSync(lock, 'git lock')
+      utimesSync(lock, f.now / 1000, f.now / 1000)
+      const report = sweep!.scanProject(f.options)
+      expect(report.entries[0], sweepDiagnostics(f, dir, report)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
      mkdirSync(join(dir, 'ignored')); const namesake = join(dir, 'ignored', 'index.lock')
      writeFileSync(namesake, 'owner bytes'); utimesSync(namesake, f.now / 1000, f.now / 1000)
      expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'recent' })
@@ -148,8 +165,9 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
      const f = setup(); const main = repository(f, 'main'); const dir = join(f.source, 'locked linked')
      git(main, f.env, 'worktree', 'add', '-qb', 'linked', dir)
      git(main, f.env, 'worktree', 'lock', '--reason', 'owner lease', dir)
-     const before = fingerprint(f.project)
-     expect(sweep!.scanProject(f.options).entries.find((e: { path: string }) => e.path === dir))
+      const before = fingerprint(f.project)
+      const report = sweep!.scanProject(f.options)
+      expect(report.entries.find((e: { path: string }) => e.path === dir), sweepDiagnostics(f, dir, report))
        .toMatchObject({ verdict: 'KEEP', reason: 'locked' })
      expect(fingerprint(f.project)).toEqual(before)
    })
@@ -167,15 +185,20 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
        ? { status: 1, stdout: '' } : spawnSync(cmd, args, options)
      expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'worktree-registry-unavailable' })
    })
-   it('a prunable registration is KEEP even if a directory still occupies its path', () => {
-     const f = setup(); const dir = repository(f)
-     const registered = git(dir, f.env, 'rev-parse', '--show-toplevel').trim()
-     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
-       const result = spawnSync(cmd, args, options)
-       if (args.includes('worktree')) result.stdout = result.stdout.replace(`worktree ${registered}\0`, `worktree ${registered}\0prunable stale registration\0`)
-       return result
+    it.each(['native', 'win32'])('a prunable registration is KEEP even if a directory still occupies its path (%s)', platform => {
+      const f = setup(); const dir = repository(f)
+      const registered = git(dir, f.env, 'rev-parse', '--show-toplevel').trim()
+      const registryPath = platform === 'win32' ? registered.replaceAll('/', '\\') : registered
+      if (platform === 'win32') { f.options.platform = platform; f.options.mounts = [] }
+      f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+        const result = spawnSync(cmd, args, options)
+        // Fabricate the single standalone registration directly: separate Git
+        // commands need not print the same drive-letter case or separators.
+        if (args.includes('worktree')) result.stdout = `worktree ${registryPath}\0prunable stale registration\0\0`
+        return result
      }
-     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
+      const report = sweep!.scanProject(f.options)
+      expect(report.entries[0], sweepDiagnostics(f, dir, report)).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
    })
    it('registry paths outside the direct-child scope are counted outside the sweep, never made entries', () => {
      const f = setup(); const main = repository(f, 'main')
@@ -184,8 +207,11 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
      const before = fingerprint(f.root)
      const report = sweep!.scanProject(f.options)
      expect(report.entries.map((row: { name: string }) => row.name)).toEqual(['main'])
-     const normalized = (file: string) => process.platform === 'win32' ? resolve(file).toLowerCase() : resolve(file)
-     expect(report.outsideSweep.count).toBe(2)
+      const normalized = (file: string) => {
+        const location = join(realpathSync.native(dirname(file)), basename(file))
+        return process.platform === 'win32' ? location.toLowerCase() : location
+      }
+      expect(report.outsideSweep.count, sweepDiagnostics(f, main, report)).toBe(2)
      expect(report.outsideSweep.paths.map(normalized).sort()).toEqual([join(main, 'nested'), join(f.root, 'outside')].map(normalized).sort())
      expect(fingerprint(f.root)).toEqual(before)
    })
@@ -194,7 +220,7 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
      git(main, f.env, 'worktree', 'add', '-qb', 'locked', locked); git(main, f.env, 'worktree', 'lock', locked)
      git(main, f.env, 'worktree', 'add', '-qb', 'missing', missing); rmSync(missing, { recursive: true })
      const prefix = platform === 'win32' ? f.source.replaceAll('/', '\\') : f.source.toUpperCase()
-     f.options.platform = platform; f.options.pid = 42; f.options.cwd = f.project
+      f.options.platform = platform; f.options.mounts = []; f.options.pid = 42; f.options.cwd = f.project
      f.options.lsofRun = () => ({ status: 0, stdout: `p42\nfcwd\nn${f.project}\n` })
      f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
        const result = spawnSync(cmd, args, options)
@@ -223,14 +249,25 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
     rmSync(f.source, { recursive: true }); symlinkSync(f.root, f.source)
     expect(sweep!.scanProject(f.options).reason).toBe('source-not-canonical')
   })
-  it('D3 the real CLI uses injected mountinfo before planning any entry', () => {
+   it('D3 the real CLI reports its platform boundary before planning any entry', () => {
     const f = setup(); repository(f); const before = fingerprint(f.project)
     writeFileSync(join(f.procRoot, 'self', 'mountinfo'), '')
     const out = join(f.root, 'boundary.json')
     execFileSync(process.execPath, [cli, 'run', '--mode', 'report', '--out', out], { env: f.env })
-    expect(JSON.parse(readFileSync(out, 'utf8')).reason).toContain('mountinfo root witness unavailable')
-    expect(fingerprint(f.project)).toEqual(before)
-  })
+     const report = JSON.parse(readFileSync(out, 'utf8'))
+     const expected = process.platform === 'linux' ? 'mountinfo root witness unavailable' : `mount boundary unavailable on ${process.platform}`
+     expect(report.reason).toContain(expected)
+     expect(report.entries).toEqual([])
+     expect(fingerprint(f.project)).toEqual(before)
+   })
+   it.each(['darwin', 'win32'])('D3 %s refuses an unavailable mount boundary before planning entries', platform => {
+     const f = setup(); repository(f); const before = fingerprint(f.project)
+     writeFileSync(join(f.procRoot, 'self', 'mountinfo'), '')
+     const report = sweep!.scanProject({ ...f.options, platform })
+     expect(report.reason, 'unsupported mount discovery must not claim a known empty boundary').toBe(`mount boundary unavailable on ${platform}`)
+     expect(report.entries).toEqual([])
+     expect(fingerprint(f.project)).toEqual(before)
+   })
   it('G16 namespace uncertainty never produces eligibility', () => {
     const f = setup(); repository(f); f.options.hostNamespace = { status: 'unknown' }
     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'liveness unknown: not in the host PID namespace' })

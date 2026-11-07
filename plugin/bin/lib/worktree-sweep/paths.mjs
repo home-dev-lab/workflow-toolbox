@@ -2,35 +2,33 @@
 import { existsSync, lstatSync, readdirSync, realpathSync } from '../host/worktree-sweep-io.mjs'
 import path from 'node:path'
 import { pathContains, platformCanonicalPath, sweepMounts } from '../host/sweep-evidence.mjs'
+import { sweepPathIdentity } from '../host/sweep-path-identity.mjs'
 import { readGit } from './git.mjs'
 
 const readFailure = error => error.code ?? error.message
+const pathIdentity = options => options.identity ?? sweepPathIdentity(options)
+const noRepository = stderr => stderr === 'fatal: not a git repository (or any of the parent directories): .git'
+  || /^fatal: not a git repository \(or any parent up to mount point [^\r\n]+\)\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.$/.test(stderr)
 
 function registryFlag(field, name) {
   return field === name || field.startsWith(`${name} `)
 }
 
-function registryPaths(platform) {
-  // A mocked process reader can be Linux while fixture files still live on NTFS.
-  return platform === 'win32' || path === path.win32 ? path.win32 : path.posix
+function registryKey(file, source, identity, names = []) {
+  const { paths, fold, foldName } = identity
+  const basename = foldName(paths.basename(file))
+  const nearby = names.some(name => foldName(name) === basename)
+    || fold(paths.parse(paths.resolve(file)).root) === fold(paths.parse(paths.resolve(source)).root)
+  return nearby ? identity.key(file) : fold(file)
 }
 
-function directRegistryChild(root, file, platform) {
-  const paths = registryPaths(platform)
-  const flavour = paths === path.win32 ? 'win32' : platform
-  const source = platformCanonicalPath(paths.resolve(root), flavour)
-  const target = platformCanonicalPath(paths.resolve(file), flavour)
-  const parent = paths.dirname(target)
-  return pathContains(source, target, flavour) && pathContains(source, parent, flavour) && pathContains(parent, source, flavour)
-}
-
-function parseRegistry(stdout, platform) {
+function parseRegistry(stdout, identity) {
   const records = []
   let current = null
   for (const field of stdout.split('\0')) {
     if (field.startsWith('worktree ')) {
       current = { path: field.slice(9), locked: false, prunable: false }
-      if (!registryPaths(platform).isAbsolute(current.path)) throw new Error('invalid worktree path')
+      if (!identity.paths.isAbsolute(current.path)) throw new Error('invalid worktree path')
       records.push(current)
     } else if (current && registryFlag(field, 'locked')) current.locked = true
     else if (current && registryFlag(field, 'prunable')) current.prunable = true
@@ -40,11 +38,33 @@ function parseRegistry(stdout, platform) {
   return records
 }
 
-function mergeRegistration(records, record, platform) {
-  const paths = registryPaths(platform)
-  const name = paths.basename(paths.resolve(record.path))
-  const previous = records.get(name)
-  records.set(name, { ...record, locked: record.locked || previous?.locked, prunable: record.prunable || previous?.prunable })
+function mergeRegistration(records, record, identity, names) {
+  const basename = identity.paths.basename(identity.paths.resolve(record.path))
+  const candidates = [...new Set([...names, ...records.keys()])]
+  const matches = candidates.includes(basename) ? [basename]
+    : candidates.filter(candidate => identity.foldName(candidate) === identity.foldName(basename))
+  for (const name of matches.length ? matches : [basename]) {
+    const previous = records.get(name)
+    records.set(name, { ...record, locked: record.locked || previous?.locked, prunable: record.prunable || previous?.prunable })
+  }
+}
+
+function addRegistryRecord(record, boundary, records, outside) {
+  const { identity, source, names } = boundary
+  const target = registryKey(record.path, source, identity, names)
+  if (identity.paths.dirname(target) !== identity.key(source)) { outside.add(record.path); return }
+  mergeRegistration(records, record, identity, names)
+}
+
+function readRegistry(project, options, identity) {
+  const env = { ...(options.env ?? process.env), LC_ALL: 'C' }
+  const result = readGit(project, ['worktree', 'list', '--porcelain', '-z'], { ...options, env })
+  // Only Git's explicit discovery result proves absence; missing .git does not.
+  const absent = result.status === 128 && !result.error && !existsSync(path.join(project, '.git'))
+    && noRepository(result.stderr?.trim())
+  if (absent) return []
+  if (result.status !== 0 || result.error) throw new Error('worktree registry unavailable')
+  return parseRegistry(result.stdout, identity)
 }
 
 function worktreeRegistry(project, boundary, options) {
@@ -52,23 +72,17 @@ function worktreeRegistry(project, boundary, options) {
   const outside = new Set()
   let unknown = false
   const repositories = [project, ...boundary.names.map(name => path.join(boundary.source, name))
-    .filter(file => entryBoundary(file, boundary).allowed)]
-  for (const repo of repositories.filter(file => existsSync(path.join(file, '.git')))) {
+    .filter(file => entryBoundary(file, boundary).allowed && existsSync(path.join(file, '.git')))]
+  for (const repo of repositories) {
     try {
-      const result = readGit(repo, ['worktree', 'list', '--porcelain', '-z'], options)
-      if (result.status !== 0 || result.error) throw new Error('worktree registry unavailable')
-      for (const record of parseRegistry(result.stdout, options.platform)) {
-        if (!directRegistryChild(boundary.source, record.path, options.platform)) {
-          outside.add(record.path); continue
-        }
-        mergeRegistration(records, record, options.platform)
-      }
+      for (const record of readRegistry(repo, options, boundary.identity)) addRegistryRecord(record, boundary, records, outside)
     } catch { unknown = true }
   }
   return { records, unknown, outside: [...outside] }
 }
 
 export function sourceBoundary(project, options) {
+  const identity = pathIdentity(options)
   const source = path.join(project, '.claude', 'worktrees')
   const mounts = options.mounts ? { status: 'known', mounts: options.mounts } : sweepMounts(options)
   try {
@@ -79,7 +93,7 @@ export function sourceBoundary(project, options) {
     if (mounts.status !== 'known') return { source, reason: mounts.reason }
     const crosses = mounts.mounts.some(mount => mount !== project && pathContains(project, mount) && pathContains(mount, source))
     if (crosses) return { source, reason: 'source-mount-boundary' }
-    const boundary = { source, device: stat.dev, mounts: mounts.mounts, names: readdirSync(source).sort() }
+    const boundary = { source, identity, device: stat.dev, mounts: mounts.mounts, names: readdirSync(source).sort() }
     const registry = worktreeRegistry(project, boundary, options)
     return { ...boundary, registry, names: [...new Set([...boundary.names, ...registry.records.keys()])].sort() }
   } catch (error) { return { source, reason: `source-unavailable: ${readFailure(error)}` } }
@@ -110,8 +124,16 @@ function scanExceeded(visited, options) {
   return visited > options.maxNodes || options.clock() > options.deadline
 }
 
+export function isIndexLock(file, node, indexLock, identity = sweepPathIdentity(), indexLockKey) {
+  if (!node.isFile() || !indexLock) return false
+  if (!identity.isIndexLockName(file)) return false
+  return identity.key(file) === (indexLockKey ?? identity.key(indexLock))
+}
+
 export function inventoryTree(root, supplied) {
   const options = { clock: Date.now, maxNodes: 200000, ...supplied }
+  const identity = pathIdentity(options)
+  const indexLockKey = options.indexLockKey ?? (options.indexLock ? identity.key(options.indexLock) : null)
   const { device, mounts } = options
   const inventory = { bytes: 0, latestNs: 0n, files: [], stack: [], special: false }
   let visited = 0
@@ -124,28 +146,43 @@ export function inventoryTree(root, supplied) {
         const file = path.join(dir, name)
         const stat = lstatSync(file, { bigint: true })
         if (stat.dev !== device || mounts.includes(file)) throw new Error('interior-mount')
-        if (file !== options.indexLock || !stat.isFile()) recordNode(file, stat, inventory)
+        if (!isIndexLock(file, stat, options.indexLock, identity, indexLockKey)) recordNode(file, stat, inventory)
       }
     }
     return inventory
   } catch (error) { return { ...inventory, reason: `inventory-unknown: ${readFailure(error)}` } }
 }
 
+function outsideRegistry(project, options, identity) {
+  if (options.registry) return options.registry
+  try {
+    return { outside: readRegistry(project, options, identity).map(record => record.path), unknown: false }
+  } catch { return { outside: [], unknown: true } }
+}
+
+function outsideMeasurements(paths, unreadable, registry) {
+  const reason = registry.unknown ? 'worktree-registry-unavailable' : unreadable.length ? 'outside-dirs-unreadable' : null
+  const complete = reason === null
+  return { count: complete ? paths.size : null, paths: [...paths.values()].sort(), unreadable, complete, reason }
+}
+
 export function outsideSweep(project, source, options) {
-  const paths = new Set(options.registry?.outside)
+  const identity = pathIdentity(options)
+  const registry = outsideRegistry(project, options, identity)
+  const paths = new Map()
+  for (const file of registry.outside) {
+    const key = registryKey(file, source, identity)
+    if (options.registry || !identity.lexicalContains(identity.key(source), key)) paths.set(key, file)
+  }
   const unreadable = []
   for (const suffix of ['.claude/scripts/.worktrees', 'worktrees', '.claude/reports', '.claude/archives']) {
     const dir = path.join(project, suffix)
-    try { for (const name of readdirSync(dir)) paths.add(path.join(dir, name)) } catch (error) {
+    try { for (const name of readdirSync(dir)) {
+      const file = path.join(dir, name)
+      paths.set(identity.key(file), file)
+    } } catch (error) {
       if (error.code !== 'ENOENT') unreadable.push(dir)
     }
   }
-  const worktrees = readGit(project, ['worktree', 'list', '--porcelain', '-z'], options)
-  if (worktrees.status === 0) {
-    for (const record of worktrees.stdout.split('\0').filter(value => value.startsWith('worktree '))) {
-      const file = record.slice(9)
-      if (!pathContains(source, file, options.platform)) paths.add(file)
-    }
-  }
-  return { count: paths.size, paths: [...paths].sort(), unreadable }
+  return outsideMeasurements(paths, unreadable, registry)
 }
