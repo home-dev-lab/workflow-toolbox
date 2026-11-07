@@ -14,11 +14,20 @@ export function journalWaiterRecord(record, options, priority) {
   return record
 }
 
-export function takeJournalTicket(queueDir, record) {
-  const ticket = takeHostTicket(queueDir, record)
+function ticketJournalPriority(record, priority, resumedNumber) {
+  if (resumedNumber === undefined) return priority
+  return record.priority === 'release' ? 'release' : `P${record.level}`
+}
+
+const ticketJournalLight = (record, resumedNumber) => resumedNumber === undefined ? undefined : record.light === true
+
+export function takeJournalTicket(queueDir, record, resumedNumber) {
+  const ticket = resumedNumber ?? takeHostTicket(queueDir, record)
   const metadata = records.get(record)
   if (metadata) {
-    const journal = suiteJournalRequest(path.dirname(queueDir), ticket, record, metadata.priority, metadata.options)
+    const priority = ticketJournalPriority(record, metadata.priority, resumedNumber)
+    const light = ticketJournalLight(record, resumedNumber)
+    const journal = suiteJournalRequest(path.dirname(queueDir), ticket, record, priority, metadata.options, light)
     if (metadata.options[CONTEXT]) metadata.options[CONTEXT].journal = journal
   }
   return ticket

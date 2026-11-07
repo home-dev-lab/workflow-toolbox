@@ -6,6 +6,7 @@ const finite = (value) => Number.isFinite(value) ? value : null
 const pidNumber = (value) => Number.isSafeInteger(value) && value > 0 ? value : null
 const OLDER_BROKER_QUEUE = 'queue unavailable from an older broker'
 const LEGACY_LEVEL_ORDER = 'queue legacy level order: a queued client predates bounded P0 order; declared P0 does not pass aged tickets until it leaves'
+const parkedStatusRows = (current) => current.parked ?? []
 function safeValue(value, depth = 0) {
   if (depth > 4) return '[truncated]'
   if (typeof value === 'string') return displayText(value)
@@ -70,6 +71,14 @@ function queueKind(entry) {
 function queueLine(entry) {
   return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})`
 }
+
+function parkedLine(entry) {
+  const level = numericLevel(entry.level) ? `P${entry.level}` : '?'
+  const prefix = `parked #${finite(entry.number) ?? 'unknown'} pid ${pidNumber(entry.ownerPid) ?? 'unknown'} ${level} `
+  const seconds = Number.isFinite(entry.secondsLeft) ? Math.ceil(entry.secondsLeft) : '?'
+  const suffix = ` (${seconds} s left)`
+  return prefix + displayText(entry.reason).slice(0, Math.max(0, 80 - prefix.length - suffix.length)) + suffix
+}
 function holderHeadline(current, holderText) {
   const level = numericLevel(current.level) ? ', P' + current.level : ''
   const suffix = `, held ${formatSuiteLockDuration(current.ageMs)}${level}`
@@ -98,6 +107,7 @@ export function formatSuiteLockStatus(current, holderText) {
   lines.push(...orderLines(current))
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
+  lines.push(...parkedStatusRows(current).map(parkedLine))
   return lines.map(displayText).join('\n') + '\n'
 }
 
@@ -106,5 +116,5 @@ export function suiteLockStatusJson(current) {
   const status = current.legacyStatus ?? (Array.isArray(queue) ? null : OLDER_BROKER_QUEUE)
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
     ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
-    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}) }
+    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)) }
 }

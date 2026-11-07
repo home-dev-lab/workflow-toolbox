@@ -10,28 +10,30 @@ export function journalCommand(argv) {
   return 'other'
 }
 
-export function suiteJournalRequest(root, ticket, record, priority, options) {
-  try { return journalRequest(root, ticket, record, priority, options) } catch (error) {
+export function suiteJournalRequest(root, ticket, record, priority, options, light) {
+  try { return journalRequest(root, ticket, record, priority, options, light) } catch (error) {
     warnSuiteLockJournal(error)
     return undefined
   }
 }
 
-function journalRequest(root, ticket, record, priority, options) {
-  const kind = journalKind(options, priority)
+function journalRequest(root, ticket, record, priority, options, light) {
+  const kind = journalKind(options, priority, light)
   const base = { ticket, leaseId: record.leaseId, root: options.journalRoot ?? root, kind,
-    cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: options.light === true,
+    cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: journalLight(options, light),
     pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct' }
   const journal = { base, now: options.now?.bind(options) }
   suiteJournalEvent(journal, 'request')
   return journal
 }
 
-function journalKind(options, priority) {
+const journalLight = (options, light) => light === undefined ? options.light === true : light
+
+function journalKind(options, priority, light) {
   const configured = options.journalKind
   if (configured !== undefined && configured !== null) return configured
   if (priority === 'release') return 'release'
-  return options.light === true ? 'light' : 'exclusive'
+  return journalLight(options, light) ? 'light' : 'exclusive'
 }
 
 export function suiteJournalEvent(journal, event, fields = {}) {
