@@ -84,10 +84,59 @@ it.skipIf(process.platform === 'win32')('does not call the host realpath on Wind
   expect(native).not.toHaveBeenCalled()
 })
 
-it('a non-git project has a measured outside count and does not enumerate Git', () => {
-  const { project, source } = setup(); const gitRun = vi.fn(() => ({ status: 1, stdout: '' }))
+const notARepository = { status: 128, stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git\n' }
+
+it('a non-git project has a measured outside count when Git reports no repository', () => {
+  const { project, source } = setup(); const gitRun = vi.fn(() => notARepository)
   expect(paths.outsideSweep(project, source, { gitRun })).toMatchObject({ count: 0, complete: true, reason: null })
-  expect(gitRun).not.toHaveBeenCalled()
+  expect(gitRun).toHaveBeenCalledTimes(1)
+  expect(gitRun, 'the repository check must not depend on the user locale').toHaveBeenCalledWith(
+    'git', expect.any(Array), expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }),
+  )
+})
+
+it('recognizes Git discovery stopping at a filesystem boundary as explicit non-repository evidence', () => {
+  const { project, source } = setup()
+  const stderr = 'fatal: not a git repository (or any parent up to mount point /)\nStopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).\n'
+  expect(paths.outsideSweep(project, source, { gitRun: () => ({ status: 128, stdout: '', stderr }) }))
+    .toMatchObject({ count: 0, complete: true, reason: null })
+})
+
+it('a project inside an enclosing repository counts that registry without a local .git', () => {
+  const { project, source } = setup(); const elsewhere = path.join(path.dirname(project), 'enclosing-worktree')
+  const gitRun = vi.fn(() => ({ status: 0, stdout: `worktree ${elsewhere}\0\0` }))
+  expect(paths.outsideSweep(project, source, { gitRun })).toMatchObject({ count: 1, complete: true, paths: [elsewhere] })
+})
+
+it.each([
+  { status: 1, stdout: '', stderr: 'fatal: unable to read\n' },
+  { status: null, stdout: '', error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) },
+  { ...notARepository, error: new Error('failed') },
+  { status: 0, stdout: '' },
+  { status: 128, stdout: '', stderr: 'fatal: permission denied\n' },
+])('a project without a local .git whose registry read fails is unknown (%j)', result => {
+  const { project, source } = setup()
+  expect(paths.outsideSweep(project, source, { gitRun: () => result })).toMatchObject({
+    count: null, complete: false, reason: 'worktree-registry-unavailable',
+  })
+})
+
+it('only the exact Git index lock name is excluded, even where names fold', () => {
+  const darwin = identity({ platform: 'darwin', realpath: (value: string) => value })
+  const file = (name: string) => ({ isFile: () => true, name })
+  expect(paths.isIndexLock('/repo/.git/INDEX.lock', file('INDEX.lock'), '/repo/.git/index.lock', darwin)).toBe(false)
+  expect(paths.isIndexLock('/repo/.git/index.lock', file('index.lock'), '/repo/.git/index.lock', darwin)).toBe(true)
+})
+
+it.each([
+  { result: notARepository, unknown: false, outside: [] },
+  { result: { status: 1, stdout: '' }, unknown: true, outside: [] },
+  { result: { status: 0, stdout: `worktree ${path.resolve('elsewhere')}\0\0` }, unknown: false, outside: [path.resolve('elsewhere')] },
+])('source boundary discovers the project registry without a local .git (%j)', ({ result, unknown, outside }) => {
+  const { project, source } = setup(); mkdirSync(source, { recursive: true })
+  const gitRun = vi.fn(() => result)
+  expect(paths.sourceBoundary(project, { mounts: [], gitRun }).registry).toMatchObject({ unknown, outside })
+  expect(gitRun).toHaveBeenCalledTimes(1)
 })
 
 it.each([

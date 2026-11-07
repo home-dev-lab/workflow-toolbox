@@ -38,7 +38,8 @@ export function sweepPathIdentity({ platform = process.platform, realpath } = {}
     const resolved = paths.resolve(value)
     return fold(paths.join(parent(paths.dirname(resolved)), paths.basename(resolved)))
   }
-  return { paths, fold, foldName, key, equals: (a, b) => key(a) === key(b),
+  // Exact spelling is conservative even on a volume where other names fold.
+  return { paths, fold, foldName, key, isIndexLockName: value => paths.basename(value) === 'index.lock', equals: (a, b) => key(a) === key(b),
     contains: (root, target) => containsKeys(key(root), key(target), paths.sep),
     lexicalContains: (root, target) => containsKeys(fold(root), fold(target), paths.sep) }
 }
