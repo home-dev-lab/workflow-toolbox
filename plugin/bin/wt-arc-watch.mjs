@@ -5,7 +5,7 @@
 // corroborated by the outbound-guard stop journal and optional liveness declarations.
 // The current main session's completion enqueues additionally yield WAKE relays when
 // their owners have not resumed (FORWARD candidates exist only in wt-delegate-wake-scan.mjs). Stale-transcript
-// detection stays quiet for a clean end_turn; a liveness file with no usable transcript
+// detection stays quiet for a clean end_turn or a harness-confirmed finish; a liveness file with no usable transcript
 // correlation key is surfaced separately as UNCORRELATABLE rather than read as silence.
 //
 // WHY A MONITOR AND NOT A REMINDER: a delegated agent that dies to a quota wall,
@@ -51,7 +51,8 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { defaultLivenessDir, sanitizeLivenessKey, readLivenessRecord, worktreeRecentlyActive } from './lib/liveness.mjs'
 import { isServiceDegraded } from './lib/service-flag.mjs'
-import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from './lib/stop-correlation.mjs'
+import { readMetaWithMtime } from './lib/host/transcript-meta.mjs'
+import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs, finishedPerMeta } from './lib/stop-correlation.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
@@ -254,10 +255,13 @@ function loadLastStopTimestamps(sessionName) {
   }
 }
 
+function transcriptMetaPath(sessionName, transcriptFile) {
+  return path.join(sessionsRoot, sessionName, 'subagents', transcriptFile.replace(/\.jsonl$/, '.meta.json'))
+}
+
 function readTranscriptMeta(sessionName, transcriptFile) {
   try {
-    const metaPath = path.join(sessionsRoot, sessionName, 'subagents', transcriptFile.replace(/\.jsonl$/, '.meta.json'))
-    return JSON.parse(readFileSync(metaPath, 'utf8'))
+    return JSON.parse(readFileSync(transcriptMetaPath(sessionName, transcriptFile), 'utf8'))
   } catch {
     return null
   }
@@ -366,15 +370,49 @@ function isCleanEndTurn(record) {
     && record?.message?.stop_reason === 'end_turn'
 }
 
-function transcriptEndedCleanly(name) {
-  const slash = name.indexOf('/')
-  if (slash < 0) return false
-  const sessionName = name.slice(0, slash)
-  const transcriptFile = name.slice(slash + 1)
+// The meta flag may confirm only a last conversational record that is an assistant turn with no
+// `tool_use` block: a trailing user turn or a pending tool call is a stuck agent, not a finished one.
+function isConfirmableFinalRecord(record) {
+  if (record?.type !== 'assistant') return false
+  const content = record.message?.content
+  return !(Array.isArray(content) && content.some((block) => block?.type === 'tool_use'))
+}
+
+// The harness's own `finished: true` meta flag, accepted only when written after the transcript's
+// last real record (a resumed agent's old flag is older) and the transcript does not end on a user
+// turn or a tool call. No flag: return before reading the transcript. Any failure reads as not finished.
+function metaSaysFinished(name) {
+  const parts = splitTranscriptName(name)
+  if (!parts) return false
+  const { sessionName, transcriptFile } = parts
   try {
-    const lines = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
-      .split('\n').filter(Boolean)
-    const record = lastConversationalRecord(lines)
+    const read = readMetaWithMtime(transcriptMetaPath(sessionName, transcriptFile))
+    if (read?.meta?.finished !== true) return false
+    const anchorMs = lastRecordTimestampMs(sessionName, transcriptFile)
+    if (!finishedPerMeta(read.meta, read.mtimeMs, anchorMs)) return false
+    return isConfirmableFinalRecord(lastConversationalRecord(readTranscriptLines(sessionName, transcriptFile)))
+  } catch {
+    return false
+  }
+}
+
+// `${sessionId}/${transcriptFile}` → its two parts, or null when the key carries no session.
+function splitTranscriptName(name) {
+  const slash = name.indexOf('/')
+  if (slash < 0) return null
+  return { sessionName: name.slice(0, slash), transcriptFile: name.slice(slash + 1) }
+}
+
+function readTranscriptLines(sessionName, transcriptFile) {
+  return readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
+    .split('\n').filter(Boolean)
+}
+
+function transcriptEndedCleanly(name) {
+  const parts = splitTranscriptName(name)
+  if (!parts) return false
+  try {
+    const record = lastConversationalRecord(readTranscriptLines(parts.sessionName, parts.transcriptFile))
     return record !== null && isCleanEndTurn(record)
   } catch {
     return false
@@ -866,8 +904,9 @@ while (true) {
             // The agent's own "not complete" outranks a clean end_turn: an agent that ended its
             // turn waiting on a background task that never wakes it ends cleanly too.
             budget.emit(`IDLE-MID-MISSION: ${safeName(name)} — declared not complete, no write for ${staleMinutes}+ min`)
-          } else if (!transcriptEndedCleanly(name)) {
-            // A terminal end_turn with no declaration is a clean finish; anything else stays loud.
+          } else if (!transcriptEndedCleanly(name) && !metaSaysFinished(name)) {
+            // A terminal end_turn, or the harness's own finished meta flag, with no declaration is a
+            // clean finish; anything else stays loud.
             budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
           }
         }
