@@ -35,6 +35,7 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { frontmatter } from '../../../../plugins/wt-rules-on-demand/scripts/rule-lifecycle-lib.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { TRANSIENT_RENAME_ATTEMPTS } from '../../../../plugin/bin/lib/host/adopt-placement.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
