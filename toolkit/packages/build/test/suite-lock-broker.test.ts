@@ -15,6 +15,7 @@ import { createSuiteLockBroker, DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, DEFAULT_LANE
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BROKER = join(ROOT, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
+const RUNNER = join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
 const GLOBAL_SETUP = join(ROOT, 'toolkit/test-support/suite-lease.global-setup.mjs')
 const roots: string[] = []
 const children: Array<ReturnType<typeof spawn>> = []
@@ -1119,5 +1120,42 @@ describe.skipIf(process.platform === 'win32')('routine sandbox gate default acro
       expect(ticket.light === true).toBe(light)
       expect((await readBrokerSuiteLock(broker.socket)).queue).toMatchObject([{ level: 2, effectiveLevel: 2 }])
     } finally { first.socket.destroy(); await pending }
+  }, 20_000)
+})
+
+describe.skipIf(process.platform === 'win32')('sandbox suite-lock runner launcher prefix [unix-domain sockets]', () => {
+  it.each([
+    { prefix: ['run', '--light', '--'], light: true },
+    { prefix: ['run', '--'], light: false },
+    { prefix: [], light: false },
+  ])('queues a runner command through the broker with light=$light and prefix=$prefix', async ({ prefix, light }) => {
+    const broker = await startBroker(process.pid, { WT_SUITE_LOCK_STATIC_LANE: '0' })
+    const first = connect(broker.socket, { argv: ['holder'], waitS: 10 })
+    await first.waitForReply(granted)
+    const command = [process.execPath, '-e', 'process.stdout.write("ran")']
+    const env = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK: '1', WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+    const child = spawn(process.execPath, [RUNNER, ...prefix, ...command], { env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+    let stdout = ''; let stderr = ''
+    child.stdout!.on('data', (chunk) => { stdout += String(chunk) })
+    child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    const done = exitWithin(child, 15_000)
+    try {
+      const queue = join(broker.root, 'locks', 'queue.d')
+      await waitFor(() => readdirSync(queue).some((name) => name.endsWith('.json')))
+      const status = spawnSync(process.execPath, [CLI, 'status', '--json'], { env, encoding: 'utf8', timeout: 15_000 })
+      expect(status.status, status.stderr).toBe(0)
+      const ticket = JSON.parse(status.stdout).queue[0]
+      expect(ticket.light).toBe(light)
+      const record = JSON.parse(readFileSync(join(queue, readdirSync(queue).find((name) => name.endsWith('.json'))!), 'utf8'))
+      expect(record.argv).toEqual(['wt-lane-sandbox', 'test-lane', ...command])
+      const text = spawnSync(process.execPath, [CLI, 'status'], { env, encoding: 'utf8', timeout: 15_000 })
+      expect(text.status, text.stderr).toBe(0)
+      expect(text.stdout).toContain(`1. P2 ${light ? 'light' : 'exclusive'},`)
+    } finally {
+      first.socket.destroy()
+      await done
+    }
+    expect(await done, stderr).toBe(0)
+    expect(stdout).toBe('ran')
   }, 20_000)
 })
