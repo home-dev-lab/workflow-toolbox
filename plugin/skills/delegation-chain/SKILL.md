@@ -38,7 +38,9 @@ default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SD
 
 - **A delegate's plain text reaches nobody.** The harness's own tool description says so
   directly: a turn that ends in prose, however complete and correct, has communicated nothing.
-  Only `SendMessage` or a file write leaves the delegate's transcript.
+  Only `SendMessage` or a file write leaves the delegate's transcript. The exception is a
+  FOREGROUND `Agent` call: it returns the delegate's final message to its spawner as the tool
+  result.
 - **A session holds ONE implicit team.** A named delegate's FINAL message is routed by that
   team, and it resolves to the session ROOT — not to whichever intermediate agent actually
   spawned it — unless the delegate was explicitly told the spawner's name or raw id and
@@ -47,7 +49,7 @@ default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SD
   top-level session, not the one that asked for it.
 - **This is not a function of task size.** A two-minute mechanical chore misroutes exactly like
   a multi-hour arc; there is no size threshold under which addressing can be skipped.
-- **The remedy is the file-report contract, and it has two parts that must BOTH hold**:
+- **The remedy for a named delegate is the file-report contract, and it has two parts that must BOTH hold** (a type without `Write` spawned anonymously in the foreground needs none: its final message is the report):
   1. The delegate writes its full output to a file at a path the brief names.
   2. Its FINAL message is exactly one line — the file path and a verdict — with **nothing
      after it**. Not a summary, not "I already delivered my answer above", not a remark about
@@ -60,8 +62,7 @@ default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SD
   match is anchored at the start: `report-x.md` is refused, `x-report.md` succeeds. A brief that
   names a `report-<id>.md` path leaves a capable delegate unable to comply — put the word at the
   END of the basename.
-- **A delegate whose TYPE lacks BOTH `Write` and `SendMessage` has no route back at all**, and
-  no wording in its brief can fix that — verify a type's tool list before writing a
+- **A delegate whose TYPE lacks BOTH `Write` and `SendMessage` has no route back, unless it is spawned anonymously in the foreground**, where its final message is the report and returns to the spawner as the tool result. Spawned any other way, no wording in its brief can fix that — verify a type's tool list before writing a
   report-dependent brief for it, not after it reports and the report never arrives.
 
 ### What this section does NOT cover

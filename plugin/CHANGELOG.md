@@ -26,6 +26,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The pilot and pilot-orchestrator templates, and the delegation-chain skill, no longer tell a read-only critic or verifier (a type with no Write tool) to write a report file, which the spawn-capability guard refuses. Such a type is now spawned anonymously in the foreground and its final message is the report, which the spawner saves; the file-report contract stays for named spawns and types that have Write.
 - The suite-lock lane runner honours an explicit `--light` launcher prefix, preserves the real command in queued tickets, and refuses unsupported or repeated launcher flags before taking the lock.
 - The arc watch no longer reports a sub-agent as stale when the harness has marked it finished (its `finished` flag was written after the last transcript record), even if its last message did not end in a clean end-of-turn. An agent that was resumed after finishing still gets reported.
 - Adopt refresh no longer fails on Windows when another process holds the rule file open at the moment it publishes (for example a second refresh running at the same time): it retries the replacement briefly, stops as soon as the file already holds the new text, and still skips a file that someone changed in the meantime.
