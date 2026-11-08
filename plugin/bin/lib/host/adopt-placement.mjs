@@ -165,6 +165,11 @@ function pauseSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+function transientRetryOptions(options) {
+  return { rename: fs.renameSync, pause: pauseSync, attempts: TRANSIENT_RENAME_ATTEMPTS, pauseMs: TRANSIENT_RENAME_PAUSE_MS,
+    beforeRetry: () => undefined, ...options }
+}
+
 /**
  * Rename `from` to `to`, retrying a transient refusal with a linear back-off. After each pause,
  * and before the next attempt, `beforeRetry(error)` returns `undefined` to retry or any other
@@ -173,8 +178,7 @@ function pauseSync(ms) {
  * and the last transient one when the attempts are spent.
  */
 export function renameRetryingTransient(from, to, options = {}) {
-  const { rename = fs.renameSync, pause = pauseSync, attempts = TRANSIENT_RENAME_ATTEMPTS, pauseMs = TRANSIENT_RENAME_PAUSE_MS,
-    beforeRetry = () => undefined } = options
+  const { rename, pause, attempts, pauseMs, beforeRetry } = transientRetryOptions(options)
   for (let attempt = 1; ; attempt += 1) {
     try {
       rename(from, to)
