@@ -73,7 +73,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, firstExistingPath, renameRetryingTransient, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
 import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -2284,7 +2284,31 @@ function preserveManagedMode(target, fd) {
   }
 }
 
-function writeManagedFile(target, text, expected = undefined) {
+// Windows refuses the rename while another handle is open on the target (a concurrent refresh
+// reading it, an indexer). Before each retry: stop as published when the target already holds
+// these bytes, and stop as SKIPPED unless it still holds what this run classified.
+function publishTemp(temp, target, text, publication) {
+  const outcome = renameRetryingTransient(temp, target, {
+    rename: () => { adoptRefreshHost.fs.renameSync(temp, target) },
+    beforeRetry: () => {
+      if (publicationMatches(target, text)) return true
+      return publicationMatches(target, publication.expected) && publication.unchanged() ? undefined : false
+    },
+  })
+  return outcome.renamed || outcome.value
+}
+
+function removeTemp(temp) {
+  try {
+    fs.rmSync(temp, { force: true, maxRetries: 3, retryDelay: 25 })
+  } catch (err) {
+    process.stderr.write(`adopt: could not remove the temporary file ${temp}: ${err && err.message ? err.message : String(err)}\n`)
+  }
+}
+
+/** `publication.expected`: bytes the target must still hold (undefined: not compared);
+ *  `publication.unchanged()`: whether the target is still as this run classified it. */
+function writeManagedFile(target, text, publication) {
   assertPlacement(target)
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}-${crypto.randomUUID()}.tmp`)
   let fd
@@ -2296,23 +2320,23 @@ function writeManagedFile(target, text, expected = undefined) {
     preserveManagedMode(target, fd)
     adoptRefreshHost.fs.closeSync(fd)
     fd = undefined
-    if (!publicationMatches(target, expected)) return false
-    adoptRefreshHost.fs.renameSync(temp, target)
-    return true
+    if (!publicationMatches(target, publication.expected)) return false
+    return publishTemp(temp, target, text, publication)
   } finally {
     try { if (fd !== undefined) adoptRefreshHost.fs.closeSync(fd) } finally {
-      if (ownsTemp) fs.rmSync(temp, { force: true })
+      if (ownsTemp) removeTemp(temp)
     }
   }
 }
 
-function replaceSymlinkAtomically(target, text) {
-  return writeManagedFile(target, text)
+function replaceSymlinkAtomically(target, text, unchanged) {
+  return writeManagedFile(target, text, { expected: undefined, unchanged })
 }
 
-function publishManagedItem(target, text, classification, args) {
-  if (classification.state === 'symlink') return replaceSymlinkAtomically(target, text)
-  return writeManagedFile(target, text, args.refreshOnly ? classification.raw : undefined)
+function publishManagedItem(target, text, classification, args, set) {
+  const unchanged = () => targetUnchanged(target, classification, set)
+  if (classification.state === 'symlink') return replaceSymlinkAtomically(target, text, unchanged)
+  return writeManagedFile(target, text, { expected: args.refreshOnly ? classification.raw : undefined, unchanged })
 }
 
 function managedWriteOutcome(args, verb) {
@@ -2332,7 +2356,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
     )
   }
-  if (!publishManagedItem(target, finalText, classification, args)) {
+  if (!publishManagedItem(target, finalText, classification, args, set)) {
     process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
     return
   }
@@ -2385,7 +2409,7 @@ function writeTriggerHead(set, dir, item, planned, action) {
   const stamped = renderBanner(classification.installedVer, parsed.contentFp, stamp, item.file)
   const text = head + rest.replace(line, () => stamped)
   if (text === classification.raw) return
-  if (!writeManagedFile(target, text, classification.raw)) {
+  if (!writeManagedFile(target, text, { expected: classification.raw, unchanged: () => targetUnchanged(target, classification, set) })) {
     process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
     return
   }

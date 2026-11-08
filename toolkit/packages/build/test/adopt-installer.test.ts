@@ -35,6 +35,7 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { frontmatter } from '../../../../plugins/wt-rules-on-demand/scripts/rule-lifecycle-lib.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
+import { TRANSIENT_RENAME_ATTEMPTS } from '../../../../plugin/bin/lib/host/adopt-placement.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -130,15 +131,43 @@ function runInCwdResult(args: string[], cwd: string, env: NodeJS.ProcessEnv = IN
 const rulePath = (dir: string) => join(dir, RULE)
 const autonomyPath = (dir: string) => join(dir, '.claude', AUTONOMY)
 
-function refreshChild(dir: string): Promise<number | null> {
+// Keeps each child's output so a red status names its own cause (the Windows flake of card
+// 1897099295274829486 went red four times with no stderr to read).
+function refreshChild(dir: string): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SCRIPT, '--install', '--refresh-only', '--file', RULE, '--dir', dir], {
-      env: INSTALLER_ENV, stdio: 'ignore',
+      env: INSTALLER_ENV, stdio: ['ignore', 'pipe', 'pipe'],
     })
+    let output = ''
+    child.stdout.on('data', (chunk) => { output += chunk })
+    child.stderr.on('data', (chunk) => { output += chunk })
     child.once('error', reject)
-    child.once('close', resolve)
+    child.once('close', (status) => resolve({ status, output }))
   })
 }
+
+// Runs one refresh-only child whose fs.renameSync is replaced by `body` (sees from, to, calls,
+// original, target, transient); the child prints how many renames it attempted.
+function refreshWithRename(dir: string, body: string, options: { prelude?: string; args?: string[] } = {}) {
+  const source = `import fs from 'node:fs'; const original = fs.renameSync; const target = ${JSON.stringify(rulePath(dir))}; let calls = 0; ` +
+    `const transient = () => Object.assign(new Error('simulated sharing violation'), { code: 'EPERM' }); ` +
+    `${options.prelude ?? ''} fs.renameSync = function(from, to) { calls++; ${body} }; process.on('exit', () => fs.writeSync(1, 'RENAME_CALLS=' + calls + '\\n')); ` +
+    `process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, ...${JSON.stringify(options.args ?? ['--install', '--refresh-only'])}, '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; ` +
+    `await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+  const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+  const calls = Number(/RENAME_CALLS=(\d+)/.exec(res.stdout ?? '')?.[1] ?? NaN)
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '', calls }
+}
+
+function agedFixture(): { dir: string; expected: string; before: string } {
+  const dir = mkDir()
+  run(['--install'], dir)
+  const expected = readFileSync(rulePath(dir), 'utf8')
+  ageRuleCopy(rulePath(dir))
+  return { dir, expected, before: readFileSync(rulePath(dir), 'utf8') }
+}
+
+const tempLeftovers = (dir: string) => readdirSync(dir).filter((name) => name.endsWith('.tmp'))
 
 // Age a managed RULE copy into "installed from an older release whose text has since
 // changed": an older banner version, a body that genuinely differs from what ships now, and
@@ -326,11 +355,82 @@ describe('adopt installer — concurrent publication', () => {
     const expected = readFileSync(rulePath(dir), 'utf8')
     for (let iteration = 0; iteration < 5; iteration++) {
       ageRuleCopy(rulePath(dir))
-      const statuses = await Promise.all([refreshChild(dir), refreshChild(dir)])
-      expect(statuses).toEqual([0, 0])
+      const children = await Promise.all([refreshChild(dir), refreshChild(dir)])
+      expect(children.map((child) => child.status), children.map((child) => child.output).join('\n---\n')).toEqual([0, 0])
       expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
       expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
     }
+  })
+})
+describe('adopt installer — transient publication refusal', () => {
+  it('retries a transient rename refusal and publishes the shipped text', () => {
+    const { dir, expected } = agedFixture()
+    const res = refreshWithRename(dir, 'if (calls === 1) throw transient(); return original.call(this, from, to)')
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.calls).toBe(2)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('stops retrying once a sibling has published the same bytes', () => {
+    const { dir, expected } = agedFixture()
+    const res = refreshWithRename(dir, 'if (calls === 1) { fs.writeFileSync(target, fs.readFileSync(from)); throw transient() } return original.call(this, from, to)')
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain(`${RULE}: REFRESHED`)
+    expect(res.stdout).not.toContain('SKIPPED')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('never overwrites a target edited while the rename was refused', () => {
+    const { dir, before } = agedFixture()
+    const edited = before + '\nUSER EDIT DURING THE REFUSAL\n'
+    const res = refreshWithRename(dir, `if (calls === 1) { fs.writeFileSync(target, ${JSON.stringify(edited)}); throw transient() } return original.call(this, from, to)`)
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('never overwrites a target edited while the retry was pausing', () => {
+    const { dir, before } = agedFixture()
+    const edited = before + '\nUSER EDIT DURING THE PAUSE\n'
+    const prelude = `const wait = Atomics.wait; Atomics.wait = function(...args) { fs.writeFileSync(target, ${JSON.stringify(edited)}); return wait.apply(this, args) };`
+    const res = refreshWithRename(dir, 'if (calls === 1) throw transient(); return original.call(this, from, to)', { prelude })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('a plain install never overwrites a target edited while the rename was refused', () => {
+    const { dir, before } = agedFixture()
+    const edited = before + '\nUSER EDIT DURING A PLAIN INSTALL\n'
+    const res = refreshWithRename(dir, `if (calls === 1) { fs.writeFileSync(target, ${JSON.stringify(edited)}); throw transient() } return original.call(this, from, to)`, { args: ['--install'] })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('gives up after a bounded number of transient refusals, keeping the original', () => {
+    const { dir, before } = agedFixture()
+    const res = refreshWithRename(dir, 'throw transient()')
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('simulated sharing violation')
+    expect(res.calls).toBe(TRANSIENT_RENAME_ATTEMPTS)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(before)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('publishes when a real read handle on the target refuses the first rename', () => {
+    const { dir, expected } = agedFixture()
+    const res = refreshWithRename(dir, "if (calls === 1) { const fd = fs.openSync(target, 'r'); try { return original.call(this, from, to) } " +
+      "catch (error) { fs.writeSync(1, 'FIRST_RENAME=' + error.code + '\\n'); throw error } finally { fs.closeSync(fd) } } return original.call(this, from, to)")
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    // Windows refuses a rename over a target that has any open handle; POSIX replaces it.
+    if (process.platform === 'win32') expect(res.stdout).toMatch(/FIRST_RENAME=(EPERM|EACCES|EBUSY)/)
+    else expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toEqual([])
   })
 })
 describe('adopt installer — publication errors', () => {
