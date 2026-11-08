@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest'
 // declarations -- the runtime behavior is exercised directly by every test below, so an `any`
 // import here costs no real type safety within this file.
 // @ts-expect-error TS7016 -- stop-correlation.mjs has no declaration file (see note above)
-import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from '../../../../plugin/bin/lib/stop-correlation.mjs'
+import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs, finishedPerMeta, META_FINISHED_TOLERANCE_MS } from '../../../../plugin/bin/lib/stop-correlation.mjs'
 
 const ms = (iso: string) => Date.parse(iso)
 
@@ -318,5 +318,33 @@ describe('hasRecordedStop — live labelled genuine-death case (2026-08-02 accid
     const stops = lastStopTimestamps([]) // the real journal for that session has zero stop records
     const meta = { name: null, agentType: 'general-purpose' } // real shape: untrackable/unnamed spawn
     expect(hasRecordedStop(stops, meta, Date.now())).toBe(false)
+  })
+})
+
+describe('finishedPerMeta — harness finished:true meta as a second finished signal', () => {
+  const anchor = ms('2026-10-30T12:17:10.380Z')
+  it('is true when finished is true and the meta was written after the anchor', () => {
+    expect(finishedPerMeta({ finished: true }, anchor + 500, anchor)).toBe(true)
+  })
+  it('is true at exactly anchor minus the 1000 ms tolerance', () => {
+    expect(finishedPerMeta({ finished: true }, anchor - META_FINISHED_TOLERANCE_MS, anchor)).toBe(true)
+  })
+  it('is false one millisecond past the tolerance (resumed agent)', () => {
+    expect(finishedPerMeta({ finished: true }, anchor - META_FINISHED_TOLERANCE_MS - 1, anchor)).toBe(false)
+  })
+  it('is false when finished is absent', () => {
+    expect(finishedPerMeta({ agentType: 'h-chore' }, anchor + 500, anchor)).toBe(false)
+  })
+  it('is false when finished is false', () => {
+    expect(finishedPerMeta({ finished: false }, anchor + 500, anchor)).toBe(false)
+  })
+  it('is false when finished is the string "true"', () => {
+    expect(finishedPerMeta({ finished: 'true' }, anchor + 500, anchor)).toBe(false)
+  })
+  it('is false when meta is null', () => {
+    expect(finishedPerMeta(null, anchor + 500, anchor)).toBe(false)
+  })
+  it('is false when the transcript anchor is null', () => {
+    expect(finishedPerMeta({ finished: true }, anchor + 500, null)).toBe(false)
   })
 })
