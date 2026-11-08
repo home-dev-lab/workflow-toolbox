@@ -5,7 +5,8 @@ import { spawnSync } from 'node:child_process'
 
 // Refresh publication and discovery share the installer's existing host seam. Keep the
 // native filesystem receiver intact, including injected failures used by publication locks.
-export const adoptRefreshHost = { fs, spawnSync }
+// `platform` is a seam so the Windows-only rename retry is testable on every host.
+export const adoptRefreshHost = { fs, spawnSync, platform: process.platform }
 
 // Git configuration can outlive both a worktree and a Claude config profile.
 export function sshSignRetryDirectory() {
@@ -155,7 +156,8 @@ export function onDemandEngineFiles({ pluginRoot, configDir, env = process.env }
 }
 
 // Windows refuses to rename over a target while any other handle is open on it (a concurrent
-// reader, an indexer, an antivirus scan) and reports EPERM, EACCES or EBUSY; POSIX replaces it.
+// reader, an indexer, an antivirus scan) and reports EPERM, EACCES or EBUSY; POSIX replaces it,
+// so on POSIX those codes mean a lasting condition (permissions) and are never retried.
 const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
 /** @knipTestSeam Imported by adopt-transient-rename.test.ts and adopt-installer.test.ts to pin the bound. */
 export const TRANSIENT_RENAME_ATTEMPTS = 10
@@ -166,12 +168,14 @@ function pauseSync(ms) {
 }
 
 function transientRetryOptions(options) {
-  return { rename: fs.renameSync, pause: pauseSync, attempts: TRANSIENT_RENAME_ATTEMPTS, pauseMs: TRANSIENT_RENAME_PAUSE_MS,
-    beforeRetry: () => undefined, ...options }
+  const merged = { rename: fs.renameSync, pause: pauseSync, attempts: TRANSIENT_RENAME_ATTEMPTS, pauseMs: TRANSIENT_RENAME_PAUSE_MS,
+    beforeRetry: () => undefined, platform: adoptRefreshHost.platform, ...options }
+  return merged.platform === 'win32' ? merged : { ...merged, attempts: 1 }
 }
 
 /**
- * Rename `from` to `to`, retrying a transient refusal with a linear back-off. After each pause,
+ * Rename `from` to `to`, retrying a transient refusal with a linear back-off — on Windows only
+ * (`options.platform`, default `adoptRefreshHost.platform`); elsewhere the first refusal is rethrown. After each pause,
  * and before the next attempt, `beforeRetry(error)` returns `undefined` to retry or any other
  * value to stop without renaming: the target may have changed while the rename waited. Returns
  * `{ renamed: true }` or `{ renamed: false, value }`; rethrows a non-transient error at once,
