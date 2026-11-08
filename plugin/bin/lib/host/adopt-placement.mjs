@@ -153,3 +153,37 @@ export function onDemandEngineFiles({ pluginRoot, configDir, env = process.env }
   }
   return candidates
 }
+
+// Windows refuses to rename over a target while any other handle is open on it (a concurrent
+// reader, an indexer, an antivirus scan) and reports EPERM, EACCES or EBUSY; POSIX replaces it.
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+/** @knipTestSeam Imported by adopt-transient-rename.test.ts and adopt-installer.test.ts to pin the bound. */
+export const TRANSIENT_RENAME_ATTEMPTS = 10
+const TRANSIENT_RENAME_PAUSE_MS = 25
+
+function pauseSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * Rename `from` to `to`, retrying a transient refusal with a linear back-off. After each pause,
+ * and before the next attempt, `beforeRetry(error)` returns `undefined` to retry or any other
+ * value to stop without renaming: the target may have changed while the rename waited. Returns
+ * `{ renamed: true }` or `{ renamed: false, value }`; rethrows a non-transient error at once,
+ * and the last transient one when the attempts are spent.
+ */
+export function renameRetryingTransient(from, to, options = {}) {
+  const { rename = fs.renameSync, pause = pauseSync, attempts = TRANSIENT_RENAME_ATTEMPTS, pauseMs = TRANSIENT_RENAME_PAUSE_MS,
+    beforeRetry = () => undefined } = options
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      rename(from, to)
+      return { renamed: true }
+    } catch (error) {
+      if (!TRANSIENT_RENAME_CODES.has(error?.code) || attempt >= attempts) throw error
+      pause(pauseMs * attempt)
+      const value = beforeRetry(error)
+      if (value !== undefined) return { renamed: false, value }
+    }
+  }
+}
