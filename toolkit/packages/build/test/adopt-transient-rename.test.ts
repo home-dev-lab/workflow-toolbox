@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { renameRetryingTransient, TRANSIENT_RENAME_ATTEMPTS } from '../../../../plugin/bin/lib/host/adopt-placement.mjs'
 
 const coded = (code: string) => Object.assign(new Error(`refused ${code}`), { code })
