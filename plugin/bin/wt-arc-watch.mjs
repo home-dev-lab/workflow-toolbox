@@ -46,11 +46,12 @@
 // exited (monitors only (re)arm at session start or plugin reload).
 
 import { lstat, readdir } from 'node:fs/promises'
-import { writeSync, readFileSync, statSync } from 'node:fs'
+import { writeSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { defaultLivenessDir, sanitizeLivenessKey, readLivenessRecord, worktreeRecentlyActive } from './lib/liveness.mjs'
 import { isServiceDegraded } from './lib/service-flag.mjs'
+import { readMetaWithMtime } from './lib/host/transcript-meta.mjs'
 import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs, finishedPerMeta } from './lib/stop-correlation.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
@@ -381,33 +382,37 @@ function isConfirmableFinalRecord(record) {
 // last real record (a resumed agent's old flag is older) and the transcript does not end on a user
 // turn or a tool call. No flag: return before reading the transcript. Any failure reads as not finished.
 function metaSaysFinished(name) {
-  const slash = name.indexOf('/')
-  if (slash < 0) return false
-  const sessionName = name.slice(0, slash)
-  const transcriptFile = name.slice(slash + 1)
+  const parts = splitTranscriptName(name)
+  if (!parts) return false
+  const { sessionName, transcriptFile } = parts
   try {
-    const meta = readTranscriptMeta(sessionName, transcriptFile)
-    if (meta?.finished !== true) return false
-    const metaMtimeMs = statSync(transcriptMetaPath(sessionName, transcriptFile)).mtimeMs
+    const read = readMetaWithMtime(transcriptMetaPath(sessionName, transcriptFile))
+    if (read?.meta?.finished !== true) return false
     const anchorMs = lastRecordTimestampMs(sessionName, transcriptFile)
-    if (!finishedPerMeta(meta, metaMtimeMs, anchorMs)) return false
-    const lines = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
-      .split('\n').filter(Boolean)
-    return isConfirmableFinalRecord(lastConversationalRecord(lines))
+    if (!finishedPerMeta(read.meta, read.mtimeMs, anchorMs)) return false
+    return isConfirmableFinalRecord(lastConversationalRecord(readTranscriptLines(sessionName, transcriptFile)))
   } catch {
     return false
   }
 }
 
-function transcriptEndedCleanly(name) {
+// `${sessionId}/${transcriptFile}` → its two parts, or null when the key carries no session.
+function splitTranscriptName(name) {
   const slash = name.indexOf('/')
-  if (slash < 0) return false
-  const sessionName = name.slice(0, slash)
-  const transcriptFile = name.slice(slash + 1)
+  if (slash < 0) return null
+  return { sessionName: name.slice(0, slash), transcriptFile: name.slice(slash + 1) }
+}
+
+function readTranscriptLines(sessionName, transcriptFile) {
+  return readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
+    .split('\n').filter(Boolean)
+}
+
+function transcriptEndedCleanly(name) {
+  const parts = splitTranscriptName(name)
+  if (!parts) return false
   try {
-    const lines = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
-      .split('\n').filter(Boolean)
-    const record = lastConversationalRecord(lines)
+    const record = lastConversationalRecord(readTranscriptLines(parts.sessionName, parts.transcriptFile))
     return record !== null && isCleanEndTurn(record)
   } catch {
     return false
