@@ -990,8 +990,11 @@ function initializeLifecycleTimeline(context) {
   const lifecycleStartedAt = now()
   const timeline = { version: 2, ...recordedWorktreeIdentity(root), started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter
-  const persistTimeline = () => {
-    try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
+  const persistTimeline = (strict = false) => {
+    try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch (error) {
+      // Routine cost evidence is best-effort; routed card identities require strict recording.
+      if (strict) throw error
+    }
   }
   persistTimeline()
   const laneBriefContexts = new Map()
@@ -1672,7 +1675,7 @@ async function lifecycleQueued(context, work) {
 }
 async function lifecycleRouteFinding(context, args) {
     const { state, stoppedRefusal, boardContract, routeFinding, timeline, root, audit, persistTimeline, now,
-      refusal, laneDir, cardId, sessionTag, events } = context
+      refusal, laneDir, cardId, sessionTag } = context
     if (state.stopped) return stoppedRefusal()
     if (!boardContract || typeof routeFinding !== 'function') {
       return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now, refusal, laneDir })
@@ -1683,13 +1686,23 @@ async function lifecycleRouteFinding(context, args) {
       if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
       const { record, failure } = routedFindingRecord(created, args, id)
       timeline.routed_cards.push(record)
+      return finishRoutedRecording(context, record, failure)
+    } catch (error) {
+      return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
+    }
+}
+
+function finishRoutedRecording(context, record, failure) {
+    const { persistTimeline, events } = context
+    const { id } = record
+    try {
       refreshRoutedReport(context)
-      persistTimeline()
+      persistTimeline(true)
       const failureSuffix = failure ? ` (label failure: ${failure})` : ''
       events.route(id, record.title)
       return `routed card ${id} — ${record.title}${routedDependencySuffix(record)}${failureSuffix}`
     } catch (error) {
-      return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
+      return `routed card ${id} created, recording failed: ${error instanceof Error ? error.message : String(error)}`
     }
 }
 
@@ -1703,6 +1716,7 @@ function routedFindingRecord(created, args, id) {
         ? created.labelFailures.map((item) => `add_label_to_card ${item.labelId}: ${item.error}`).join('; ')
         : null
       if (failure) record.failure = failure
+      if (created.reconciled === true) record.reconciled = true
       return { record, failure }
 }
 

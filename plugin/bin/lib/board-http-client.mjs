@@ -72,14 +72,83 @@ async function verifiedRoutedDescription(created, cardId, call) {
   return { description, dependencyVerified: true }
 }
 
+function routedProvenanceLines(description) {
+  return description.split('\n').filter((line) => line.startsWith('run/session: ') || line.startsWith('timestamp: '))
+}
+
+function matchesRoutedCard(card, request) {
+  if (!card?.id || (card.name ?? card.title) !== request.name) return false
+  const description = cardDescription(card)
+  if (typeof description !== 'string') return false
+  const lines = description.split(/\r\n|[\r\n\u2028\u2029]/)
+  return routedProvenanceLines(request.description).every((line) => lines.includes(line))
+}
+
+async function routedListName(boardId, listId, call) {
+  const board = await call('get_board', { boardId, cardsSummary: true })
+  const lists = board?.lists ?? board?.board?.lists
+  if (!Array.isArray(lists)) throw new BoardUnavailable('malformed get_board result: no lists')
+  const target = lists.find((item) => String(item.id) === listId)
+  if (typeof target?.name !== 'string') throw new BoardUnavailable(`no list name for list ${listId} on board ${boardId}`)
+  return target.name
+}
+
+function routedSearchPage(result) {
+  const cards = Array.isArray(result) ? result : result?.cards ?? result?.items
+  if (!Array.isArray(cards)) throw new BoardUnavailable('malformed find_cards result')
+  return cards
+}
+
+// An endpoint that ignores offset and reports no total would otherwise answer full pages forever.
+const ROUTED_SEARCH_PAGE_LIMIT = 50
+
+async function findRoutedCard(boardId, list, request, call) {
+  const limit = 100
+  let offset = 0
+  for (let page = 0; ; page += 1) {
+    if (page >= ROUTED_SEARCH_PAGE_LIMIT) throw new BoardUnavailable(`find_cards page limit of ${ROUTED_SEARCH_PAGE_LIMIT} reached without an exact match`)
+    const result = await call('find_cards', { boardId, list, limit, offset, includeDescription: true })
+    const cards = routedSearchPage(result)
+    const found = cards.find((card) => matchesRoutedCard(card, request))
+    if (found) return found
+    offset += cards.length
+    if (cards.length === 0) return null
+    if (Number.isInteger(result.total) ? offset >= result.total : cards.length < limit) return null
+  }
+}
+
+async function reconcileRoutedCard(boardId, request, creationError, call) {
+  try {
+    const list = await routedListName(boardId, request.listId, call)
+    const found = await findRoutedCard(boardId, list, request, call)
+    if (!found) throw new Error('no exact title/provenance match returned')
+    return { ...found, reconciled: true }
+  } catch (error) {
+    const search = `board ${boardId}, list ${request.listId}, exact title ${JSON.stringify(request.name)}; ${routedProvenanceLines(request.description).join('; ')}`
+    const creationReason = creationError instanceof Error ? creationError.message : String(creationError)
+    const reconciliationReason = error instanceof Error ? error.message : String(error)
+    throw new BoardUnavailable(`create_card creation outcome is unknown; reconciliation search: ${search}; creation error: ${creationReason}; reconciliation failed: ${reconciliationReason}; check the board before retrying creation`)
+  }
+}
+
+async function createOrReconcileRoutedCard(boardId, request, call) {
+  try {
+    const created = await call('create_card', request)
+    const cardId = String(created?.id ?? created?.card?.id ?? '')
+    if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+    return { created, cardId }
+  } catch (error) {
+    const created = await reconcileRoutedCard(boardId, request, error, call)
+    return { created, cardId: String(created.id) }
+  }
+}
+
 async function createIndependentRoutedCard({ boardContract, originCardId, sessionTag, timestamp, title, l4Reason, risk, effort, type }, call) {
   const description = routedDescription({ originCardId, sessionTag, timestamp, l4Reason })
   const listId = routingIdentifier(boardContract.listId, 'list id')
   const labelIds = [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]
-  // Once creation returns an id, retain it and attempt all four labels even if dependency verification fails.
-  const created = await call('create_card', { listId, name: title, description, dependsOn: 'none' })
-  const cardId = String(created?.id ?? created?.card?.id ?? '')
-  if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+  // Retain a returned or reconciled id and attempt all four labels even if dependency verification fails.
+  const { created, cardId } = await createOrReconcileRoutedCard(boardContract.boardId, { listId, name: title, description, dependsOn: 'none' }, call)
   const dependencyEvidence = await verifiedRoutedDescription(created, cardId, call)
   const labelFailures = []
   for (const labelId of labelIds) {

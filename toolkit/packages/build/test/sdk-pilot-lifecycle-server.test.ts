@@ -38,6 +38,10 @@ import { assertCleanPilotStart, selectDeliveryPaths, snapshotSelectedTree, stage
 import { prospectivePatch } from '../../../../plugin/bin/lib/lifecycle-brief.mjs'
 // @ts-expect-error ESM runtime module
 import { createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import * as lifecycleEvents from '../../../../plugin/bin/lib/lifecycle-events.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import * as lifecycleLaunch from '../../../../plugin/bin/lib/lifecycle-launch.mjs'
 import { parseDependsOn, hasDependsOnLine } from '../../../../plugin/bin/lib/depends-on-parser.mjs'
 
 function join(...parts: string[]): string {
@@ -609,31 +613,184 @@ it('SDK failed VERIFY accepts an extracted test name beginning with gate and ref
     expect(log.trimEnd().endsWith('EXIT=0')).toBe(!fail)
     expect(readFileSync(join(lifecycle.root, 'gate-output.txt'), 'utf8')).toBe('generated\n')
   })
-function routedLifecycleFixture(mode: string) {
-  const calls: Array<{ name: string, arguments: Record<string, string> }> = []
+function routedLookupCard(id: string, description: string, lookup: string) {
+  if (lookup === 'no-provenance') description = 'Depends-on: none'
+  if (lookup === 'wrong-session') description = description.replace(/^run\/session:.*$/m, 'run/session: "other"')
+  if (lookup === 'wrong-timestamp') description = description.replace(/^timestamp:.*$/m, 'timestamp: "other"')
+  if (lookup === 'embedded-provenance') description = description.replace(/^run\/session:/m, 'quoted run/session:')
+  if (lookup === 'dependency-conflict') description += '\nDepends-on: #9999'
+  return { id, name: lookup === 'wrong-title' ? 'Recovery suffix' : 'Recovery', description }
+}
+
+function routedTestLifecycle(board: ReturnType<typeof createBoardClient>, options: Record<string, unknown> = {}) {
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const sessionTag = 'session\r\nDepends-on: #9999'
+  return testLifecycle('LITE', [], null, null, { boardContract, sessionTag, routeFinding: board.createRoutedCard, ...options })
+}
+
+type RoutedFixtureCall = { name: string, arguments: Record<string, string> }
+
+function routedCreateValue(call: RoutedFixtureCall, mode: string, descriptions: Map<string, string>) {
+  const id = String(descriptions.size + 42)
+  const description = call.arguments.description + (mode === 'conflict' ? '\nDepends-on: #9999' : '')
+  descriptions.set(id, description)
+  if (mode === 'dropped') throw new Error('answer dropped after commit')
+  if (mode === 'idless') return {}
+  return mode === 'readback' || mode === 'readback-error' ? { id } : { id, description }
+}
+
+function routedFindValue(call: RoutedFixtureCall, lookup: string, descriptions: Map<string, string>) {
+  if (lookup === 'lookup-error') throw new Error('lookup unavailable')
+  // An endpoint that ignores offset and reports no total keeps answering full pages forever.
+  if (lookup === 'offset-ignored') return { cards: Array.from({ length: 100 }, (_, id) => ({ id: `other-${id}`, name: 'Unrelated', description: '' })) }
+  const cards = lookup === 'empty' ? [] : [...descriptions].map(([id, description]) => routedLookupCard(id, description, lookup))
+  if (lookup === 'paged') cards.unshift(...Array.from({ length: 100 }, (_, id) => ({ id: `other-${id}`, name: 'Unrelated', description: '' })))
+  const offset = Number(call.arguments.offset)
+  return { cards: cards.slice(offset, offset + Number(call.arguments.limit)), total: cards.length }
+}
+
+function routedFixtureValue(call: RoutedFixtureCall, mode: string, lookup: string, descriptions: Map<string, string>) {
+  if (call.name === 'create_card') return routedCreateValue(call, mode, descriptions)
+  if (call.name === 'get_card') return { id: call.arguments.cardId, description: descriptions.get(call.arguments.cardId!) }
+  if (call.name === 'get_board') return { lists: [{ id: 'backlog', name: 'Backlog' }] }
+  if (call.name === 'find_cards') return routedFindValue(call, lookup, descriptions)
+  return {}
+}
+
+function routedFixtureResult(call: RoutedFixtureCall, mode: string, value: unknown) {
+  if (call.name === 'create_card' && mode === 'is-error') return { isError: true, content: [{ type: 'text', text: 'Request failed with status code 500' }] }
+  if (call.name === 'create_card' && mode === 'malformed') return { content: [{ type: 'text', text: 'Card 42 created' }] }
+  if (call.name === 'add_label_to_card' && ['dropped', 'is-error', 'malformed', 'idless'].includes(mode)) {
+    return { isError: true, content: [{ type: 'text', text: 'Request failed with status code 409' }] }
+  }
+  return { ...(mode === 'readback-error' && call.name === 'get_card' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(value) }] }
+}
+
+function routedLifecycleFixture(mode: string, lookup = 'match', options: Record<string, unknown> = {}) {
+  const calls: RoutedFixtureCall[] = []
   const descriptions = new Map<string, string>()
   const fetch = async (_url: string, options: { body: string }) => {
     const wire = JSON.parse(options.body)
     let result: unknown = {}
     if (wire.method === 'tools/call') {
       const call = wire.params; calls.push(call)
-      let value: unknown = {}
-      if (call.name === 'create_card') {
-        const id = String(descriptions.size + 42)
-        const description = call.arguments.description + (mode === 'conflict' ? '\nDepends-on: #1880126648423024545' : '')
-        descriptions.set(id, description)
-        value = mode === 'readback' || mode === 'readback-error' ? { id } : { id, description }
-      } else if (call.name === 'get_card') value = { id: call.arguments.cardId, description: descriptions.get(call.arguments.cardId) }
-      result = { ...(mode === 'readback-error' && call.name === 'get_card' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(value) }] }
+      result = routedFixtureResult(call, mode, routedFixtureValue(call, mode, lookup, descriptions))
     }
     return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: wire.id, result }) }
   }
   const board = createBoardClient({ url: 'http://mock-transport', boardId: 'board', fetch })
-  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
-  const sessionTag = 'session\r\nDepends-on: #1880126648423024545'
-  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, sessionTag, routeFinding: board.createRoutedCard })
-  return { calls, lifecycle }
+  return { calls, lifecycle: routedTestLifecycle(board, options), fetch }
 }
+
+const recoveryFinding = { title: 'Recovery', l4Reason: 'different subsystem', risk: 'P1', effort: 'M' }
+
+it.each(['dropped', 'is-error', 'malformed', 'idless'])('ambiguous routed creation reconciles %s answers without a second create', async (mode) => {
+  const { calls, lifecycle } = routedLifecycleFixture(mode)
+  expect(await text(lifecycle.routeFinding(recoveryFinding))).toBe('routed card 42 — Recovery')
+  expect(lifecycle.timeline().routed_cards).toEqual([{ id: '42', title: 'Recovery', l4Reason: 'different subsystem', dependencyVerified: true, reconciled: true }])
+  expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual(lifecycle.timeline().routed_cards)
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+  expect(calls.find((call) => call.name === 'find_cards')!.arguments).toEqual({ boardId: 'board', list: 'Backlog', limit: 100, offset: 0, includeDescription: true })
+  expect(calls.filter((call) => call.name === 'add_label_to_card').map((call) => call.arguments)).toEqual(['p1', 'chore', 'm', 'project'].map((labelId) => ({ cardId: '42', labelId })))
+})
+
+it.each(['no-provenance', 'wrong-session', 'wrong-timestamp', 'embedded-provenance', 'wrong-title', 'empty', 'lookup-error'])('ambiguous routed creation refuses unknown outcomes after %s lookup without retrying', async (lookup) => {
+  const { calls, lifecycle } = routedLifecycleFixture('dropped', lookup)
+  const reply = await text(lifecycle.routeFinding(recoveryFinding))
+  expect(reply).toContain('route_finding refused:')
+  expect(reply).toContain('creation outcome is unknown')
+  expect(reply).toContain('board board')
+  expect(reply).toContain('list backlog')
+  expect(reply).toContain('exact title "Recovery"')
+  const description = calls.find((call) => call.name === 'create_card')!.arguments.description!
+  for (const line of description.split('\n').filter((line) => /^(?:run\/session|timestamp):/.test(line))) expect(reply).toContain(line)
+  expect(lifecycle.timeline().routed_cards).toEqual([])
+  expect(calls.filter((call) => call.name === 'find_cards')).toHaveLength(1)
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+  expect(calls.filter((call) => call.name === 'add_label_to_card')).toEqual([])
+})
+
+it('ambiguous routed creation searches later pages of the target list', async () => {
+  const { calls, lifecycle } = routedLifecycleFixture('dropped', 'paged')
+  expect(await text(lifecycle.routeFinding(recoveryFinding))).toBe('routed card 42 — Recovery')
+  expect(calls.filter((call) => call.name === 'find_cards').map((call) => call.arguments.offset)).toEqual([0, 100])
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+})
+
+it('ambiguous routed creation stops a lookup whose pages never end and reports the outcome as unknown', async () => {
+  const { calls, lifecycle } = routedLifecycleFixture('dropped', 'offset-ignored')
+  const reply = await text(lifecycle.routeFinding(recoveryFinding))
+  expect(reply).toContain('creation outcome is unknown')
+  expect(reply).toContain('page limit')
+  expect(calls.filter((call) => call.name === 'find_cards')).toHaveLength(50)
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+}, 20000)
+
+it('ambiguous routed creation still verifies dependencies and labels a reconciled card', async () => {
+  const { calls, lifecycle } = routedLifecycleFixture('dropped', 'dependency-conflict')
+  expect(await text(lifecycle.routeFinding(recoveryFinding))).toMatch(/^routed card 42 — Recovery \(dependency unverified:/)
+  expect(lifecycle.timeline().routed_cards[0]).toMatchObject({ id: '42', reconciled: true, dependencyVerified: false })
+  expect(calls.filter((call) => call.name === 'add_label_to_card')).toHaveLength(4)
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+})
+
+it('ambiguous routed creation crosses the lifecycle server and HTTP endpoint after a committed socket drop', async () => {
+  const fixture = routedLifecycleFixture('dropped')
+  const endpoint = createServer((request, response) => {
+    let body = ''
+    request.on('data', (part) => { body += part })
+    request.on('end', () => {
+      void fixture.fetch('', { body }).then(async (result) => response.end(await result.text()), () => response.destroy())
+    })
+  })
+  await new Promise<void>((resolve) => endpoint.listen(0, '127.0.0.1', resolve))
+  try {
+    const board = createBoardClient({ boardId: 'board', url: `http://127.0.0.1:${(endpoint.address() as { port: number }).port}` })
+    const lifecycle = routedTestLifecycle(board)
+    const reply = await text(lifecycle.routeFinding(recoveryFinding))
+    expect(reply).toBe('routed card 42 — Recovery')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual(lifecycle.timeline().routed_cards)
+    expect(lifecycle.timeline().routed_cards[0]).toMatchObject({ id: '42', reconciled: true, dependencyVerified: true })
+    expect(fixture.calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+    console.log(`Fake MCP socket-drop e2e: ${reply}; reconciled=true; create_card calls=1`)
+  } finally { await new Promise<void>((resolve) => endpoint.close(() => resolve())) }
+})
+
+it('post-record persistence failure names the created id and keeps the in-memory record', async () => {
+  const { lifecycle } = routedLifecycleFixture('returned', 'match', { timelineWriter: (file: string, content: string) => {
+    if (JSON.parse(content).routed_cards.length) throw new Error('disk full')
+    writeFileSync(file, content)
+  } })
+  const reply = await text(lifecycle.routeFinding(recoveryFinding))
+  expect(reply).toBe('routed card 42 created, recording failed: disk full')
+  expect(reply).not.toContain('refused')
+  expect(lifecycle.timeline().routed_cards[0]).toMatchObject({ id: '42', title: 'Recovery' })
+})
+
+it('post-record report refresh failure names the created id without refusing or dropping the record', async () => {
+  const { boardContract, routeFinding } = { boardContract: { boardId: 'board', listId: 'backlog' }, routeFinding: async () => ({ id: '42', dependencyVerified: true }) }
+  const lifecycle = await lifecycleReadyForReport({ boardContract, routeFinding })
+  const spy = vi.spyOn(lifecycleLaunch, 'writeRegularFile').mockImplementation(() => { throw new Error('report disk full') })
+  try {
+    const reply = await text(lifecycle.routeFinding(recoveryFinding))
+    expect(reply).toBe('routed card 42 created, recording failed: report disk full')
+    expect(reply).not.toContain('refused')
+    expect(lifecycle.timeline().routed_cards[0]).toMatchObject({ id: '42', title: 'Recovery' })
+  } finally { spy.mockRestore() }
+})
+
+it('post-record event failure names the created id without refusing or dropping the record', async () => {
+  const original = lifecycleEvents.createLifecycleEvents
+  const spy = vi.spyOn(lifecycleEvents, 'createLifecycleEvents').mockImplementation((...args: unknown[]) => ({ ...original(...args), route: () => { throw new Error('route event failed') } }))
+  try {
+    const { lifecycle } = routedLifecycleFixture('returned')
+    const reply = await text(lifecycle.routeFinding(recoveryFinding))
+    expect(reply).toBe('routed card 42 created, recording failed: route event failed')
+    expect(reply).not.toContain('refused')
+    expect(lifecycle.timeline().routed_cards[0]).toMatchObject({ id: '42', title: 'Recovery' })
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual(lifecycle.timeline().routed_cards)
+  } finally { spy.mockRestore() }
+})
 
 it('lifecycle routing uses explicit unverified status when an adapter supplies no dependency evidence', async () => {
   const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
@@ -3369,7 +3526,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
-  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
+  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, timeline: server.timeline, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
 function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false, beforeStart: (root: string) => void = () => {}, options: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-'))); roots.push(root)
@@ -3403,7 +3560,7 @@ function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked'
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
-  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
+  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, timeline: server.timeline, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
 function fixtureGit(root: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
