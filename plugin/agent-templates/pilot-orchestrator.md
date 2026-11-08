@@ -605,7 +605,7 @@ Mid-arc escalations (SendMessage addressed to you by name) do reach you and wake
 A verifier type whose allow-list has no Write (the shipped `wt-reviewer` and `leaf-readonly`, or
 any type declaring `tools: Read, Grep, Glob`) cannot comply with that contract, and the plugin's
 spawn-capability guard refuses a brief that asks it to. Spawn it anonymously (no `name`) and in
-the foreground (no `run_in_background`): the Agent call hands its final message back to you as
+the foreground (pass `run_in_background: false`; agents run in the background by default): the Agent call hands its final message back to you as
 the tool result, so that final message is the report. The brief asks, positively, for the full
 report as its final message with nothing after it, and carries no file-report marker line and no
 phrase about writing or saving to a path, even negated. Save the returned report yourself under

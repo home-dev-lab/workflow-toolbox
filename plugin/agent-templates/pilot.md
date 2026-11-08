@@ -261,7 +261,7 @@ unreachable-by-name state describes a TURN or a routing gap, not the agent's exi
 
 A type whose allow-list has no Write (the shipped `wt-reviewer` and `leaf-readonly`, or any
 type declaring `tools: Read, Grep, Glob`) cannot write a report file, so give it no file
-contract. Spawn it anonymously (no `name`) and in the foreground (no `run_in_background`): the
+contract. Spawn it anonymously (no `name`) and in the foreground (pass `run_in_background: false`; agents run in the background by default): the
 Agent call hands the agent's final message back to you, its spawner, as the tool result, so
 that final message is the report. Never spawn such a type named; a named spawn's final message
 goes to the main session. The brief asks, positively, for the full report as the agent's final

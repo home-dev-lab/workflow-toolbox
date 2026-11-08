@@ -39,7 +39,7 @@ default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SD
 - **A delegate's plain text reaches nobody.** The harness's own tool description says so
   directly: a turn that ends in prose, however complete and correct, has communicated nothing.
   Only `SendMessage` or a file write leaves the delegate's transcript. The exception is a
-  FOREGROUND `Agent` call: it returns the delegate's final message to its spawner as the tool
+  FOREGROUND `Agent` call (`run_in_background: false`; the default is background): it returns the delegate's final message to its spawner as the tool
   result.
 - **A session holds ONE implicit team.** A named delegate's FINAL message is routed by that
   team, and it resolves to the session ROOT — not to whichever intermediate agent actually

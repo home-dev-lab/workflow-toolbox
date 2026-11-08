@@ -87,6 +87,11 @@ describe.each(TEMPLATES)('%s report channel for a type without Write', (_n, rel,
     expect(section).toMatch(/REPORT WRITTEN/)
   })
 
+  it('names run_in_background: false, since agents run in the background by default', () => {
+    expect(noWriteParagraph(sectionRaw)).toMatch(/run_in_background: false/)
+    expect(noWriteParagraph(sectionRaw)).not.toMatch(/no `run_in_background`/)
+  })
+
   it('keeps REPORT WRITTEN out of the no-Write paragraph', () => {
     expect(noWriteParagraph(sectionRaw)).not.toMatch(/REPORT WRITTEN/)
   })
@@ -116,5 +121,10 @@ describe('delegation-chain SKILL.md section 2', () => {
     expect(b.length, `bullet ${re} not found`).toBe(1)
     expect(b[0]).toMatch(/foreground/i)
     expect(b[0]).toMatch(/final message/i)
+  })
+
+  it('names run_in_background: false on the foreground exception', () => {
+    const b = bullets.filter((x) => /reaches nobody/i.test(x))
+    expect(b[0]).toMatch(/run_in_background: false/)
   })
 })
