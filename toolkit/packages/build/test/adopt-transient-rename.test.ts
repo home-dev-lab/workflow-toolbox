@@ -30,6 +30,9 @@ describe('renameRetryingTransient', () => {
     expect(seams.pauses).toEqual([10, 20])
   })
 
+})
+
+describe('renameRetryingTransient — stopping', () => {
   it('rethrows a non-transient error without retrying', () => {
     const seams = scripted(['ENOENT'])
     expect(() => renameRetryingTransient('a', 'b', seams)).toThrow('refused ENOENT')
@@ -53,6 +56,9 @@ describe('renameRetryingTransient', () => {
     expect(seams.pauses).toEqual([25])
   })
 
+})
+
+describe('renameRetryingTransient — pausing', () => {
   it('asks beforeRetry after the pause, so a change made while waiting is seen', () => {
     const events: string[] = []
     const outcome = renameRetryingTransient('a', 'b', {

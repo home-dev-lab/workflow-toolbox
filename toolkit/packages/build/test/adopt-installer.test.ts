@@ -382,6 +382,8 @@ describe('adopt installer — transient publication refusal', () => {
     expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
     expect(tempLeftovers(dir)).toEqual([])
   })
+})
+describe('adopt installer — transient refusal keeps a concurrent change', () => {
   it('never overwrites a target edited while the rename was refused', () => {
     const { dir, before } = agedFixture()
     const edited = before + '\nUSER EDIT DURING THE REFUSAL\n'
@@ -413,6 +415,8 @@ describe('adopt installer — transient publication refusal', () => {
     expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
     expect(tempLeftovers(dir)).toEqual([])
   })
+})
+describe('adopt installer — transient refusal bounds and real handles', () => {
   it('gives up after a bounded number of transient refusals, keeping the original', () => {
     const { dir, before } = agedFixture()
     const res = refreshWithRename(dir, 'throw transient()')
