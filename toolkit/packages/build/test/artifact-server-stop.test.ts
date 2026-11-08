@@ -10,6 +10,8 @@ import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 import { retainProcessOwner, signalProcess } from '../../../../plugin/bin/lib/host/process-signal-boundary.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { acquireArtifactControlClaim } from '../../../../plugin/bin/lib/host/artifact-control-claim.mjs'
+// @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
+import { artifactServerProcessStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
 
 type Probe = { kind: string, reason?: string, health?: { pid?: unknown, port?: unknown, startToken?: unknown } }
 type Result = { ok: boolean, message: string }
@@ -52,6 +54,7 @@ function controls(platform: string, current: Probe, livenessError?: Liveness, si
     atomicWriteJson: vi.fn(), artifactIntentPath: () => 'intent.json',
     signalProcess: (pid: number, signal: string) => signalProcess(pid, signal, host),
     retainProcessOwner,
+    artifactServerProcessStatus: (pid: number, _readState?: unknown, identity = null) => artifactServerProcessStatus(pid, host.readProcessExecutionState, identity, host.readProcessIdentity),
     spawnServer,
     ensureSecureStateDir: () => 'state-dir', configuredArtifactPort: () => 48001,
     acquireArtifactControlClaim: () => { if (claimed) return null; claimed = true; return () => { claimed = false } },
@@ -83,6 +86,16 @@ function registerExitConfirmationCases(platform: string, action: string) {
 }
 
 function registerIntentCase(platform: string, action: string) {
+  it('confirms exit when a live stranger reuses the recorded server PID after SIGTERM', async () => {
+    const flow = controls(platform, { kind: 'free' })
+    flow.kill.mockImplementation((_pid: number, signal: string | number) => {
+      if (signal === 'SIGTERM') flow.identity.mockReturnValue({ ...BIRTH, startIdentity: 'stranger-birth' })
+    })
+    expect((await flow.command(action, true)).ok, 'stop confirmation must use the recorded instance identity').toBe(true)
+    expect(flow.elapsed()).toBe(50)
+    expect(flow.spawnServer).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
+    expect(flow.identity).toHaveBeenCalledTimes(2)
+  })
   it('records the verified PID and requested action before shutdown', async () => {
     const flow = controls(platform, { kind: 'free' }, 'ESRCH')
     await flow.command(action, true)
@@ -91,42 +104,46 @@ function registerIntentCase(platform: string, action: string) {
   })
 }
 
+function registerPortEvidenceCases(platform: string, action: string) {
+  it.each([{ kind: 'free' }, ...[43, undefined, null, '42', 0, -1, 1.5].map((pid) => ({ kind: 'ours', health: { pid } }))])('refuses port evidence %j while the PID is retained', async (probe) => {
+    for (const error of [undefined, 'EPERM', 'EIO']) {
+      const flow = controls(platform, probe, error)
+      expect(await flow.command(action, true), 'port evidence must not bypass process-exit confirmation').toEqual({
+        ok: false, message: 'artifact server: verified PID 42 did not stop',
+      })
+      expect(flow.spawnServer).not.toHaveBeenCalled()
+    }
+  })
+  it.each(['unknown', 'foreign', 'ours'])('waits for delayed process exit with a %s endpoint', async (kind) => {
+    const flow = controls(platform, { kind, health: { pid: 42 } }, (now) => now >= 2_750 ? 'ESRCH' : undefined)
+    expect((await flow.command(action, true)).ok, 'shutdown must allow a delayed process exit').toBe(true)
+    expect(flow.elapsed()).toBe(2_750)
+    expect(flow.spawnServer).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
+  })
+}
+
+function registerSignalCases(platform: string, action: string) {
+  it('accepts ESRCH between verification and signaling without waiting or a second signal', async () => {
+    const flow = controls(platform, { kind: 'foreign' }, undefined, 'ESRCH')
+    expect((await flow.command(action, true)).ok, 'a verified process already gone is a completed stop').toBe(true)
+    expect(flow.elapsed()).toBe(0)
+    expect(flow.kill).toHaveBeenCalledTimes(1)
+    expect(flow.spawnServer).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
+  })
+  it.each(['EPERM', 'EIO'])('refuses a %s signal failure', async (error) => {
+    const flow = controls(platform, { kind: 'free' }, 'ESRCH', error)
+    expect(await flow.command(action, true)).toEqual({
+      ok: false, message: `artifact server: failed to signal verified PID 42: ${error}`,
+    })
+    expect(flow.spawnServer).not.toHaveBeenCalled()
+  })
+}
+
 describe.each(platforms)('artifact stop confirmation through %s host adapter', (platform) => {
   describe.each(actions)('%s', (action) => {
     registerExitConfirmationCases(platform, action)
-    it.each([{ kind: 'free' }, ...[43, undefined, null, '42', 0, -1, 1.5].map((pid) => ({ kind: 'ours', health: { pid } }))])('refuses port evidence %j while the PID is retained', async (probe) => {
-      for (const error of [undefined, 'EPERM', 'EIO']) {
-        const flow = controls(platform, probe, error)
-        expect(await flow.command(action, true), 'port evidence must not bypass process-exit confirmation').toEqual({
-          ok: false, message: 'artifact server: verified PID 42 did not stop',
-        })
-        expect(flow.spawnServer).not.toHaveBeenCalled()
-      }
-    })
-
-    it.each(['unknown', 'foreign', 'ours'])('waits for delayed process exit with a %s endpoint', async (kind) => {
-      const flow = controls(platform, { kind, health: { pid: 42 } }, (now) => now >= 2_750 ? 'ESRCH' : undefined)
-      expect((await flow.command(action, true)).ok, 'shutdown must allow a delayed process exit').toBe(true)
-      expect(flow.elapsed()).toBe(2_750)
-      expect(flow.spawnServer).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
-    })
-
-    it('accepts ESRCH between verification and signaling without waiting or a second signal', async () => {
-      const flow = controls(platform, { kind: 'foreign' }, undefined, 'ESRCH')
-      expect((await flow.command(action, true)).ok, 'a verified process already gone is a completed stop').toBe(true)
-      expect(flow.elapsed()).toBe(0)
-      expect(flow.kill).toHaveBeenCalledTimes(1)
-      expect(flow.spawnServer).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
-    })
-
-    it.each(['EPERM', 'EIO'])('refuses a %s signal failure', async (error) => {
-      const flow = controls(platform, { kind: 'free' }, 'ESRCH', error)
-      expect(await flow.command(action, true)).toEqual({
-        ok: false, message: `artifact server: failed to signal verified PID 42: ${error}`,
-      })
-      expect(flow.spawnServer).not.toHaveBeenCalled()
-    })
-
+    registerPortEvidenceCases(platform, action)
+    registerSignalCases(platform, action)
     it('keeps polling when the verified PID still answers health', async () => {
       const flow = controls(platform, { kind: 'ours', health: { pid: 42 } })
       expect((await flow.command(action, true)).ok).toBe(false)
@@ -274,7 +291,9 @@ function registerDiscoveryCases(platform: string, action: string) {
   })
   it.each([undefined, { ...BIRTH, startIdentity: '' }])('refuses absent recorded birth identity %j', async (processIdentity) => {
     const flow = controls(platform, { kind: 'free' }, 'ESRCH', undefined, undefined, { discovery: { processIdentity } })
-    expect(await flow.command(action, true)).toEqual(IDENTITY_REFUSAL)
+    expect(await flow.command(action, true)).toEqual(processIdentity === undefined
+      ? { ok: false, message: 'artifact server: no recorded process identity; nothing was stopped' }
+      : IDENTITY_REFUSAL)
     expectNothingSignalled(flow)
   })
 }

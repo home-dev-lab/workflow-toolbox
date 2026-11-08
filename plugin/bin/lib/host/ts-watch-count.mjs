@@ -47,6 +47,7 @@ export function monitorTsserverWatches(child, stderr, { platform = process.platf
   }
   const timer = setInterval(check, WATCH_SAMPLE_INTERVAL_MS)
   timer.unref()
+  child.once('exit', () => clearInterval(timer))
   child.once('close', () => clearInterval(timer))
   return { status: 'monitoring' }
 }

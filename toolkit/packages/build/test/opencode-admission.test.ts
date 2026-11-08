@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_SNAPSHOT_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -12,6 +13,8 @@ const roots: string[] = []
 // These stubs are unconditional: a broken or removed admission call cannot reach a real model.
 const modes = ['fan-out', 'generated', 'reduce', 'verifier'] as const
 type Mode = typeof modes[number]
+// Requires an executed policy: unsupported containment hosts refuse before import.
+const policyIt = it.skipIf(admissionTestPlatform !== 'linux')
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function networkSeal(root: string) {
@@ -87,7 +90,7 @@ function fixture(mode: Mode, source = 'export default () => null', alternate = f
   const variable = mode === 'verifier' ? 'WT_OPENCODE_VERIFY_ADMISSION' : 'WT_OPENCODE_ENVELOPE_ADMISSION'
   const cliName = mode === 'verifier' ? 'wt-opencode-verify.mjs' : 'wt-opencode-envelope.mjs'
   return { root, repo, module, out, variable, cli: join(PLUGIN, 'bin', cliName), mode,
-    ...networkSeal(root), ...modeInput(root, mode, alternate) }
+    platform: process.env.WT_ADMISSION_TEST_PLATFORM, ...networkSeal(root), ...modeInput(root, mode, alternate) }
 }
 type Fixture = ReturnType<typeof fixture>
 
@@ -100,17 +103,17 @@ function launch(f: Fixture, admission: string | undefined, timeout = '5000', dir
     TMPDIR: join(f.root, 'temp'), TMP: join(f.root, 'temp'), TEMP: join(f.root, 'temp'),
   })
   const preload = join(f.root, 'cleanup-preload.mjs')
-  return spawnSync(process.execPath, [...(existsSync(preload) ? ['--import', pathToFileURL(preload).href] : []), '--loader', pathToFileURL(f.loader).href, f.cli, ...f.args, '--dir', dir], {
+  return spawnSync(process.execPath, [...(existsSync(preload) ? ['--import', pathToFileURL(preload).href] : []), '--loader', pathToFileURL(f.loader).href, ...containmentLoader(f.root, f.platform), f.cli, ...f.args, '--dir', dir], {
     cwd: f.root, env, encoding: 'utf8', input: 'first rendered task', timeout: 15_000, killSignal: 'SIGKILL',
   })
 }
 
-function refusal(f: Fixture, cause: string, admission = f.module, timeout = '5000') {
+function refusal(f: Fixture, cause: string, admission = f.module, timeout = '5000', executesPolicy = true) {
   const result = launch(f, admission, timeout)
   expect(result.status, result.stderr).toBe(3)
   expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
   expect(result.stdout).toContain(`OPENCODE_REFUSED: ${f.variable}: `)
-  expect(result.stdout).toContain(cause)
+  expect(result.stdout).toContain(executesPolicy ? policyCause(cause) : cause)
   expect(existsSync(f.marker)).toBe(false)
   expect(existsSync(f.out) ? readdirSync(f.out).filter(name => name.endsWith('.answer.txt')) : []).toEqual([])
   expect(readdirSync(f.repo).filter(name => name.startsWith('.oc-verify-'))).toEqual([])
@@ -132,7 +135,7 @@ function admissionLocks(mode: Mode) {
   it('keeps policy stdout out of the one-line refusal protocol', () => {
     refusal(fixture(mode, 'console.log("policy import output"); export default () => { console.log("policy call output"); return "policy refuses" }'), 'policy refuses')
   })
-  it('admits only after seeing every rendered prompt at absolute launch paths', () => {
+  policyIt('admits only after seeing every rendered prompt at absolute launch paths', () => {
     const f = fixture(mode, recordingPolicy)
     const result = launch(f, f.module)
     expect(result.status, result.stderr).toBe(0)
@@ -169,10 +172,10 @@ function failureLocks(mode: Mode) {
   ])('fails closed for %s', (_name, source, cause) => { refusal(fixture(mode, source), cause) })
   it.each(['', './relative.mjs', 'missing'])('fails closed for invalid module path %s', (value) => {
     const f = fixture(mode)
-    refusal(f, value === 'missing' ? 'module failed' : 'absolute ES module path', value === 'missing' ? join(f.root, 'missing.mjs') : value)
+    refusal(f, value === 'missing' ? 'module failed' : 'absolute ES module path', value === 'missing' ? join(f.root, 'missing.mjs') : value, '5000', value === 'missing')
   })
   it.each(['0', '-1', '1.5', 'NaN', '2147483648', ''])('fails closed for invalid timeout %s', timeout => {
-    refusal(fixture(mode), 'must be a positive integer no greater than 2147483647', undefined, timeout)
+    refusal(fixture(mode), 'must be a positive integer no greater than 2147483647', undefined, timeout, false)
   })
   it.each([
     'export default () => new Promise(() => {})',
@@ -188,7 +191,7 @@ describe.each(modes)('opencode admission: %s', mode => {
   failureLocks(mode)
 })
 
-it.each(['generated', 'reduce', 'verifier'] as const)('admits the alternate %s input after rendering it', mode => {
+policyIt.each(['generated', 'reduce', 'verifier'] as const)('admits the alternate %s input after rendering it', mode => {
   const f = fixture(mode, recordingPolicy, true)
   const result = launch(f, f.module)
   expect(result.status, result.stderr).toBe(0)
@@ -198,7 +201,7 @@ it.each(['generated', 'reduce', 'verifier'] as const)('admits the alternate %s i
   expect(JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8')).prompts.sort()).toEqual([...f.prompts].sort())
 })
 
-it('shows every fan-out prompt even when task ids have colliding filename spellings', () => {
+policyIt('shows every fan-out prompt even when task ids have colliding filename spellings', () => {
   const f = fixture('fan-out', recordingPolicy)
   writeFileSync(join(f.root, 'input.json'), JSON.stringify(f.prompts.map((prompt, index) => ({ id: index ? 'a?b' : 'a/b', prompt }))))
   const result = launch(f, f.module)
@@ -209,7 +212,7 @@ it('shows every fan-out prompt even when task ids have colliding filename spelli
   expect(JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8')).prompts.sort()).toEqual([...f.prompts].sort())
 })
 
-it.each(['fan-out', 'verifier'] as const)('keeps the admitted task unchanged for the one %s retry', mode => {
+policyIt.each(['fan-out', 'verifier'] as const)('keeps the admitted task unchanged for the one %s retry', mode => {
   const f = fixture(mode, recordingPolicy)
   if (mode === 'fan-out') f.args.push('--concurrency', '1')
   writeFileSync(join(f.root, 'retry'), 'yes')
@@ -229,7 +232,7 @@ it.each(modes)('refuses a %s request changed between admission and its first lau
   refusal(fixture(mode, source), 'request changed after admission')
 })
 
-it.each(modes)('refuses a changed %s request before the rate-limit fallback retry', mode => {
+policyIt.each(modes)('refuses a changed %s request before the rate-limit fallback retry', mode => {
   const f = fixture(mode, recordingPolicy)
   if (mode !== 'verifier') f.args.push('--concurrency', '1')
   writeFileSync(join(f.root, 'retry'), 'yes')
@@ -264,6 +267,13 @@ it.each(modes)('honors platform-native symlink/.. resolution before %s policy an
     return
   }
   // Keep Node warnings visible, but include the refusal protocol on stdout too.
+  if (admissionTestPlatform !== 'linux') {
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(admissionTestPlatform)}\n`)
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
+    expect(existsSync(f.marker)).toBe(false)
+    return
+  }
   expect(result.status, result.stdout + result.stderr).toBe(0)
   const seen = JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8'))
   const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
@@ -272,7 +282,7 @@ it.each(modes)('honors platform-native symlink/.. resolution before %s policy an
   expect(calls.every(call => call.args[call.args.indexOf('--dir') + 1] === seen.repo)).toBe(true)
 })
 
-it('isolates concurrent envelope invocations sharing the output directory and task ids', () => {
+policyIt('isolates concurrent envelope invocations sharing the output directory and task ids', () => {
   const f = fixture('fan-out', recordingPolicy)
   f.args.push('--concurrency', '1')
   const other = join(f.root, 'other-input.json')
@@ -291,7 +301,7 @@ it('isolates concurrent envelope invocations sharing the output directory and ta
   expect(calls.map(call => call.task)).toEqual(f.prompts)
 })
 
-it('removes the readonly verifier run as a whole without unlinking the protected task first', () => {
+policyIt('removes the readonly verifier run as a whole without unlinking the protected task first', () => {
   const f = fixture('verifier', recordingPolicy.replace('return null;', 'return "policy refuses";'))
   writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
     const remove = fs.rmSync;
@@ -380,4 +390,361 @@ it('returns absolute fallback request paths with a relative TMPDIR after an outp
     expect(dirname(taskfile)).toBe(rendered.request)
     expect(readFileSync(taskfile, 'utf8')).toBe('fallback prompt')
   }
+})
+
+function fallbackFixture(mode: Mode, denyOutput = false) {
+  const f = fixture(mode)
+  mkdirSync(join(f.root, 'relative-temp'))
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
+    import path from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    process.env.TMPDIR = process.env.TMP = process.env.TEMP = 'relative-temp';
+    const create = fs.mkdtempSync;
+    const write = fs.writeFileSync;
+    fs.mkdtempSync = (prefix, ...args) => {
+      if (prefix === ${JSON.stringify(join(f.out, 'requests-'))}) throw Object.assign(new Error('output denied'), { code: 'EACCES' });
+      const directory = create(prefix, ...args);
+      if (path.basename(prefix) === 'opencode-requests-') write(${JSON.stringify(join(f.root, 'fallback-created'))}, directory);
+      return directory;
+    };
+    fs.writeFileSync = (file, ...args) => {
+      if (${denyOutput} && path.dirname(String(file)) === ${JSON.stringify(f.out)}) throw Object.assign(new Error('output denied'), { code: 'EACCES' });
+      return write(file, ...args);
+    };
+    syncBuiltinESMExports();`)
+  return f
+}
+
+describe.each(['fan-out', 'generated', 'reduce'] as const)('envelope output lifecycle: %s', mode => {
+  it('cleans fallback request directories after unconfigured execution', () => {
+    const f = fallbackFixture(mode)
+    const result = launch(f, undefined)
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    const request = readFileSync(join(f.root, 'fallback-created'), 'utf8')
+    expect(dirname(request)).toBe(join(f.root, 'relative-temp'))
+    expect(existsSync(request), 'temporary fallback request directory must be removed').toBe(false)
+    expect(readdirSync(join(f.root, 'relative-temp'))).toEqual([])
+  })
+  it.each([false, true])('fails unwritable output before any model call with admission=%s', configured => {
+    const f = fallbackFixture(mode, true)
+    const result = launch(f, configured ? f.module : undefined)
+    expect(existsSync(f.marker), 'no model call may precede output writeability validation').toBe(false)
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(result.stdout).toContain('output directory is not writable')
+    expect(result.stdout).not.toContain('envelope.manifest.json')
+    expect(readdirSync(join(f.root, 'relative-temp'))).toEqual([])
+  })
+})
+
+it.each([false, true])('removes output writability probes after successful execution with admission=%s', configured => {
+  const f = fixture('fan-out')
+  const result = launch(f, configured ? f.module : undefined)
+  if (configured && admissionTestPlatform !== 'linux') {
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(admissionTestPlatform)}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+  } else expect(result.status, result.stdout + result.stderr).toBe(0)
+  expect(readdirSync(f.out).filter(name => name.startsWith('.write-probe-')), 'output writability probes must be removed').toEqual([])
+})
+
+function failFallbackRender(f: Fixture) {
+  const preload = join(f.root, 'cleanup-preload.mjs')
+  writeFileSync(preload, readFileSync(preload, 'utf8') + `
+    const renderWrite = fs.writeFileSync;
+    fs.writeFileSync = (file, ...args) => {
+      if (String(file).endsWith('1-task-1.task.md')) throw new Error('task copy denied');
+      return renderWrite(file, ...args);
+    };
+    syncBuiltinESMExports();`)
+}
+
+it('cleans a fallback request directory when rendering a task copy fails', () => {
+  const f = fallbackFixture('fan-out')
+  failFallbackRender(f)
+  const result = launch(f, undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(2)
+  expect(result.stdout).toContain('task copy denied')
+  expect(existsSync(f.marker)).toBe(false)
+  expect(existsSync(readFileSync(join(f.root, 'fallback-created'), 'utf8'))).toBe(false)
+})
+
+it('preserves the original setup error when fallback cleanup throws', () => {
+  const f = fallbackFixture('fan-out')
+  failFallbackRender(f)
+  const preload = join(f.root, 'cleanup-preload.mjs')
+  writeFileSync(preload, readFileSync(preload, 'utf8') + `
+    const remove = fs.rmSync;
+    fs.rmSync = (file, options) => {
+      if (path.basename(String(file)).startsWith('opencode-requests-')) throw new Error('injected cleanup failure');
+      return remove(file, options);
+    };
+    syncBuiltinESMExports();`)
+  const result = launch(f, undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(2)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain('task copy denied')
+  expect(result.stderr).toContain('request cleanup warning: injected cleanup failure')
+})
+
+function parallelFixture(hang: boolean) {
+  const f = fixture('fan-out', recordingPolicy)
+  f.args.push('--concurrency', '2', '--timeout-sec', '1')
+  writeFileSync(join(f.root, 'input.json'), JSON.stringify([...f.prompts, 'queued task', 'another queued task'].map((prompt, i) => ({ id: `task-${i}`, prompt }))))
+  writeFileSync(join(f.root, 'fake-opencode.mjs'), `import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+    import { spawn } from 'node:child_process';
+    const args = process.argv.slice(2);
+    if (args[0] !== 'run') process.exit(0);
+    const file = args[args.indexOf('-f') + 1];
+    const task = readFileSync(file, 'utf8');
+    const record = data => appendFileSync(${JSON.stringify(f.marker)}, JSON.stringify(data) + '\\n');
+    record({ pid: process.pid, task });
+    if (task === 'first rendered task') {
+      while (!existsSync(${JSON.stringify(join(f.root, 'sibling.ready'))})) await new Promise(r => setTimeout(r, 10));
+      chmodSync(file, 0o600); writeFileSync(file, 'changed after admission');
+      process.stderr.write('429 rate limit'); process.exit(1);
+    }
+    if (task === 'second rendered task') {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      record({ pid: child.pid, descendant: true });
+      writeFileSync(${JSON.stringify(join(f.root, 'sibling.ready'))}, 'yes');
+      if (${hang}) await new Promise(() => { setInterval(() => {}, 1000) });
+      await new Promise(r => setTimeout(r, 300));
+      writeFileSync(${JSON.stringify(join(f.root, 'sibling.done'))}, 'yes');
+    }
+    console.log(JSON.stringify({ part: { type: 'text', text: 'SEALED ANSWER' } })); process.exit(0);`)
+  return f
+}
+
+function stopRecordedChildren(f: Fixture) {
+  if (!existsSync(f.marker)) return
+  for (const line of readFileSync(f.marker, 'utf8').trim().split('\n')) {
+    const { pid } = JSON.parse(line)
+    if (process.platform !== 'win32') { try { process.kill(-pid, 'SIGKILL') } catch { /* Already reaped. */ } }
+    try { process.kill(pid, 'SIGKILL') } catch { /* Already reaped. */ }
+  }
+}
+
+function recordedChildAlive(pid: number) {
+  // Probe only fixture-recorded PIDs; Linux zombies have exited even before init reaps them.
+  try { process.kill(pid, 0) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+    throw error
+  }
+  if (process.platform !== 'linux') {
+    // macOS has no /proc: a zombie still answers signal 0, so read its state from ps.
+    const ps = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' })
+    const stat = ps.stdout.trim()
+    return stat !== '' && !stat.startsWith('Z')
+  }
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z'
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
+function assertDrainedRefusal(f: Fixture, hang: boolean) {
+  const result = launch(f, f.module)
+  expect(result.status, result.stdout + result.stderr).toBe(3)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain('OPENCODE_REFUSED: WT_OPENCODE_ENVELOPE_ADMISSION: request changed after admission')
+  const streamDir = join(f.root, 'state', 'wt-observe', 'external-lane-streams')
+  const streams = existsSync(streamDir) ? readdirSync(streamDir).filter(name => name.includes('task-1-')) : []
+  expect(streams, 'running sibling must close before the refusal exits').toHaveLength(1)
+  expect(readFileSync(join(streamDir, streams[0]!), 'utf8')).toContain(`EXIT=${hang ? 124 : 0}`)
+  expect(existsSync(join(f.root, 'sibling.done'))).toBe(!hang)
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.filter(call => !call.descendant).map(call => call.task).sort()).toEqual([...f.prompts].sort())
+  if (process.platform !== 'win32') for (const { pid } of calls) {
+    expect(recordedChildAlive(pid), `child ${pid} must not survive refusal`).toBe(false)
+  }
+}
+
+policyIt.each([false, true])('drains running siblings and descendants on integrity refusal, timeout=%s', hang => {
+  const f = parallelFixture(hang)
+  try { assertDrainedRefusal(f, hang) } finally { stopRecordedChildren(f) }
+})
+
+policyIt('does not launch siblings after an immediate first-task integrity refusal', () => {
+  const source = recordingPolicy.replace('return null;', `const file = join(request, readdirSync(request)[0]); chmodSync(file, 0o600); writeFileSync(file, 'changed after admission'); return null;`)
+  const f = fixture('fan-out', source)
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import cp from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const spawn = cp.spawn;
+    cp.spawn = (...args) => {
+      // Count sealed model-launch attempts, not admission's local cleanup helper.
+      if (args[0] === process.execPath && args[1]?.[0] === ${JSON.stringify(join(f.root, 'fake-opencode.mjs'))}) {
+        writeFileSync(${JSON.stringify(f.marker)}, 'spawned');
+      }
+      return spawn(...args);
+    };
+    syncBuiltinESMExports();`)
+  const result = launch(f, f.module)
+  expect(result.status, result.stdout + result.stderr).toBe(3)
+  expect(result.stdout).toContain('OPENCODE_REFUSED:')
+  expect(existsSync(f.marker), 'siblings must not launch after a synchronous integrity refusal').toBe(false)
+})
+
+policyIt('does not retry a rate-limited running sibling after another task refuses', () => {
+  const f = parallelFixture(false)
+  const binary = join(f.root, 'fake-opencode.mjs')
+  writeFileSync(binary, readFileSync(binary, 'utf8').replace(
+    `writeFileSync(${JSON.stringify(join(f.root, 'sibling.done'))}, 'yes');`,
+    `writeFileSync(${JSON.stringify(join(f.root, 'sibling.done'))}, 'yes'); process.stderr.write('429 rate limit'); process.exit(1);`,
+  ))
+  try {
+    const result = launch(f, f.module)
+    expect(result.status, result.stdout + result.stderr).toBe(3)
+    expect(result.stdout).toContain('request changed after admission')
+    const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    expect(calls.filter(call => !call.descendant).map(call => call.task).sort()).toEqual([...f.prompts].sort())
+  } finally { stopRecordedChildren(f) }
+})
+
+function recordOrderedFailures(f: Fixture) {
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const abort = AbortController.prototype.abort;
+    AbortController.prototype.abort = function(reason) {
+      const result = abort.call(this, reason);
+      if (reason?.message?.includes('request changed after admission') || reason?.message?.includes('.answer.txt'))
+        fs.writeFileSync(${JSON.stringify(join(f.root, 'first-error'))}, 'yes');
+      return result;
+    };
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (file, ...args) => {
+      try { return write(file, ...args); } catch (error) {
+        if (String(file) === ${JSON.stringify(join(f.out, 'task-0.answer.txt'))}) write(${JSON.stringify(join(f.root, 'late-write'))}, error.code);
+        throw error;
+      }
+    };
+    syncBuiltinESMExports();`)
+}
+
+function orderedFailureFixture(firstFailure: 'refusal' | 'write') {
+  const f = fixture('fan-out')
+  f.args.push('--concurrency', '2', '--timeout-sec', '5')
+  mkdirSync(join(f.out, 'task-0.answer.txt'), { recursive: true })
+  if (firstFailure === 'write') mkdirSync(join(f.out, 'task-1.answer.txt'))
+  recordOrderedFailures(f)
+  writeFileSync(join(f.root, 'fake-opencode.mjs'), `import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+    const args = process.argv.slice(2);
+    if (args[0] !== 'run') process.exit(0);
+    const file = args[args.indexOf('-f') + 1];
+    const task = readFileSync(file, 'utf8');
+    appendFileSync(${JSON.stringify(f.marker)}, JSON.stringify({ task }) + '\\n');
+    const wait = async marker => { while (!existsSync(marker)) await new Promise(r => setTimeout(r, 10)); };
+    if (task === 'first rendered task') {
+      writeFileSync(${JSON.stringify(join(f.root, 'sibling.ready'))}, 'yes');
+      await wait(${JSON.stringify(join(f.root, 'first-error'))});
+    } else {
+      await wait(${JSON.stringify(join(f.root, 'sibling.ready'))});
+      if (${firstFailure === 'refusal'}) {
+        chmodSync(file, 0o600); writeFileSync(file, 'changed after admission');
+        process.stderr.write('429 rate limit'); process.exit(1);
+      }
+    }
+    console.log(JSON.stringify({ part: { type: 'text', text: 'SEALED ANSWER' } }));`)
+  return f
+}
+
+policyIt.each(['refusal', 'write'] as const)('preserves the first %s failure when an earlier lane fails later', firstFailure => {
+  const f = orderedFailureFixture(firstFailure)
+  const result = launch(f, f.module)
+  expect(readFileSync(join(f.root, 'late-write'), 'utf8'), 'the earlier lane must fail only after the first pool abort').toBe('EISDIR')
+  expect(result.status, result.stdout + result.stderr).toBe(firstFailure === 'refusal' ? 3 : 2)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain(firstFailure === 'refusal'
+    ? 'OPENCODE_REFUSED: WT_OPENCODE_ENVELOPE_ADMISSION: request changed after admission'
+    : 'OPENCODE_ERROR: unexpected failure:')
+  if (firstFailure === 'write') expect(result.stdout).toContain('task-1.answer.txt')
+  expect(result.stdout).not.toContain('task-0.answer.txt')
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.map(call => call.task).sort()).toEqual([...f.prompts].sort())
+})
+
+function streamFailureFixture(event: 'close' | 'error') {
+  const f = orderedFailureFixture('refusal')
+  const binary = join(f.root, 'fake-opencode.mjs')
+  writeFileSync(binary, `import { spawnSync } from 'node:child_process';\n` + readFileSync(binary, 'utf8').replace(
+    `await wait(${JSON.stringify(join(f.root, 'first-error'))});`,
+    `await wait(${JSON.stringify(join(f.root, 'first-error'))});
+      const removed = spawnSync(process.execPath, ['-e', "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", ${JSON.stringify(join(f.root, 'state', 'wt-observe', 'external-lane-streams'))}]);
+      if (removed.status !== 0) throw new Error('stream directory removal failed');
+      writeFileSync(${JSON.stringify(join(f.root, 'streams-removed'))}, 'yes');`,
+  ))
+  if (event === 'error') {
+    const preload = join(f.root, 'cleanup-preload.mjs')
+    writeFileSync(preload, readFileSync(preload, 'utf8') + `
+      const cp = await import('node:child_process');
+      const spawn = cp.default.spawn;
+      cp.default.spawn = (...args) => {
+        const child = spawn(...args);
+        if (args[1].includes('run') && fs.readFileSync(args[1][args[1].indexOf('-f') + 1], 'utf8') === 'first rendered task')
+          child.once('exit', () => { fs.writeFileSync(${JSON.stringify(join(f.root, 'error-emitted'))}, 'yes'); child.emit('error', new Error('injected child error')); });
+        return child;
+      };
+      syncBuiltinESMExports();`)
+  }
+  return f
+}
+
+policyIt.each(['close', 'error'] as const)('preserves a published refusal when a sibling %s callback cannot write its stream', event => {
+  const f = streamFailureFixture(event)
+  const result = launch(f, f.module)
+  console.info(`stream-failure ${event}: exit=${result.status}\n${result.stdout.trimEnd()}`)
+  expect(existsSync(join(f.root, 'streams-removed'))).toBe(true)
+  if (event === 'error') expect(existsSync(join(f.root, 'error-emitted'))).toBe(true)
+  expect(result.status, result.stdout + result.stderr).toBe(3)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain('OPENCODE_REFUSED: WT_OPENCODE_ENVELOPE_ADMISSION: request changed after admission: ')
+  expect(result.stderr).not.toContain('ENOENT')
+})
+
+policyIt('preserves an ordinary error published before a later integrity refusal', () => {
+  const f = orderedFailureFixture('write')
+  const preload = join(f.root, 'cleanup-preload.mjs')
+  writeFileSync(preload, readFileSync(preload, 'utf8') + `
+    const { OpencodeAdmissionRefusal } = await import(${JSON.stringify(pathToFileURL(join(PLUGIN, 'bin/lib/opencode-admission.mjs')).href)});
+    const previousWrite = fs.writeFileSync;
+    fs.writeFileSync = (file, ...args) => {
+      if (String(file) === ${JSON.stringify(join(f.out, 'task-0.answer.txt'))}) {
+        previousWrite(${JSON.stringify(join(f.root, 'late-refusal'))}, 'yes');
+        throw new OpencodeAdmissionRefusal('late integrity refusal');
+      }
+      return previousWrite(file, ...args);
+    };
+    syncBuiltinESMExports();`)
+  const result = launch(f, f.module)
+  expect(existsSync(join(f.root, 'late-refusal')), 'the sibling must reject after the ordinary error was published').toBe(true)
+  expect(result.status, result.stdout + result.stderr).toBe(2)
+  expect(result.stdout).toContain('OPENCODE_ERROR: unexpected failure:')
+  expect(result.stdout).toContain('task-1.answer.txt')
+  expect(result.stdout).not.toContain('OPENCODE_REFUSED:')
+})
+
+describe.each(modes)('platform containment contract for %s', mode => {
+  it.each(['native', 'darwin', 'win32'])('host=%s', platform => {
+    const f = fixture(mode, refusingImportPolicy)
+    f.platform = platform
+    const host = platform === 'native' ? process.platform : platform
+    const result = launch(f, f.module)
+    const cause = host === 'linux' ? 'policy refuses' : platformRefusal(host)
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${cause}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+  })
+  it.each(['darwin', 'win32'])('host=%s refuses even an admitting policy before import', platform => {
+    const f = fixture(mode, admittingImportPolicy)
+    f.platform = platform
+    const result = launch(f, f.module)
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(platform)}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
+  })
 })

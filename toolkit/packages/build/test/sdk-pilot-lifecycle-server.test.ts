@@ -57,6 +57,12 @@ const FIXTURE_LANE_TIMEOUT_SECONDS = 10
 const DESCENDANT_LANE_WAIT_MS: number | null = null
 const DESCENDANT_TEST_BUDGET_MS = 120_000
 const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url))
+// The real wt-lane launcher and worker behind an injected admission counter (the card's own
+// fixtures/launcher-counter/wt-lane.mjs, as wt-lane-launcher.test.ts uses). The shipped counter runs
+// `pgrep -x opencode`; these fake lanes are `#!/bin/sh` scripts, which macOS names after their
+// interpreter (comm `/bin/sh`), so it never counts them there and the launcher holds for its 90 s
+// visibility bound. It would also count real lanes running on the host. Admission has its own tests.
+const REAL_LAUNCHER_WITH_FIXTURE_COUNTER = fileURLToPath(new URL('./fixtures/launcher-counter/wt-lane.mjs', import.meta.url))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
@@ -664,6 +670,60 @@ it.each(['returned', 'readback', 'conflict', 'readback-error'])('lifecycle routi
   expect(calls.some((call) => call.arguments.cardId === '1')).toBe(false)
 })
 
+// Planka MCP result texts measured on the live server: add_label_to_card answers success in plain text
+// ("Label <labelId> added to card <cardId>"), and every request failure, a duplicate label included, as an isError
+// text "Request failed with status code <n>" (get_card on a missing card answers "... status code 404"); create_card
+// answers JSON.
+const MISSING_CARD = { isError: true, content: [{ type: 'text', text: 'Request failed with status code 404' }] }
+function plainTextLabelBoard(failures: Record<string, number>, readBackMissing = false) {
+  const attempted: string[] = []
+  const fetch = async (_url: string, options: { body: string }) => {
+    const wire = JSON.parse(options.body)
+    let result: unknown = {}
+    if (wire.method === 'tools/call' && wire.params.name === 'create_card') {
+      const created = readBackMissing ? { id: '77' } : { id: '77', description: wire.params.arguments.description }
+      result = { content: [{ type: 'text', text: JSON.stringify(created) }] }
+    } else if (wire.method === 'tools/call' && wire.params.name === 'get_card') {
+      result = MISSING_CARD
+    } else if (wire.method === 'tools/call' && wire.params.name === 'add_label_to_card') {
+      const { cardId, labelId } = wire.params.arguments
+      attempted.push(labelId)
+      const status = failures[labelId]
+      result = status
+        ? { isError: true, content: [{ type: 'text', text: `Request failed with status code ${status}` }] }
+        : { content: [{ type: 'text', text: `Label ${labelId} added to card ${cardId}` }] }
+    }
+    return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: wire.id, result }) }
+  }
+  return { attempted, board: createBoardClient({ url: 'http://mock-transport', boardId: 'board', fetch }) }
+}
+
+it('lifecycle routing through the real board client records the card when labels answer in plain text or fail', async () => {
+  const { attempted, board } = plainTextLabelBoard({ chore: 409, m: 500 })
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, routeFinding: board.createRoutedCard })
+  expect(await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })))
+    .toBe('routed card 77 — Recovery (label failure: add_label_to_card m: board unavailable: Request failed with status code 500)')
+  expect(attempted).toEqual(['p1', 'chore', 'm', 'project'])
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toEqual([{
+    id: '77', title: 'Recovery', l4Reason: 'different subsystem', dependencyVerified: true,
+    failure: 'add_label_to_card m: board unavailable: Request failed with status code 500',
+  }])
+})
+
+it('lifecycle routing through the real board client keeps the card and the server text when the read-back answers 404', async () => {
+  const { attempted, board } = plainTextLabelBoard({}, true)
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, routeFinding: board.createRoutedCard })
+  const reason = 'created card 77 read-back failed: board unavailable: Request failed with status code 404; do not retry creation'
+  expect(await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })))
+    .toBe(`routed card 77 — Recovery (dependency unverified: ${reason})`)
+  expect(attempted).toEqual(['p1', 'chore', 'm', 'project'])
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toEqual([{ id: '77', title: 'Recovery', l4Reason: 'different subsystem', dependencyVerified: false, dependencyVerificationReason: reason }])
+})
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
@@ -964,7 +1024,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
 })
 
 function restartLaneLauncher() {
-    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const realLauncher = REAL_LAUNCHER_WITH_FIXTURE_COUNTER
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
@@ -1014,7 +1074,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
 
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(realLaunchUnavailable)('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [requires POSIX and host user namespace]', async () => {
-    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const realLauncher = REAL_LAUNCHER_WITH_FIXTURE_COUNTER
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
@@ -1029,7 +1089,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   }, 15_000)
 
   it.skipIf(realLaunchUnavailable)('does not terminate a live real worker while its timeout evidence scan is still completing [requires POSIX SIGSTOP/SIGCONT and host user namespace]', async () => {
-    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const realLauncher = REAL_LAUNCHER_WITH_FIXTURE_COUNTER
     const fakeSource = '#!/bin/sh\nif [ "$1" = "--version" ]; then printf \'fixture-1\\n\'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf \'[{"name":"workflow-toolbox-allowed-sentinel"}]\\n\'; exit 0; fi\nif [ "$1" = "debug" ]; then printf \'[]\\n\'; exit 0; fi\nsleep 30\n'
     const helperSource = "const fs=require('fs');const path=require('path');const root=process.argv[1],pid=Number(process.argv[2]);const pointer=path.join(root,'.lane','supervision','current.json');const poll=setInterval(()=>{try{const run=JSON.parse(fs.readFileSync(pointer)).runId;const record=path.join(root,'.lane','supervision',run+'.json');const state=JSON.parse(fs.readFileSync(record));if(state.state==='running'&&Date.parse(state.timeoutAt)){clearInterval(poll);setTimeout(()=>{process.kill(pid,'SIGSTOP');setTimeout(()=>{try{process.kill(pid,'SIGCONT')}catch{}},1500)},Math.max(0,Date.parse(state.timeoutAt)-Date.now()-25))}}catch{}},10)"
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawn, spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); const worker=Number(/^pid=(\\d+)$/m.exec(result.stdout)?.[1]); const helper=spawn(process.execPath,['-e',${JSON.stringify(helperSource)},root,String(worker)],{detached:true,stdio:'ignore'}); helper.unref(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
@@ -2853,7 +2913,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('does not attest a receipt from another launch nonce', async () => {
-    const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')"), 30)
+    const lifecycle = testLifecycle('LITE', [], launcher("import { readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1], brief = process.argv[process.argv.indexOf('--brief') + 1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(report, 'report\\n')"), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing'); expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'foreign' }))).toContain('missing lane receipt unchanged')

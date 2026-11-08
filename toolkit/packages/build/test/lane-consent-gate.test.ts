@@ -22,7 +22,7 @@ import { resolveConsent } from '../../../../plugin/bin/lib/lane-consent-check-co
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-consent-gate-hook.mjs')
-const LANE_LAUNCHER = join(REPO_ROOT, 'plugin/bin/wt-lane.mjs')
+const LANE_LAUNCHER = join(REPO_ROOT, 'toolkit/packages/build/test/fixtures/launcher-counter/wt-lane.mjs')
 
 const roots: string[] = []
 afterEach(() => {
@@ -41,7 +41,7 @@ function fixture(tag: string) {
   return {
     project,
     config,
-    env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config },
+    env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, WT_LANE_HOST_STATE: join(root, 'state'), WT_LANE_FIXTURE_HOME: home },
   }
 }
 

@@ -9,7 +9,15 @@ const LOCK_CLI = fileURLToPath(new URL('../../wt-suite-lock.mjs', import.meta.ur
 const unknown = (reason) => ({ state: 'unknown', reason })
 
 // Keep pgrep's status/error contract intact on POSIX; ENOENT on other hosts is a named unknown.
-export const pgrepLaneName = (name) => spawnSync('pgrep', ['-x', name], { encoding: 'utf8' })
+// No call outlasts its bound: a pgrep still running then is killed and reported as ETIMEDOUT,
+// which the counter turns into a named unknown. SIGKILL, because spawnSync waits for the child
+// to exit and a child ignoring SIGTERM would keep it (and an admission claim) waiting.
+export const PGREP_TIMEOUT_MS = 5_000
+export function pgrepLaneName(name, timeoutMs = PGREP_TIMEOUT_MS) {
+  const uid = process.geteuid?.()
+  if (!Number.isSafeInteger(uid) || uid < 0) return { status: null, stdout: '', error: new Error('OS user identity unavailable for pgrep') }
+  return spawnSync('pgrep', ['-u', String(uid), '-x', name], { encoding: 'utf8', timeout: timeoutMs, killSignal: 'SIGKILL' })
+}
 
 function hasSocketDescriptors(base) {
   return readdirSync(join(base, 'fd')).some((fd) => readlinkSync(join(base, 'fd', fd)).startsWith('socket:['))

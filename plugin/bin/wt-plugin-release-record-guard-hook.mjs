@@ -142,16 +142,9 @@ function hasImprovement(before, after) {
 }
 
 function blockRelease(input, reason) {
-  recordGuardEvent({
-    guard: 'wt-plugin-release-record-guard-hook.mjs',
-    decision: 'blocked',
-    session: input.session_id,
-    agent: input.agent_id,
-    class: 'release-quality-record-missing',
-    reason,
-  })
-  emitGuardNotice({
+  const emitted = emitGuardNotice({
     payload: input,
+    subagentDeny: true,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
@@ -164,6 +157,14 @@ function blockRelease(input, reason) {
           'trailer `gates: quality-skipped — <reason>`.',
       },
     },
+  })
+  recordGuardEvent({
+    guard: 'wt-plugin-release-record-guard-hook.mjs',
+    decision: emitted ? 'blocked' : 'silent',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: 'release-quality-record-missing',
+    reason,
   })
 }
 

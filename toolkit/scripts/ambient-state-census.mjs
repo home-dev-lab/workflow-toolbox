@@ -38,10 +38,11 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/label-intent-producer-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case substitutes PATH with owned fake tools and does not resolve plugin state'],
   ["packages/build/test/lane-activity-cli.test.ts:real-process-table:const out = execFileSync('pgrep', ['-f', marker], { encoding: 'utf8' }).trim()", 'Linux-only integration case deliberately verifies discovery of a real fixture process'],
   ["packages/build/test/lane-probe.test.ts:real-process-table:const out = execFileSync('pgrep', ['-f', marker], { encoding: 'utf8' }).trim()", 'skipped-unless-supported integration case deliberately discovers its real fixture process'],
+  ["packages/build/test/opencode-admission.test.ts:real-process-table:const ps = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' })", 'non-Linux branch reads the state of the one child pid the test itself recorded, because a macOS zombie still answers signal 0'],
+  ["packages/build/test/owned-lane-process.test.ts:real-process-table:const pgrep = spawnSync('pgrep', ['-x', 'opencode'], { encoding: 'utf8', timeout: 5_000 })", 'The real process table is read deliberately because this is the test of the real lane-counter path discovering the fake lane.'],
   ["packages/build/test/lane-saturation-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case runs a controlled fixture process used only for saturation identity'],
   ["packages/build/test/lane-saturation-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {#2", 'case runs a controlled fixture process used only for saturation identity'],
   ["packages/build/test/lane-saturation-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {#3", 'case runs a controlled fixture process used only for saturation identity'],
-  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const result = spawnSync('zsh', ['-c', '\"$WT_SUITE_LOCK_CMD\" \"$1\"', 'zsh', command], {", 'zsh regression fixture supplies its lock root, runner, and PATH stubs explicitly; inherited plugin-location state is not read'],
   ["packages/build/test/lsp-root.test.ts:short-negative-output-match:expect(output).not.toContain('//')", 'assertion is over generated fixture output, not ambient process output'],
   ["packages/build/test/merge-chain-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload and suite journal; no plugin-location lookup occurs'],
   ["packages/build/test/commit-chain-lexer-property.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload, mode and isolated journal; no plugin-location lookup occurs'],
@@ -72,9 +73,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/service-watch.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [SERVICE_WATCH, '--once', ...args], {", 'case launches an owned inert process used only for pid identity'],
   ["packages/build/test/stale-date-guard.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
   ["packages/build/test/standing-authorizations.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
-  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [CLI, ...args], {", 'case invokes the suite-lock helper with a temp lock root'],
-  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [RUNNER, ...args], {", 'case invokes the lane runner with a temp lock root'],
-  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {", 'lock-taken proof runs an owned sleep through the runner under a temp lock root'],
   ["packages/build/test/what-is-running.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [SELFTEST], {", 'case invokes a controlled process-inspection fixture and asserts only injected capabilities'],
   ["packages/debugger/test/resolve-config-dir.test.ts:real-home-directory:const raw = join(homedir(), '.claude')", 'unit test deliberately locks the documented default config-directory fallback'],
   ["packages/patterns/test/adversarial-verification.test.ts:short-negative-output-match:expect(result.trail[0]!.stage).not.toContain('warm')", 'assertion is over in-memory FakeRuntime output, not process output'],
@@ -84,6 +82,8 @@ export const ambientStateAllowList = new Map([
   ["scripts/test/process-enumeration-load.test.ts:real-process-table:const table = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' }).stdout", 'Linux-only cleanup lock reads the real table to verify only descendants of its owned harness process'],
   ["scripts/test/wt-observer.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [observerScript, ...args], {", 'case launches an owned observer fixture with explicit session paths'],
   ["scripts/test/wt-wake-channel.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [serverScript], {", 'case launches an owned JSON-RPC fixture with explicit transport state'],
+  ["packages/build/test/quota-watch-plan-windows.test.ts:short-negative-output-match:expect(res.stdout).not.toContain('99%')", 'assertion is over the watcher fixture output; 99 is a sentinel seeded only into the rejected cache, while the live readings are 40 and 41'],
+  ["packages/build/test/quota-watch-plan-windows.test.ts:short-negative-output-match:expect(res.stdout).not.toContain('99%')#2", 'assertion is over the watcher fixture output; 99 is a sentinel seeded only into the rejected cache (unbound or foreign fingerprint), while the live readings are 40 and 41'],
 ])
 
 function testFilesUnder(directory) {

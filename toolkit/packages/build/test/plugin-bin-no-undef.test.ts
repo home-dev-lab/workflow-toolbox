@@ -29,10 +29,13 @@ const CONFIG_FILE = join(TOOLKIT_ROOT, 'eslint.config.mjs')
 // real config turns an undefined reference in plugin/bin/lib into an error.
 
 // Paths the config deliberately leaves out, each for a stated reason in eslint.config.mjs:
-// test fixtures, and a vendored byte-identity-checked artifact whose generator is linted.
+// test fixtures, a vendored byte-identity-checked artifact whose generator is linted, and the
+// vendored upstream Mermaid browser bundle (VENDORED_MERMAID). Each is named by its exact path, so
+// a new script beside them is still required to be selected and linted.
 const DELIBERATE_EXCLUSIONS = [
   (path: string) => path.split('/').includes('fixtures'),
   (path: string) => path === 'plugin/bin/lib/vendor/yaml.mjs',
+  (path: string) => path === 'plugin/skills/artifact-server/assets/mermaid/mermaid.min.js',
 ]
 
 // The inventory is built from the disk, independently of the gate's own target list, so that

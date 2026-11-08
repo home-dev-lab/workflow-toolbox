@@ -6,6 +6,8 @@ import path from 'node:path'
 import { processEvidenceStatus } from './lane-supervisor-core.mjs'
 import { retainProcessOwner, signalProcess } from './host/process-signal-boundary.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
+import { artifactBinaryContext, runArtifactBinary } from './host/artifact-binaries.mjs'
+import { hostAdapter } from './host/adapter.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
 export const ARTIFACT_SERVER_VERSION = JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
@@ -177,6 +179,52 @@ export function registrationPidStatus(pid, options = {}) {
   return pidAlive(pid) ? 'running' : 'gone'
 }
 
+// Listener closure is not process exit. Both lifecycle controllers use this evidence,
+// including Linux zombies; malformed, denied or unavailable evidence never means gone.
+export function artifactServerProcessStatus(pid, readState = hostAdapter.readProcessExecutionState, identity = null, readIdentity) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: 'unknown', reason: 'invalid PID' }
+  try {
+    const evidence = normalizeArtifactProcessEvidence(readState(pid))
+    if (evidence.status === 'gone' || identity === null) return evidence
+    return artifactProcessInstanceEvidence(pid, identity, evidence, readIdentity)
+  } catch (error) {
+    return artifactProcessReadFailure(error, 'process execution state read failed')
+  }
+}
+
+function artifactProcessReadFailure(error, fallback) {
+  return { status: 'unknown', reason: error?.code ?? error?.message ?? fallback }
+}
+
+function normalizeArtifactProcessEvidence(evidence) {
+  if (evidence?.status === 'gone' || evidence?.status === 'alive') return evidence
+  return { status: 'unknown', reason: evidence?.reason ?? 'process execution state unavailable' }
+}
+
+// Capture once at attachment: learning an unavailable birth later could bind a recycled PID.
+export function artifactServerProcessIdentity(pid, readIdentity = hostAdapter.readProcessIdentity) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: 'unknown', reason: 'invalid PID' }
+  try {
+    return normalizeArtifactProcessIdentity(pid, readIdentity(pid))
+  } catch (error) {
+    return artifactProcessReadFailure(error, 'process identity read failed')
+  }
+}
+
+function normalizeArtifactProcessIdentity(pid, identity) {
+  if (identity?.status === 'known' && identity.pid === pid && typeof identity.startIdentity === 'string' && identity.startIdentity.length > 0) return identity
+  return { status: 'unknown', reason: identity?.reason ?? 'process identity unavailable' }
+}
+
+function artifactProcessInstanceEvidence(pid, identity, evidence, readIdentity) {
+  const attached = normalizeArtifactProcessIdentity(pid, identity)
+  if (attached.status !== 'known') return attached
+  const current = artifactServerProcessIdentity(pid, readIdentity)
+  if (current.status !== 'known') return current
+  if (current.startIdentity !== attached.startIdentity) return { status: 'gone', reason: 'PID reused' }
+  return evidence
+}
+
 export function pathIsUnder(root, candidate) {
   const relative = path.relative(root, candidate)
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
@@ -314,7 +362,8 @@ const TAILSCALE_COMMAND_TIMEOUT_MS = 5_000
 const UNAVAILABLE_TAILNET = Object.freeze({ ip: null, dnsName: null, remoteUrl: null })
 
 function runTailscaleCommand(command, args, timeout = TAILSCALE_COMMAND_TIMEOUT_MS) {
-  return execFileSync(command, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] })
+  // execFileSync waits for the child to exit after timeout; SIGTERM can be ignored.
+  return execFileSync(command, args, { encoding: 'utf8', timeout, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'] })
 }
 
 function tailscaleFailureReason(error, elapsedMs) {
@@ -334,36 +383,41 @@ function tailscaleVia(command, platform) {
   return platform !== 'win32' && /\.exe$/i.test(command) ? 'windows-interop' : 'native'
 }
 
-function resolveWindowsTailscale(run, platform) {
-  const windowsPath = run('powershell.exe', [
+function resolveWindowsTailscale(run, context) {
+  const windowsPath = runArtifactBinary('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-Command',
     '(Get-Command tailscale.exe -ErrorAction SilentlyContinue).Source',
-  ]).trim()
+  ], run, context).output.trim()
   if (!windowsPath) throw new Error('PowerShell did not resolve tailscale.exe')
-  if (platform === 'win32') return { command: windowsPath, via: 'native' }
+  if (context.platform === 'win32') return { command: windowsPath, via: 'native' }
   const command = run('wslpath', ['-u', windowsPath]).trim()
   if (!command) throw new Error('wslpath did not resolve the Windows executable')
   return { command, via: 'windows-interop' }
 }
 
-// The one place that decides how this host reaches tailscale: the configured binary or `tailscale` on PATH,
-// else the Windows executable found through PowerShell. From WSL a Windows executable runs on the Windows side
-// (`windows-interop`): its tailnet address and serve routes belong to Windows, not to WSL.
-function resolveTailscale(run = runTailscaleCommand) {
-  const platform = process.platform
-  const configured = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
+// A configured binary is authoritative. Otherwise try PATH, then this platform's standard install,
+// then Windows command discovery where interop is available. Linux without WSL uses PATH only.
+function resolveTailscale(run = runTailscaleCommand, options = {}) {
+  const context = artifactBinaryContext(options)
+  const { platform, env } = context
+  const configured = env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
   const startedAt = Date.now()
+  let failedCommand
   try {
-    const command = configured || 'tailscale'
-    return { command, via: tailscaleVia(command, platform), ipOutput: run(command, ['ip', '-4']) }
+    const resolved = configured
+      ? { command: configured, output: run(configured, ['ip', '-4']) }
+      : runArtifactBinary('tailscale', ['ip', '-4'], run, context)
+    return { command: resolved.command, via: tailscaleVia(resolved.command, platform), ipOutput: resolved.output }
   } catch (error) {
-    if (configured) return { failure: tailscaleFailureReason(error, Date.now() - startedAt) }
+    if (configured) return { failure: tailscaleFailureReason(error, Date.now() - startedAt), command: configured }
+    failedCommand = error.artifactBinary
   }
+  if (!context.wsl && platform !== 'win32') return { failure: 'could not run tailscale from PATH or its standard install location', command: failedCommand }
   try {
-    const { command, via } = resolveWindowsTailscale(run, platform)
+    const { command, via } = resolveWindowsTailscale(run, context)
     return { command, via, ipOutput: run(command, ['ip', '-4']) }
   } catch {
-    return { failure: 'could not run tailscale or resolve it through Windows interop' }
+    return { failure: 'could not run tailscale or resolve it through Windows interop', command: failedCommand }
   }
 }
 
@@ -396,7 +450,8 @@ function readTailscaleDnsName(command, run) {
   if (read.error) return { dnsName: null, error: read.error }
   try {
     const name = JSON.parse(read.output)?.Self?.DNSName
-    return typeof name === 'string' ? { dnsName: name.replace(/\.$/, ''), error: null } : { dnsName: null, error: 'tailscale status --json (no DNS name)' }
+    const dnsName = typeof name === 'string' ? name.trim().replace(/\.$/, '') : null
+    return dnsName ? { dnsName, error: null } : { dnsName: null, error: 'tailscale status --json (no DNS name)' }
   } catch {
     return { dnsName: null, error: 'tailscale status --json (unparsable output)' }
   }
@@ -411,18 +466,35 @@ function readTailscaleServeRoute(command, run, dns, port) {
 
 function detectionFromAddress({ command, via, ipOutput }, port, run) {
   if (typeof ipOutput !== 'string') {
-    return { ...UNAVAILABLE_TAILNET, via, detection: { status: 'unavailable', reason: 'tailscale returned an unreadable IPv4 result' } }
+    return { ...UNAVAILABLE_TAILNET, via, binary: command, detection: { status: 'unavailable', reason: 'tailscale returned an unreadable IPv4 result' } }
   }
   const ip = ipOutput.trim().split(/\s+/)[0]
-  if (!ip) return { ...UNAVAILABLE_TAILNET, via, detection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' } }
+  if (!ip) return { ...UNAVAILABLE_TAILNET, via, binary: command, detection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' } }
   const dns = readTailscaleDnsName(command, run)
-  const choice = chooseRemoteUrl({ ...readTailscaleServeRoute(command, run, dns, port), ip, port, via })
-  return { ip, dnsName: dns.dnsName, remoteUrl: choice.remoteUrl, via, detection: { status: choice.status, reason: choice.reason } }
+  const route = readTailscaleServeRoute(command, run, dns, port)
+  const choice = chooseRemoteUrl({ ...route, ip, port, via })
+  if (!dns.dnsName && choice.status === 'available') {
+    choice.status = 'unavailable'
+    choice.reason = `tailnet IPv4 detected, but hostname unavailable: ${dns.error}`
+  }
+  return { ip, dnsName: dns.dnsName, remoteUrl: choice.remoteUrl, serveUrl: route.httpsUrl, via, binary: command, detection: { status: choice.status, reason: choice.reason } }
 }
 
-export function detectTailscale(port, run = runTailscaleCommand) {
-  const resolved = resolveTailscale(run)
-  if (resolved.failure) return { ...UNAVAILABLE_TAILNET, via: null, detection: { status: 'unavailable', reason: resolved.failure } }
+function unavailableDetection(resolved, port, run) {
+  // A failed address query does not prove Serve is absent. Keep a readable route as diagnostic
+  // evidence, without admitting its Host or offering a remote URL until address detection recovers.
+  const route = resolved.command
+    ? readTailscaleServeRoute(resolved.command, run, readTailscaleDnsName(resolved.command, run), port)
+    : null
+  return {
+    ...UNAVAILABLE_TAILNET, via: null, binary: resolved.command ?? null, serveUrl: route?.httpsUrl ?? null,
+    detection: { status: 'unavailable', reason: resolved.failure },
+  }
+}
+
+export function detectTailscale(port, run = runTailscaleCommand, options = {}) {
+  const resolved = resolveTailscale(run, options)
+  if (resolved.failure) return unavailableDetection(resolved, port, run)
   return detectionFromAddress(resolved, port, run)
 }
 
@@ -484,10 +556,10 @@ export function parseWindowsCheck(output) {
   return { verdict: 'unverified', reason: 'powershell.exe printed no check result' }
 }
 
-function fetchThroughWindows(url, run) {
+function fetchThroughWindows(url, run, options) {
   let output
   try {
-    output = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsCheckScript(url)], CHECK_PROCESS_TIMEOUT_MS)
+    output = runArtifactBinary('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsCheckScript(url)], run, options, CHECK_PROCESS_TIMEOUT_MS).output
   } catch (error) {
     return { verdict: 'unverified', reason: `powershell.exe did not complete the check (${commandErrorCode(error)})` }
   }
@@ -503,11 +575,11 @@ export async function checkArtifactUrl(url, options = {}) {
   const run = options.run ?? runTailscaleCommand
   let via = RECORDED_VIAS.has(options.via) ? options.via : null
   if (via === null) {
-    const resolved = resolveTailscale(run)
+    const resolved = resolveTailscale(run, options)
     if (resolved.failure) return { verdict: 'unverified', reason: `could not determine where tailscale runs: ${resolved.failure}` }
     via = resolved.via
   }
-  return via === 'windows-interop' ? fetchThroughWindows(url, run) : fetchInProcess(url, 'native')
+  return via === 'windows-interop' ? fetchThroughWindows(url, run, options) : fetchInProcess(url, 'native')
 }
 
 export function formatArtifactCheck(result) {

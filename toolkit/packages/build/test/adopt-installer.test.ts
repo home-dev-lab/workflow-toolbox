@@ -35,6 +35,8 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { frontmatter } from '../../../../plugins/wt-rules-on-demand/scripts/rule-lifecycle-lib.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { TRANSIENT_RENAME_ATTEMPTS } from '../../../../plugin/bin/lib/host/adopt-placement.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -48,6 +50,7 @@ const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - kind: tool\n 
 // The head the rules-on-demand engine REJECTS (`unknown trigger kind: (missing)`): loaded nowhere.
 const REJECTED_ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 const ACT = 'wt-task-tracking-at-act.md'
+const FRESH_ACT = 'wt-proportionate-verification-at-act.md'
 const remedyWord = (value: string) => quoteRemedyWord(value, true)
 const specPath = join(REPO_ROOT, 'plugin/rules/wt-task-tracking-at-act.spec.json')
 type ShippedSpec = { 'on-demand': { triggers: Record<string, string | boolean | number>[] }; compliance?: Record<string, string | boolean | number> }
@@ -61,8 +64,25 @@ function actFixture(): { dir: string; file: string; head: string } {
   run(['--set', 'rules', '--install'], dir)
   const file = join(dir, ACT)
   const head = specHead()
-  writeFileSync(file, head + readFileSync(file, 'utf8'))
   return { dir, file, head }
+}
+function headlessFixture(state: string) {
+  const dir = join(mkDir(), 'rules-on-demand')
+  const file = join(dir, FRESH_ACT)
+  run(['--set', 'rules', '--install', '--file', FRESH_ACT], dir)
+  const installed = readFileSync(file, 'utf8')
+  let text = withoutHeadStamp(installed.slice(installedHead(installed).length))
+  if (state === 'stale') {
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', FRESH_ACT), 'utf8')
+    const older = body + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+    text = text.replace(/v\d+\.\d+\.\d+/, 'v0.0.1')
+      .replace(/content sha256:[0-9a-f]{12}/, `content sha256:${headFp(older)}`).replace(body, older)
+  }
+  if (state === 'edited' || state === 'edited-unknown') text += '\r\nLOCAL BODY EDIT\r\n'
+  if (state === 'edited-unknown') text = text.replace(/ · content sha256:[0-9a-f]{12}/, '')
+  writeFileSync(file, text)
+  const spec = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/rules', FRESH_ACT.replace('.md', '.spec.json')), 'utf8'))
+  return { dir, file, text, head: renderShippedHead(spec) }
 }
 function copiedPlugin(): { script: string; spec: string } {
   const plugin = join(mkDir(), 'plugin')
@@ -112,15 +132,45 @@ function runInCwdResult(args: string[], cwd: string, env: NodeJS.ProcessEnv = IN
 const rulePath = (dir: string) => join(dir, RULE)
 const autonomyPath = (dir: string) => join(dir, '.claude', AUTONOMY)
 
-function refreshChild(dir: string): Promise<number | null> {
+// Keeps each child's output so a red status names its own cause (the Windows flake of card
+// 1897099295274829486 went red four times with no stderr to read).
+function refreshChild(dir: string): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SCRIPT, '--install', '--refresh-only', '--file', RULE, '--dir', dir], {
-      env: INSTALLER_ENV, stdio: 'ignore',
+      env: INSTALLER_ENV, stdio: ['ignore', 'pipe', 'pipe'],
     })
+    let output = ''
+    child.stdout.on('data', (chunk) => { output += chunk })
+    child.stderr.on('data', (chunk) => { output += chunk })
     child.once('error', reject)
-    child.once('close', resolve)
+    child.once('close', (status) => resolve({ status, output }))
   })
 }
+
+// Runs one refresh-only child whose fs.renameSync is replaced by `body` (sees from, to, calls,
+// original, target, transient); the child prints how many renames it attempted.
+function refreshWithRename(dir: string, body: string, options: { prelude?: string; args?: string[]; platform?: string } = {}) {
+  const placement = pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs')).href
+  const platform = options.platform === undefined ? '' : `const placement = await import(${JSON.stringify(placement)}); placement.adoptRefreshHost.platform = ${JSON.stringify(options.platform)}; `
+  const source = `import fs from 'node:fs'; const original = fs.renameSync; const target = ${JSON.stringify(rulePath(dir))}; let calls = 0; ` +
+    `const transient = () => Object.assign(new Error('simulated sharing violation'), { code: 'EPERM' }); ` +
+    `${platform}${options.prelude ?? ''} fs.renameSync = function(from, to) { calls++; ${body} }; process.on('exit', () => fs.writeSync(1, 'RENAME_CALLS=' + calls + '\\n')); ` +
+    `process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, ...${JSON.stringify(options.args ?? ['--install', '--refresh-only'])}, '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; ` +
+    `await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+  const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+  const calls = Number(/RENAME_CALLS=(\d+)/.exec(res.stdout ?? '')?.[1] ?? NaN)
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '', calls }
+}
+
+function agedFixture(): { dir: string; expected: string; before: string } {
+  const dir = mkDir()
+  run(['--install'], dir)
+  const expected = readFileSync(rulePath(dir), 'utf8')
+  ageRuleCopy(rulePath(dir))
+  return { dir, expected, before: readFileSync(rulePath(dir), 'utf8') }
+}
+
+const tempLeftovers = (dir: string) => readdirSync(dir).filter((name) => name.endsWith('.tmp'))
 
 // Age a managed RULE copy into "installed from an older release whose text has since
 // changed": an older banner version, a body that genuinely differs from what ships now, and
@@ -139,7 +189,8 @@ function ageRuleCopy(file: string, version = '0.0.1'): void {
 function addOnDemandFrontmatter(dir: string): void {
   for (const file of readdirSync(dir).filter((name) => name.endsWith('.md'))) {
     const target = join(dir, file)
-    writeFileSync(target, ON_DEMAND_FRONTMATTER + readFileSync(target, 'utf8'))
+    const text = readFileSync(target, 'utf8')
+    if (!installedHead(text)) writeFileSync(target, ON_DEMAND_FRONTMATTER + text)
   }
 }
 
@@ -307,11 +358,107 @@ describe('adopt installer — concurrent publication', () => {
     const expected = readFileSync(rulePath(dir), 'utf8')
     for (let iteration = 0; iteration < 5; iteration++) {
       ageRuleCopy(rulePath(dir))
-      const statuses = await Promise.all([refreshChild(dir), refreshChild(dir)])
-      expect(statuses).toEqual([0, 0])
+      const children = await Promise.all([refreshChild(dir), refreshChild(dir)])
+      expect(children.map((child) => child.status), children.map((child) => child.output).join('\n---\n')).toEqual([0, 0])
       expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
       expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
     }
+  })
+})
+describe('adopt installer — transient publication refusal', () => {
+  it('retries a transient rename refusal and publishes the shipped text', () => {
+    const { dir, expected } = agedFixture()
+    const res = refreshWithRename(dir, 'if (calls === 1) throw transient(); return original.call(this, from, to)', { platform: 'win32' })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.calls).toBe(2)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('stops retrying once a sibling has published the same bytes', () => {
+    const { dir, expected } = agedFixture()
+    const res = refreshWithRename(dir, 'if (calls === 1) { fs.writeFileSync(target, fs.readFileSync(from)); throw transient() } return original.call(this, from, to)', { platform: 'win32' })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain(`${RULE}: REFRESHED`)
+    expect(res.stdout).not.toContain('SKIPPED')
+    expect(res.calls, 'the same-bytes stop makes exactly one rename call').toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+})
+describe('adopt installer — transient refusal keeps a concurrent change', () => {
+  it('never overwrites a target edited while the rename was refused', () => {
+    const { dir, before } = agedFixture()
+    const edited = before + '\nUSER EDIT DURING THE REFUSAL\n'
+    const res = refreshWithRename(dir, `if (calls === 1) { fs.writeFileSync(target, ${JSON.stringify(edited)}); throw transient() } return original.call(this, from, to)`, { platform: 'win32' })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('never overwrites a target edited while the retry was pausing', () => {
+    const { dir, before } = agedFixture()
+    const edited = before + '\nUSER EDIT DURING THE PAUSE\n'
+    const prelude = `const wait = Atomics.wait; Atomics.wait = function(...args) { fs.writeFileSync(target, ${JSON.stringify(edited)}); return wait.apply(this, args) };`
+    const res = refreshWithRename(dir, 'if (calls === 1) throw transient(); return original.call(this, from, to)', { prelude, platform: 'win32' })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('a plain install never overwrites a target edited while the rename was refused', () => {
+    const { dir, before } = agedFixture()
+    const edited = before + '\nUSER EDIT DURING A PLAIN INSTALL\n'
+    const res = refreshWithRename(dir, `if (calls === 1) { fs.writeFileSync(target, ${JSON.stringify(edited)}); throw transient() } return original.call(this, from, to)`, { args: ['--install'], platform: 'win32' })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+})
+describe('adopt installer — transient refusal bounds and real handles', () => {
+  it('gives up after a bounded number of transient refusals, keeping the original', () => {
+    const { dir, before } = agedFixture()
+    const res = refreshWithRename(dir, 'throw transient()', { platform: 'win32' })
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('simulated sharing violation')
+    expect(res.calls).toBe(TRANSIENT_RENAME_ATTEMPTS)
+    expect(res.calls).toBe(10)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(before)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('publishes when a real read handle on the target refuses the first rename', () => {
+    const { dir, expected } = agedFixture()
+    const res = refreshWithRename(dir, "if (calls === 1) { const fd = fs.openSync(target, 'r'); try { return original.call(this, from, to) } " +
+      "catch (error) { fs.writeSync(1, 'FIRST_RENAME=' + error.code + '\\n'); throw error } finally { fs.closeSync(fd) } } return original.call(this, from, to)")
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    // Windows refuses a rename over a target that has any open handle; POSIX replaces it.
+    if (process.platform === 'win32') expect(res.stdout).toMatch(/FIRST_RENAME=(EPERM|EACCES|EBUSY)/)
+    else expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+})
+describe('adopt installer — rename refusal on POSIX and leftover temps', () => {
+  it('rethrows a POSIX rename refusal on the first attempt, keeping the original', () => {
+    const { dir, before } = agedFixture()
+    const res = refreshWithRename(dir, 'throw transient()', { platform: 'linux' })
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('simulated sharing violation')
+    expect(res.calls).toBe(1)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(before)
+    expect(tempLeftovers(dir)).toEqual([])
+  })
+  it('exits non-zero and names the temp it could not remove', () => {
+    const { dir, expected } = agedFixture()
+    const prelude = "const rm = fs.rmSync; fs.rmSync = function(file, ...args) { if (String(file).endsWith('.tmp')) throw Object.assign(new Error('simulated unlink refusal'), { code: 'EPERM' }); return rm.call(this, file, ...args) };"
+    const res = refreshWithRename(dir, 'if (calls === 1) { fs.writeFileSync(target, fs.readFileSync(from)); throw transient() } return original.call(this, from, to)', { prelude, platform: 'win32' })
+    expect(res.status, res.stdout + res.stderr).toBe(1)
+    expect(res.stderr).toMatch(/LEFT the temporary file .*\.tmp.*simulated unlink refusal/)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+    expect(tempLeftovers(dir)).toHaveLength(1)
   })
 })
 describe('adopt installer — publication errors', () => {
@@ -1020,7 +1167,112 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
   })
 })
 
-describe('adopt installer — spec-backed on-demand trigger heads', () => {
+describe('adopt installer — fresh trigger installation', () => {
+  it('a fresh on-demand install writes the shipped head and stamp and round-trips refresh', () => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    const args = ['--set', 'rules', '--file', FRESH_ACT]
+    const checked = runResult(['--set', 'rules', '--check'], dir)
+    expect(checked.out).toContain(`${FRESH_ACT}: ABSENT`)
+    expect(checked.out).not.toContain('on-demand trigger')
+    const result = runResult([...args, '--install'], dir)
+    expect(result.status, result.out).toBe(0)
+    const file = join(dir, FRESH_ACT)
+    const text = readFileSync(file, 'utf8')
+    const spec = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/rules', FRESH_ACT.replace('.md', '.spec.json')), 'utf8'))
+    const head = renderShippedHead(spec)
+    expect(text.startsWith(head), 'fresh on-demand install must include the shipped trigger head').toBe(true)
+    expect(text).toContain(`head sha256:${headFp(head)} by the adopt skill`)
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${FRESH_ACT}: UP-TO-DATE`)
+    const refreshed = runResult([...args, '--install', '--refresh-triggers'], dir)
+    expect(refreshed.status, refreshed.out).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(text)
+  })
+  it.each(['refresh', 'keep'])('absent trigger commands still refuse --%s-triggers', (action) => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    const result = runResult(['--set', 'rules', '--install', `--${action}-triggers`, '--file', FRESH_ACT], dir)
+    expect(result.status).toBe(1)
+    expect(result.out).toContain(`--${action}-triggers requires a spec-backed managed on-demand copy`)
+    expect(existsSync(join(dir, FRESH_ACT))).toBe(false)
+  })
+})
+
+describe('adopt installer — symlink replacement in on-demand storage', () => {
+  it('--replace-symlinks in an on-demand directory writes the shipped head and stamp, and trigger commands still refuse the link', () => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    mkdirSync(dir)
+    const canonical = join(mkDir(), FRESH_ACT)
+    writeFileSync(canonical, 'CANONICAL ORIGINAL\n')
+    symlinkSync(canonical, join(dir, FRESH_ACT))
+    for (const action of ['refresh', 'keep']) {
+      const refused = runResult(['--set', 'rules', '--install', `--${action}-triggers`, '--file', FRESH_ACT], dir)
+      expect(refused.status, refused.out).toBe(1)
+      expect(lstatSync(join(dir, FRESH_ACT)).isSymbolicLink()).toBe(true)
+    }
+    const result = runResult(['--set', 'rules', '--install', '--replace-symlinks', '--file', FRESH_ACT], dir)
+    expect(result.status, result.out).toBe(0)
+    const text = readFileSync(join(dir, FRESH_ACT), 'utf8')
+    const spec = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/rules', FRESH_ACT.replace('.md', '.spec.json')), 'utf8'))
+    const head = renderShippedHead(spec)
+    expect(text.startsWith(head), 'a replaced symlink must get the shipped trigger head').toBe(true)
+    expect(text).toContain(`head sha256:${headFp(head)} by the adopt skill`)
+    expect(readFileSync(canonical, 'utf8')).toBe('CANONICAL ORIGINAL\n')
+  })
+})
+
+describe('adopt installer — headless managed trigger repair', () => {
+  const cases = ['clean', 'stale', 'edited', 'edited-unknown'].flatMap((state) =>
+    [false, true].map((refresh) => ({ state, refresh }))).filter(({ state, refresh }) => refresh || state !== 'stale')
+  it('one plain install repairs a headless managed stale copy: shipped body and stamped head together', () => {
+    const { dir, file, head } = headlessFixture('stale')
+    const result = runResult(['--set', 'rules', '--file', FRESH_ACT, '--install'], dir)
+    expect(result.status, result.out).toBe(0)
+    expect(result.out).toContain('on-demand triggers refreshed from shipped spec')
+    const repaired = readFileSync(file, 'utf8')
+    expect(installedHead(repaired)).toBe(head)
+    expect(repaired).toContain(`head sha256:${headFp(head)} by the adopt skill`)
+    expect(repaired).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
+    expect(run(['--set', 'rules', '--check'], dir), 'one plain install must converge').toContain(`${FRESH_ACT}: UP-TO-DATE`)
+  })
+  it.each(cases)('repairs a headless managed $state copy (explicit refresh: $refresh) without changing its body', ({ state, refresh }) => {
+    const { dir, file, text, head } = headlessFixture(state)
+    const args = ['--set', 'rules', '--file', FRESH_ACT]
+    const checked = run(['--set', 'rules', '--check'], dir)
+    const line = checked.split('\n').find((entry) => entry.includes(`${FRESH_ACT}:`)) ?? ''
+    expect(line.includes(`${FRESH_ACT}: STALE`), 'headless managed copy must be stale').toBe(true)
+    expect(line.includes('on-demand trigger head missing'), 'headless managed copy must name its missing trigger head').toBe(true)
+    expect(line).not.toContain(`${FRESH_ACT}: UP-TO-DATE`)
+    const result = runResult([...args, '--install', ...(refresh ? ['--refresh-triggers'] : [])], dir)
+    expect(result.status, result.out).toBe(0)
+    expect(result.out).toContain('TRIGGERS REFRESHED (head only')
+    const repaired = readFileSync(file, 'utf8')
+    expect(installedHead(repaired)).toBe(head)
+    expect(repaired).toContain(`head sha256:${headFp(head)} by the adopt skill`)
+    expect(withoutHeadStamp(repaired.slice(head.length))).toBe(text)
+    const after = run(['--set', 'rules', '--check'], dir)
+    expect(after).not.toContain('on-demand trigger head missing')
+    const bodyStatus = state === 'clean' ? 'UP-TO-DATE' : state === 'stale' ? 'STALE' : 'EDITED'
+    expect(after).toContain(`${FRESH_ACT}: ${bodyStatus}`)
+    run([...args, '--install', '--refresh-triggers'], dir)
+    expect(readFileSync(file, 'utf8')).toBe(repaired)
+  })
+})
+
+describe('adopt installer — static spec-backed placement', () => {
+  it('keeps a static spec-backed copy headless and current', () => {
+    const dir = join(mkDir(), 'rules', 'wt')
+    const args = ['--set', 'rules', '--file', FRESH_ACT]
+    const installed = runResult([...args, '--install'], dir)
+    expect(installed.status, installed.out).toBe(0)
+    const text = readFileSync(join(dir, FRESH_ACT), 'utf8')
+    expect(installedHead(text)).toBe('')
+    expect(text).not.toContain('head sha256:')
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${FRESH_ACT}: UP-TO-DATE`)
+    run([...args, '--install'], dir)
+    expect(readFileSync(join(dir, FRESH_ACT), 'utf8')).toBe(text)
+  })
+})
+
+describe('adopt installer — trigger provenance', () => {
   it.each([
     '<!-- installed from workflow-toolbox v0.189.1 · content sha256:f3eafead0d07 head sha256:735fd0df79d7 by the adopt skill kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill — editable copy. -->',
     ' <!-- installed from workflow-toolbox v0.0.1 · content sha256:d32f269f3009 head sha256:735fd0df79d7 by the adopt skill — editable copy. -->',
@@ -1050,7 +1302,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     run(['--set', 'rules', '--install', '--file', ACT], dir)
     expect(installedHead(readFileSync(file, 'utf8'))).toBe(installedHead(edited))
   })
+})
 
+describe('adopt installer — mutated trigger provenance', () => {
   it.each([
     ['head plus kept (review #1)', (line: string) => line.replace(' by the adopt skill', ' kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill')],
     ['leading space (review #2)', (line: string) => ` ${line}`],
@@ -1086,6 +1340,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     }
   })
 
+})
+
+describe('adopt installer — trigger status', () => {
   it('an accepted kept head is visible on an otherwise current or stale body status', () => {
     const { dir, file } = actFixture()
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
@@ -1120,6 +1377,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(run(['--set', 'rules', '--check'], nested)).toContain('on-demand triggers unresolved')
   })
 
+})
+
+describe('adopt installer — legacy trigger banners', () => {
   it('head-only commands work on a pre-fingerprint banner and later spec changes refresh the accepted shipped head', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1146,6 +1406,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(run(['--set', 'rules', '--check'], dir)).not.toContain('on-demand triggers unresolved')
   })
 
+})
+
+describe('adopt installer — trigger enrollment', () => {
   it('restamps a current head with an old valid stamp before the next spec change', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1168,6 +1431,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(resolved).toContain('TRIGGERS REFRESHED')
     expect(resolved.split('\n').find((line) => line.includes(`${ACT}:`))).not.toContain('on-demand triggers unresolved')
   })
+})
+
+describe('adopt installer — simultaneous trigger refresh', () => {
   it('reports a resolved head after simultaneous body and head refresh, including keep and automatic refresh', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1190,6 +1456,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     const afterKeep = runCopied(copy.script, ['--install', '--file', ACT], dir)
     expect(afterKeep).not.toContain('behind the shipped spec')
   })
+})
+
+describe('adopt installer — shipped trigger specs', () => {
   it('renders all shipped specs byte-for-byte like the lifecycle renderer', () => {
     const copy = copiedPlugin()
     for (const name of readdirSync(join(REPO_ROOT, 'plugin/rules')).filter((n) => n.endsWith('-at-act.spec.json'))) {
@@ -1198,8 +1467,6 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
       run(['--set', 'rules', '--install'], dir)
       const rule = name.replace('.spec.json', '.md')
       const file = join(dir, rule)
-      writeFileSync(file, renderShippedHead(spec) + readFileSync(file, 'utf8'))
-      runCopied(copy.script, ['--install', '--file', rule], dir)
       expect(installedHead(readFileSync(file, 'utf8')), name).toBe(renderShippedHead(spec))
       spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
       writeFileSync(join(copy.script, '../../../..', 'rules', name), JSON.stringify(spec))
@@ -1211,6 +1478,7 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
   it('enrolls a matching head and refreshes it after a real shipped spec change, leaving the body and banner fingerprint intact', () => {
     const { dir, file, head } = actFixture()
     const copy = copiedPlugin()
+    writeFileSync(file, withoutHeadStamp(readFileSync(file, 'utf8')))
     expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS ENROLLED')
     const before = readFileSync(file, 'utf8')
     expect(before).toContain(`head sha256:${headFp(head)}`)
@@ -1225,6 +1493,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: UP-TO-DATE`)
   })
 
+})
+
+describe('adopt installer — stale trigger heads', () => {
   it('refreshes a stale head even with an edited body, without changing the body or its banner version', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1239,10 +1510,13 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: EDITED`)
   })
 
+})
+
+describe('adopt installer — unresolved trigger heads', () => {
   it('reports edited and unverified heads with exact remedies and preserves their stamps through a stale-body refresh', () => {
     for (const stamped of [true, false]) {
       const { dir, file, head } = actFixture()
-      if (stamped) run(['--set', 'rules', '--install', '--file', ACT], dir)
+      if (!stamped) writeFileSync(file, withoutHeadStamp(readFileSync(file, 'utf8')))
       const changed = readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL')
       writeFileSync(file, changed)
       const check = run(['--set', 'rules', '--check'], dir)
@@ -1259,11 +1533,15 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
       const after = readFileSync(file, 'utf8')
       expect(installedHead(after)).toBe(oldHead)
       if (oldStamp) expect(after).toContain(oldStamp)
+      if (!oldStamp) expect(after).not.toContain('head sha256:')
       expect(after).not.toContain('OLDER TEXT')
       expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved')
     }
   })
 
+})
+
+describe('adopt installer — explicit trigger choices', () => {
   it('explicit refresh and keep are head-only; a changed spec reopens an accepted keep', () => {
     const { dir, file } = actFixture()
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL') + '\nBODY EDIT\n')
@@ -1295,6 +1573,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(readFileSync(file, 'utf8')).not.toContain('BODY EDIT')
   })
 
+})
+
+describe('adopt installer — trigger journal and CRLF', () => {
   it('head-only journal entries cannot replace the previous body baseline for --diff', () => {
     const { dir, file } = actFixture()
     run(['--set', 'rules', '--install', '--file', ACT], dir)

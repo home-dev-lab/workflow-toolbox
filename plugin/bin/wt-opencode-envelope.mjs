@@ -26,7 +26,7 @@ import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRef
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 import { reapProcessFamily } from './lib/host/process-signal-boundary.mjs'
-import { canonicalOpencodeDirectory, renderEnvelopeRequests } from './lib/host/opencode-request-files.mjs'
+import { canonicalOpencodeDirectory, cleanupEnvelopeRequests, renderEnvelopeRequests, requireWritableEnvelopeOutput } from './lib/host/opencode-request-files.mjs'
 import { freezeOpencodeSnapshot, OpencodeAdmissionRefusal, opencodeSnapshot, requireOpencodeAdmission, requireUnchangedRequest, resolveOpencodeAdmission } from './lib/opencode-admission.mjs'
 import { absoluteSnapshotSpelling, snapshotEnvironment, watchSnapshotProcess } from './lib/host/admission-snapshot.mjs'
 
@@ -299,8 +299,15 @@ function taskRunArgs(taskfile, dir, model, variant, agentMode) {
   return args
 }
 
+// EventEmitter callbacks run after the promise executor: their exceptions must reject the task.
+function taskCompletion(reject, callback) {
+  return (...args) => {
+    try { callback(...args) } catch (error) { reject(error) }
+  }
+}
+
 function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId, childEnv, signal }) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const startedAt = Date.now()
     const streamFile = uniqueStreamFile(taskId)
     const args = taskRunArgs(taskfile, dir, model, variant, agentMode)
@@ -337,15 +344,15 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
 
     child.stdout.on('data', (d) => { stdout += d })
     child.stderr.on('data', (d) => { stderr += d })
-    child.on('error', (err) => {
+    child.on('error', taskCompletion(reject, (err) => {
       clearTimeout(timer)
       const exitCode = 1
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       fs.appendFileSync(streamFile, `\n--- spawn error ---\n${String(err)}\n`, 'utf8')
       resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: false, startedAt, durationMs: Date.now() - startedAt })
-    })
-    child.on('close', (code, signal) => {
+    }))
+    child.on('close', taskCompletion(reject, (code, signal) => {
       clearTimeout(timer)
       // ⚠ REAP ON THE CLEAN PATH TOO — this is the half that is easy to leave out, because the
       // call SUCCEEDED and there is no failure to react to. Measured: a call can exit 0, write a
@@ -357,32 +364,39 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       if (stderr.length > 0) fs.appendFileSync(streamFile, `\n--- stderr ---\n${stderr}\n`, 'utf8')
       resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: timedOut || signal === 'SIGKILL', startedAt, durationMs: Date.now() - startedAt })
-    })
+    }))
   })
 }
 
 async function runTask(task, opts, outDir, { taskfile, sha256 }) {
-  const id = task.id
-  const model = task.model ?? opts.model
-  const fallbackModel = task.fallbackModel ?? opts.fallbackModel
-  const variant = task.variant ?? opts.variant
-  const agentMode = task.agent ?? opts.agent
-  const timeoutSec = task.timeoutSec ?? opts.timeoutSec
+  try {
+    const id = task.id
+    const model = task.model ?? opts.model
+    const fallbackModel = task.fallbackModel ?? opts.fallbackModel
+    const variant = task.variant ?? opts.variant
+    const agentMode = task.agent ?? opts.agent
+    const timeoutSec = task.timeoutSec ?? opts.timeoutSec
 
-  const safeId = String(id).replace(/[^A-Za-z0-9_.-]/g, '_')
+    const safeId = String(id).replace(/[^A-Za-z0-9_.-]/g, '_')
 
-  let result
-  let modelUsed = model
-  requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION', opts.admission, opts.signal)
-  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(snapshotEnvironment(opts.snapshot, process.env), providerCredentialNames(model)), signal: opts.signal })
-
-  if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
-    modelUsed = fallbackModel
+    let result
+    let modelUsed = model
     requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION', opts.admission, opts.signal)
-    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(snapshotEnvironment(opts.snapshot, process.env), providerCredentialNames(fallbackModel)), signal: opts.signal })
-  }
+    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(snapshotEnvironment(opts.snapshot, process.env), providerCredentialNames(model)), signal: opts.signal })
 
-  return taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, outDir)
+    if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
+      opts.pool.signal.throwIfAborted()
+      modelUsed = fallbackModel
+      requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION', opts.admission, opts.signal)
+      result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(snapshotEnvironment(opts.snapshot, process.env), providerCredentialNames(fallbackModel)), signal: opts.signal })
+    }
+
+    return taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, outDir)
+  } catch (error) {
+    // Publish synchronous refusals before another pool lane can start a child.
+    opts.pool.abort(error)
+    throw error
+  }
 }
 
 function taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, outDir) {
@@ -426,22 +440,24 @@ function taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, 
  * calls) — never spawns more processes than `limit` regardless of how many tasks are queued. */
 async function runPool(tasks, limit, worker, settle = false) {
   const results = new Array(tasks.length)
+  const pool = new AbortController()
   let next = 0
   async function lane() {
-    while (true) {
+    while (!pool.signal.aborted) {
       const i = next++
       if (i >= tasks.length) return
-      results[i] = await worker(tasks[i], i)
+      try { results[i] = await worker(tasks[i], i, pool) } catch (error) {
+        pool.abort(error)
+        throw error
+      }
     }
   }
   const lanes = Array.from({ length: Math.min(limit, tasks.length) }, () => lane())
-  if (!settle) {
-    await Promise.all(lanes)
-    return results
-  }
-  const settled = await Promise.allSettled(lanes)
-  const failed = settled.find((result) => result.status === 'rejected')
-  if (failed) throw failed.reason
+  // Admission keeps snapshot lifetime, child timeouts and family reaping alive until every lane settles.
+  if (settle) await Promise.allSettled(lanes)
+  else await Promise.all(lanes)
+  // The controller retains the first failure; settled results are ordered by lane.
+  pool.signal.throwIfAborted()
   return results
 }
 
@@ -546,6 +562,7 @@ async function reduceManifest(opts) {
   const manifestPath = path.join(outDir, 'envelope.manifest.json')
   const { skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, blocks } = collectReduceAnswers(source, opts)
   fs.mkdirSync(outDir, { recursive: true })
+  requireWritableEnvelopeOutput(outDir)
   if (blocks.length === 0) {
     fs.writeFileSync(manifestPath, JSON.stringify({
       sourceManifest: path.resolve(opts.reduce), status: 'nothing_to_do', nothingToDo: true,
@@ -564,7 +581,7 @@ async function reduceManifest(opts) {
   const reduceId = `reduce-${crypto.createHash('sha256').update(path.resolve(opts.reduce)).digest('hex').slice(0, 8)}`
   const task = { id: reduceId, prompt }
   const taskfiles = await admitEnvelopeTasks([task], opts, outDir)
-  const result = await runTask(task, { ...opts, bin, childEnv }, outDir, taskfiles[0])
+  const result = await runTask(task, { ...opts, bin, childEnv, pool: new AbortController() }, outDir, taskfiles[0])
   writeReduceManifest(manifestPath, {
     sourceManifest: path.resolve(opts.reduce), status: 'complete', nothingToDo: false,
     dir: path.resolve(opts.dir), outDir, total: 1, answered: result.status === 'answer' ? 1 : 0,
@@ -799,14 +816,16 @@ async function executeEnvelope(opts) {
   if (available === null) return 1
   const { bin, childEnv } = available
   fs.mkdirSync(outDir, { recursive: true })
+  requireWritableEnvelopeOutput(outDir)
   const taskfiles = await admitEnvelopeTasks(tasks, opts, outDir)
-  const results = await runPool(tasks, opts.concurrency, (task, index) => runTask(task, { ...opts, bin, childEnv }, outDir, taskfiles[index]), Boolean(opts.snapshot))
+  const results = await runPool(tasks, opts.concurrency, (task, index, pool) => runTask(task, { ...opts, bin, childEnv, pool }, outDir, taskfiles[index]), Boolean(opts.admission))
   const manifest = batchManifest(opts, generatedMode, input, outDir, results)
   writeBatchManifest(manifestPath, manifest, results)
   return 0
 }
 
 main()
+  .finally(cleanupEnvelopeRequests)
   .then((code) => process.exit(code))
   .catch((err) => {
     if (err instanceof OpencodeAdmissionRefusal) {

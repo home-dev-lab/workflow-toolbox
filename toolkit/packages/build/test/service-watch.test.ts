@@ -20,6 +20,7 @@
 // process would see them across successive polls.
 
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -172,14 +173,14 @@ function readShortestWatchedWindowMsViaChildProcess(): number {
   return JSON.parse(res.stdout)
 }
 
-function hasCompleteWindowsViaChildProcess(windows: unknown): boolean {
+function isUsableReadingViaChildProcess(windows: unknown): boolean {
   const res = spawnSync(
     process.execPath,
     [
       '--input-type=module',
       '-e',
-      `import { hasCompleteWindows } from ${JSON.stringify(pathToFileURL(QUOTA_WINDOW_COMPLETENESS_LIB).href)};
-       process.stdout.write(JSON.stringify(hasCompleteWindows(${JSON.stringify(windows)})));`,
+      `import { isUsableReading } from ${JSON.stringify(pathToFileURL(QUOTA_WINDOW_COMPLETENESS_LIB).href)};
+       process.stdout.write(JSON.stringify(isUsableReading(${JSON.stringify(windows)})));`,
     ],
     { encoding: 'utf8' },
   )
@@ -984,29 +985,48 @@ describe('quota-cache-tolerance: the watcher tolerates staleness the hook would 
   })
 })
 
-describe('quota-window-completeness: a partial reading never counts as success', () => {
-  it('every watched window present -> complete', () => {
-    expect(hasCompleteWindowsViaChildProcess({ five_hour: { pct: 1 }, seven_day: { pct: 1 } })).toBe(true)
+// Round 3 (card 1899394115301279304): each window is watched on its own, so a reading carrying ONE
+// window is usable; the missing one is reported in words by the watcher (quota-watch-plan-windows.test.ts),
+// never dropped silently. Only a reading with no window at all is never a success.
+describe('quota-window-completeness: a reading is usable per window, never with no window at all', () => {
+  it.each([
+    ['every watched window present', { five_hour: { pct: 1 }, seven_day: { pct: 1 } }],
+    ['missing five_hour', { seven_day: { pct: 50 } }],
+    ['missing seven_day', { five_hour: { pct: 50 } }],
+  ])('%s -> usable', (_label, windows) => {
+    expect(isUsableReadingViaChildProcess(windows)).toBe(true)
   })
 
   it.each([
-    ['missing five_hour', { seven_day: { pct: 50 } }],
-    ['missing seven_day', { five_hour: { pct: 50 } }],
     ['empty object', {}],
-    ['extra unrelated key does not compensate for a missing watched one', { seven_day: { pct: 50 }, weekly_scoped: [] }],
-  ])('%s -> incomplete, never a success', (_label, windows) => {
-    expect(hasCompleteWindowsViaChildProcess(windows)).toBe(false)
+    ['an unrelated key alone does not make a reading', { weekly_scoped: [] }],
+  ])('%s -> never a success', (_label, windows) => {
+    expect(isUsableReadingViaChildProcess(windows)).toBe(false)
   })
 })
 
-describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
-  function writeCounterProbe(
-    cfg: string,
-    counterPath: string,
-    behavior: 'always-fail' | 'always-succeed' | 'fail-once-then-succeed' | 'always-partial',
-  ) {
-    mkdirSync(join(cfg, 'scripts'), { recursive: true })
-    const body = `
+// Card 1898619335555942069: its process-level regressions stay standalone `node --test` files; these
+// runners put both under the gate (the window-state file had no runner before this merge). The
+// completeness selftest was removed: its assertions live in quota-window-completeness.test.ts.
+describe('wt-quota-watch.mjs: standalone window regressions under node --test', () => {
+  it.each([
+    fileURLToPath(new URL('./quota-watch-windows.selftest.mjs', import.meta.url)),
+    fileURLToPath(new URL('./quota-window-state.selftest.mjs', import.meta.url)),
+  ])('%s passes', (script) => {
+    const result = spawnSync(process.execPath, ['--test', script], { encoding: 'utf8', timeout: 60_000 })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+  })
+})
+
+// Helpers shared by the cache-first probing describes below (hoisted from one 375-line describe so
+// every block stays under the 40-line function limit; card 1899394115301279304, round 3).
+function writeCounterProbe(
+  cfg: string,
+  counterPath: string,
+  behavior: 'always-fail' | 'always-succeed' | 'fail-once-then-succeed' | 'always-partial',
+) {
+  mkdirSync(join(cfg, 'scripts'), { recursive: true })
+  const body = `
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 const counterPath = ${JSON.stringify(counterPath)}
 let n = 0
@@ -1017,83 +1037,170 @@ const ok = () => process.stdout.write(JSON.stringify({ configDir: process.env.CL
 const partial = () => process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } })) // five_hour deliberately missing
 const fail = () => { process.stderr.write('usage endpoint failed: HTTP 429'); process.exit(1) }
 ${
-  behavior === 'always-fail'
-    ? 'fail()'
-    : behavior === 'always-succeed'
-      ? 'ok()'
-      : behavior === 'always-partial'
-        ? 'partial()'
-        : 'if (n === 1) fail(); else ok()'
+behavior === 'always-fail'
+  ? 'fail()'
+  : behavior === 'always-succeed'
+    ? 'ok()'
+    : behavior === 'always-partial'
+      ? 'partial()'
+      : 'if (n === 1) fail(); else ok()'
 }
 `
-    writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), body)
-  }
+  writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), body)
+}
 
-  function readCounter(counterPath: string): number {
-    if (!existsSync(counterPath)) return 0
-    return Number(readFileSync(counterPath, 'utf8')) || 0
-  }
+function readCounter(counterPath: string): number {
+  if (!existsSync(counterPath)) return 0
+  return Number(readFileSync(counterPath, 'utf8')) || 0
+}
 
-  // DETERMINISTIC on purpose — no wall-clock racing. An earlier version of these tests
-  // spawned the real watcher, waited a fixed number of milliseconds, SIGKILLed it, and
-  // counted how many probe invocations happened in that window. That flaked (2026-07-31):
-  // green alone, red once under the contention of the FULL suite (159 files' worth of
-  // concurrent child processes), green again on a re-run — a setTimeout racing a SIGKILL
-  // deadline under arbitrary system load, not a defect in the watcher. The window itself
-  // was never provably wrong, which is exactly the failure mode this file's own header
-  // warns about: an intermittent test nobody believes, including the day it is right.
-  //
-  // Fix: the watcher's `sleep()` has a test-only seam (see its header comment in
-  // wt-quota-watch.mjs) — WT_QUOTA_WATCH_TEST_SLEEP_LOG makes it log the millisecond value
-  // it was asked to wait (the REAL backoff/poll math it computed) instead of waiting it
-  // out, and WT_QUOTA_WATCH_TEST_MAX_CYCLES bounds the run to an exact number of loop
-  // iterations before a clean `process.exit(0)`. Tests below await process EXIT (a real
-  // signal) instead of a delay, then assert on the logged durations directly. The safety
-  // timeout in runWatcher is a backstop against a genuine hang, never the pass/fail signal
-  // — under correct operation the process always exits on its own, fast.
-  function runWatcher(
-    cfg: string,
-    opts: { maxCycles?: number; sleepLogPath?: string; extraEnv?: Record<string, string> },
-    safetyTimeoutMs = 10_000,
-  ): Promise<{ stdout: string }> {
-    return new Promise((resolve, reject) => {
-      const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...opts.extraEnv }
-      if (opts.maxCycles !== undefined) env.WT_QUOTA_WATCH_TEST_MAX_CYCLES = String(opts.maxCycles)
-      if (opts.sleepLogPath !== undefined) env.WT_QUOTA_WATCH_TEST_SLEEP_LOG = opts.sleepLogPath
-      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], { env })
-      let stdout = ''
-      child.stdout.on('data', (d) => {
-        stdout += d
-      })
-      // Backstop only: a healthy run exits on its own once WT_QUOTA_WATCH_TEST_MAX_CYCLES
-      // is reached. If this fires, the watcher genuinely hung — that IS a test failure,
-      // just reported honestly instead of silently resolving with a truncated stdout.
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL')
-        reject(new Error(`wt-quota-watch.mjs did not self-exit within ${safetyTimeoutMs}ms (maxCycles=${opts.maxCycles})`))
-      }, safetyTimeoutMs)
-      child.on('close', () => {
-        clearTimeout(timer)
-        resolve({ stdout })
-      })
+// DETERMINISTIC on purpose — no wall-clock racing. An earlier version of these tests
+// spawned the real watcher, waited a fixed number of milliseconds, SIGKILLed it, and
+// counted how many probe invocations happened in that window. That flaked (2026-07-31):
+// green alone, red once under the contention of the FULL suite (159 files' worth of
+// concurrent child processes), green again on a re-run — a setTimeout racing a SIGKILL
+// deadline under arbitrary system load, not a defect in the watcher. The window itself
+// was never provably wrong, which is exactly the failure mode this file's own header
+// warns about: an intermittent test nobody believes, including the day it is right.
+//
+// Fix: the watcher's `sleep()` has a test-only seam (see its header comment in
+// wt-quota-watch.mjs) — WT_QUOTA_WATCH_TEST_SLEEP_LOG makes it log the millisecond value
+// it was asked to wait (the REAL backoff/poll math it computed) instead of waiting it
+// out, and WT_QUOTA_WATCH_TEST_MAX_CYCLES bounds the run to an exact number of loop
+// iterations before a clean `process.exit(0)`. Tests below await process EXIT (a real
+// signal) instead of a delay, then assert on the logged durations directly. The safety
+// timeout in runWatcher is a backstop against a genuine hang, never the pass/fail signal
+// — under correct operation the process always exits on its own, fast.
+function runWatcher(
+  cfg: string,
+  opts: { maxCycles?: number; sleepLogPath?: string; extraEnv?: Record<string, string> },
+  safetyTimeoutMs = 10_000,
+): Promise<{ stdout: string }> {
+  writeFileSync(join(cfg, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'quota-fixture-account' } }))
+  return new Promise((resolve, reject) => {
+    const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...opts.extraEnv }
+    if (opts.maxCycles !== undefined) env.WT_QUOTA_WATCH_TEST_MAX_CYCLES = String(opts.maxCycles)
+    if (opts.sleepLogPath !== undefined) env.WT_QUOTA_WATCH_TEST_SLEEP_LOG = opts.sleepLogPath
+    const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], { env })
+    let stdout = ''
+    child.stdout.on('data', (d) => {
+      stdout += d
     })
-  }
+    // Backstop only: a healthy run exits on its own once WT_QUOTA_WATCH_TEST_MAX_CYCLES
+    // is reached. If this fires, the watcher genuinely hung — that IS a test failure,
+    // just reported honestly instead of silently resolving with a truncated stdout.
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error(`wt-quota-watch.mjs did not self-exit within ${safetyTimeoutMs}ms (maxCycles=${opts.maxCycles})`))
+    }, safetyTimeoutMs)
+    child.on('close', () => {
+      clearTimeout(timer)
+      resolve({ stdout })
+    })
+  })
+}
 
-  function readSleepLog(path: string): number[] {
-    if (!existsSync(path)) return []
-    return readFileSync(path, 'utf8')
-      .split('\n')
-      .filter((l) => l.trim().length > 0)
-      .map(Number)
-  }
+function readSleepLog(path: string): number[] {
+  if (!existsSync(path)) return []
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
+    .map(Number)
+}
 
-  function degradedLines(stdout: string): string[] {
-    return stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.includes('QUOTA WATCH DEGRADED'))
-  }
+function degradedLines(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('QUOTA WATCH DEGRADED'))
+}
 
+/** A user probe that succeeds (both windows) on the listed call numbers and fails with HTTP 429 otherwise. */
+function writeScheduledProbe(cfg: string, counterPath: string, successCalls: number[]) {
+  mkdirSync(join(cfg, 'scripts'), { recursive: true })
+  writeFileSync(
+    join(cfg, 'scripts', 'quota-usage.mjs'),
+    `import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const counterPath = ${JSON.stringify(counterPath)}
+let n = 0
+if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
+n += 1
+writeFileSync(counterPath, String(n))
+if (${successCalls.map((call) => `n === ${call}`).join(' || ')}) {
+  process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
+} else {
+  process.stderr.write('usage endpoint failed: HTTP 429')
+  process.exit(1)
+}
+`,
+  )
+}
+
+/** Preload that writes a complete cache after sleeps 2 and 4 and removes it after sleeps 1, 3 and 5. */
+function writeAlternatingCachePreload(preloadPath: string, cfg: string, sleepLogPath: string, cachePath: string) {
+  writeFileSync(
+    preloadPath,
+    `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+
+const sleepLogPath = ${JSON.stringify(sleepLogPath)}
+const cachePath = ${JSON.stringify(cachePath)}
+const cfg = ${JSON.stringify(cfg)}
+const completeCache = JSON.stringify({
+  at: Date.now(),
+  data: {
+    configDir: cfg,
+    accountFingerprint: ${JSON.stringify(createHash('sha256').update('quota-fixture-account').digest('hex').slice(0, 8))},
+    five_hour: { pct: 99, reset_local: '12:00' },
+    seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' },
+  },
+})
+const originalAppendFileSync = fs.appendFileSync.bind(fs)
+let cycle = 0
+
+fs.appendFileSync = function patchedAppendFileSync(path, data, options) {
+  const result = originalAppendFileSync(path, data, options)
+  if (path === sleepLogPath) {
+    cycle += 1
+    if (cycle === 2 || cycle === 4) fs.writeFileSync(cachePath, completeCache)
+    if (cycle === 1 || cycle === 3 || cycle === 5) fs.rmSync(cachePath, { force: true })
+  }
+  return result
+}
+
+syncBuiltinESMExports()
+`,
+  )
+}
+
+/** Preload that removes the cache after every sleep, so every cycle probes live. */
+function writeCacheWipingPreload(preloadPath: string, sleepLogPath: string, cachePath: string) {
+  writeFileSync(
+    preloadPath,
+    `import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+
+const sleepLogPath = ${JSON.stringify(sleepLogPath)}
+const cachePath = ${JSON.stringify(cachePath)}
+const originalAppendFileSync = fs.appendFileSync.bind(fs)
+
+fs.appendFileSync = function patchedAppendFileSync(path, data, options) {
+  const result = originalAppendFileSync(path, data, options)
+  if (path === sleepLogPath) fs.rmSync(cachePath, { force: true })
+  return result
+}
+
+syncBuiltinESMExports()
+`,
+  )
+}
+
+/** Runs a watcher whose sleeps are hooked by `preloadPath`. */
+function runWatcherWithPreload(cfg: string, maxCycles: number, sleepLogPath: string, preloadPath: string) {
+  return runWatcher(cfg, { maxCycles, sleepLogPath, extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}` } }, 15_000)
+}
+
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   // -------------------------------------------------------------------------------
   // Finding 1, cross-family review (2026-07-31): a poisoned/foreign cache file used to be
   // trusted as the BASELINE (the very first reading), pre-seeding state.fired with
@@ -1133,14 +1240,18 @@ ${
 
     expect(readCounter(counterPath)).toBe(1)
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   // -------------------------------------------------------------------------------
   // Finding 2, cross-family review (2026-07-31): a reading covering only SOME windows used
   // to be accepted as success, silently dropping whatever was missing with no DEGRADED
   // line. Two doors test the SAME defect shape: the live probe returning partial data
   // (below), and an externally-corrupted cache read in steady state (further below).
   // -------------------------------------------------------------------------------
-  it('a live probe returning only ONE window is DEGRADED, never a silent partial success', async () => {
+  // Round 3 (card 1899394115301279304): a partial reading is no longer rejected whole (that blinded
+  // the window it DID carry); the missing window is named in words, once, so it is never silent.
+  it('a live probe returning only ONE window watches it and names the other, never a silent partial success', async () => {
     const cfg = tmpRoot('wt-quota-watch-partial-')
     const counterPath = join(cfg, 'counter.txt')
     const sleepLogPath = join(cfg, 'sleeps.log')
@@ -1148,14 +1259,15 @@ ${
 
     const res = await runWatcher(cfg, { maxCycles: 2, sleepLogPath })
 
-    expect(readCounter(counterPath)).toBe(2) // both cycles hit the probe — never cached, never a baseline
-    expect(res.stdout).toContain('QUOTA WATCH DEGRADED')
-    expect(res.stdout).toContain('missing window(s): five_hour')
-    expect(res.stdout).not.toContain('QUOTA STATUS') // no baseline was ever established
-    // Backoff still applies to this failure class, same as any other DEGRADED cause.
-    expect(readSleepLog(sleepLogPath)).toEqual([10_000, 20_000])
+    expect(res.stdout).not.toContain('QUOTA WATCH DEGRADED')
+    expect(res.stdout).toMatch(/^QUOTA WATCH ARMED: .* \| watching 7d$/m)
+    expect(res.stdout.split('\n').filter((l) => l.startsWith('QUOTA WATCH: the 5-hour window is not reported by the probe'))).toHaveLength(1)
+    // Normal cadence: a usable reading is not a failure, so no backoff.
+    expect(readSleepLog(sleepLogPath)).toEqual([5_000, 5_000])
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   it('an externally-corrupted PARTIAL cache in steady state is rejected, forcing a live probe (attack fixture)', async () => {
     const cfg = tmpRoot('wt-quota-watch-partial-cache-')
     const counterPath = join(cfg, 'counter.txt')
@@ -1200,7 +1312,9 @@ ${
     // the corrupted partial cache, the counter would still read 1.
     expect(readCounter(counterPath)).toBe(2)
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   it('a live probe refills the shared cache in the format the per-turn hook reads', async () => {
     const cfg = tmpRoot('wt-quota-watch-cache-')
     const counterPath = join(cfg, 'counter.txt')
@@ -1242,7 +1356,9 @@ ${
     expect(readCounter(counterPath)).toBe(3) // no cache ever gets written on an always-failing probe
     expect(readSleepLog(sleepLogPath)).toEqual([10_000, 20_000, 40_000])
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   it('a cache-sourced success does NOT re-arm degraded-once or reset probe backoff after repeated live failures', async () => {
     const cfg = tmpRoot('wt-quota-watch-cache-backoff-')
     const counterPath = join(cfg, 'counter.txt')
@@ -1251,65 +1367,10 @@ ${
     const preloadPath = join(cfg, 'sleep-hook.mjs')
     const pollMs = computeBackoffViaChildProcess(5, 0)
     const firstFailureSleepMs = computeBackoffViaChildProcess(5, 1)
-    mkdirSync(join(cfg, 'scripts'), { recursive: true })
-    writeFileSync(
-      join(cfg, 'scripts', 'quota-usage.mjs'),
-      `import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-const counterPath = ${JSON.stringify(counterPath)}
-let n = 0
-if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
-n += 1
-writeFileSync(counterPath, String(n))
-if (n === 1) {
-  process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
-} else {
-  process.stderr.write('usage endpoint failed: HTTP 429')
-  process.exit(1)
-}
-`,
-    )
-    writeFileSync(
-      preloadPath,
-      `import fs from 'node:fs'
-import { syncBuiltinESMExports } from 'node:module'
+    writeScheduledProbe(cfg, counterPath, [1])
+    writeAlternatingCachePreload(preloadPath, cfg, sleepLogPath, cachePath)
 
-const sleepLogPath = ${JSON.stringify(sleepLogPath)}
-const cachePath = ${JSON.stringify(cachePath)}
-const cfg = ${JSON.stringify(cfg)}
-const completeCache = JSON.stringify({
-  at: Date.now(),
-  data: {
-    configDir: cfg,
-    five_hour: { pct: 99, reset_local: '12:00' },
-    seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' },
-  },
-})
-const originalAppendFileSync = fs.appendFileSync.bind(fs)
-let cycle = 0
-
-fs.appendFileSync = function patchedAppendFileSync(path, data, options) {
-  const result = originalAppendFileSync(path, data, options)
-  if (path === sleepLogPath) {
-    cycle += 1
-    if (cycle === 2 || cycle === 4) fs.writeFileSync(cachePath, completeCache)
-    if (cycle === 1 || cycle === 3 || cycle === 5) fs.rmSync(cachePath, { force: true })
-  }
-  return result
-}
-
-syncBuiltinESMExports()
-`,
-    )
-
-    const res = await runWatcher(
-      cfg,
-      {
-        maxCycles: 6,
-        sleepLogPath,
-        extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}` },
-      },
-      15_000,
-    )
+    const res = await runWatcherWithPreload(cfg, 6, sleepLogPath, preloadPath)
 
     const degradedCount = (res.stdout.match(/QUOTA WATCH DEGRADED/g) || []).length
     const failureSleeps = readSleepLog(sleepLogPath).filter((ms) => ms !== pollMs)
@@ -1325,7 +1386,9 @@ syncBuiltinESMExports()
     expect(failureSleeps).toEqual([...failureSleeps].sort((a, b) => a - b))
     expect(Math.max(...failureSleeps)).toBeGreaterThan(Math.min(...failureSleeps))
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   it('keeps a degraded watcher visible over time without regressing to per-cycle noise, and restarts that schedule after live recovery', async () => {
     const failingCfg = tmpRoot('wt-quota-watch-visible-degraded-')
     writeCounterProbe(failingCfg, join(failingCfg, 'counter.txt'), 'always-fail')
@@ -1350,51 +1413,10 @@ syncBuiltinESMExports()
     const resetSleepLogPath = join(resetCfg, 'sleeps.log')
     const resetCachePath = join(resetCfg, '.quota-cache.json')
     const resetPreloadPath = join(resetCfg, 'sleep-hook.mjs')
-    mkdirSync(join(resetCfg, 'scripts'), { recursive: true })
-    writeFileSync(
-      join(resetCfg, 'scripts', 'quota-usage.mjs'),
-      `import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-const counterPath = ${JSON.stringify(resetCounterPath)}
-let n = 0
-if (existsSync(counterPath)) n = Number(readFileSync(counterPath, 'utf8')) || 0
-n += 1
-writeFileSync(counterPath, String(n))
-if (n === 1 || n === 12) {
-  process.stdout.write(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, five_hour: { pct: 99, reset_local: '12:00' }, seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' } }))
-} else {
-  process.stderr.write('usage endpoint failed: HTTP 429')
-  process.exit(1)
-}
-`,
-    )
-    writeFileSync(
-      resetPreloadPath,
-      `import fs from 'node:fs'
-import { syncBuiltinESMExports } from 'node:module'
+    writeScheduledProbe(resetCfg, resetCounterPath, [1, 12])
+    writeCacheWipingPreload(resetPreloadPath, resetSleepLogPath, resetCachePath)
 
-const sleepLogPath = ${JSON.stringify(resetSleepLogPath)}
-const cachePath = ${JSON.stringify(resetCachePath)}
-const originalAppendFileSync = fs.appendFileSync.bind(fs)
-
-fs.appendFileSync = function patchedAppendFileSync(path, data, options) {
-  const result = originalAppendFileSync(path, data, options)
-  if (path === sleepLogPath) fs.rmSync(cachePath, { force: true })
-  return result
-}
-
-syncBuiltinESMExports()
-`,
-    )
-
-    const resetRun = await runWatcher(
-      resetCfg,
-      {
-        maxCycles: 22,
-        sleepLogPath: resetSleepLogPath,
-        extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(resetPreloadPath).href}` },
-      },
-      15_000,
-    )
+    const resetRun = await runWatcherWithPreload(resetCfg, 22, resetSleepLogPath, resetPreloadPath)
     const resetDegradedLines = degradedLines(resetRun.stdout)
     const resetReminderLines = resetDegradedLines.filter((line) => !line.includes('(reported once)'))
 
@@ -1404,7 +1426,9 @@ syncBuiltinESMExports()
     expect(resetReminderLines).toHaveLength(2)
     expect(resetReminderLines[0]).toBe(resetReminderLines[1])
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   it('recovers automatically after a transient failure, and resets to the NORMAL cadence — deterministically', async () => {
     const cfg = tmpRoot('wt-quota-watch-recover-')
     const counterPath = join(cfg, 'counter.txt')
@@ -1421,7 +1445,9 @@ syncBuiltinESMExports()
     expect(res.stdout).toContain('5h 99%')
     expect(readSleepLog(sleepLogPath)).toEqual([10_000, 5_000])
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   // -----------------------------------------------------------------------------------
   // Concern raised at integration (2026-07-31): the test seam above (WT_QUOTA_WATCH_TEST_
   // SLEEP_LOG / WT_QUOTA_WATCH_TEST_MAX_CYCLES) makes the watcher exit(0) quietly after N
@@ -1468,7 +1494,9 @@ syncBuiltinESMExports()
     expect(res.stdout).toContain('QUOTA WATCH TEST MODE')
     expect(res.stdout).toContain('WT_QUOTA_WATCH_TEST_SLEEP_BARRIER')
   })
+})
 
+describe('wt-quota-watch.mjs: cache-first probing (the actual 429 fix)', () => {
   it('a missing sleep barrier times out and the real watcher continues', async () => {
     const cfg = tmpRoot('wt-quota-watch-barrier-bound-')
     writeCounterProbe(cfg, join(cfg, 'counter.txt'), 'always-succeed')

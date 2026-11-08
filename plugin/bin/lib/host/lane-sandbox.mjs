@@ -245,9 +245,10 @@ function endpointsFromBaseURL(provider, baseURL) {
 // global files (bound read-only) and OPENCODE_CONFIG when it lies outside every writable bind. The
 // project config and `.opencode` live in the writable worktree, so trusting them would let one lane
 // widen the next lane's egress; OpenCode may still honour them, and a host they name is then
-// refused by the proxy (fail closed). OPENCODE_CONFIG_CONTENT never reaches a lane (the environment
-// allow-list strips OPENCODE_CONFIG_*). A file that exists but does not parse is named in the
-// launch line: it can only make the allow-list SMALLER, never larger.
+// refused by the proxy (fail closed). The environment allow-list strips inherited OPENCODE_CONFIG_*
+// channels; only the fence's constant OPENCODE_CONFIG_CONTENT reaches a lane. It restores project
+// CLAUDE.md instructions and names no provider or host, so it cannot widen egress. A file that exists
+// but does not parse is named in the launch line: it can only make the allow-list SMALLER, never larger.
 function opencodeModelNetwork({ configDir, model, authFile, configFile, trustedRead }) {
   const files = [...OPENCODE_GLOBAL_CONFIGS.map((name) => path.join(configDir, name)), ...(configFile ? [configFile] : [])]
   const unreadable = files.filter((file) => trustedRead(file) !== null && parseJsonc(trustedRead(file)) === null)
@@ -469,25 +470,49 @@ function remapArgs(flag, remaps) {
   return remaps.flatMap(({ inside, outside }) => [flag, bindPath(outside), bindPath(inside)])
 }
 
-function socketMasks(bindings, socketDir, fs, searchPath, injectedFind) {
+// Retry only timed-out walks, from scratch. A larger budget tolerates transient IO contention;
+// the finite ceiling still refuses a walk that cannot finish. Never use a failed walk's stdout.
+const SOCKET_SCAN_TIMEOUTS = [10_000, 30_000, 90_000]
+
+function scanSocketSource(source, outside, find, runFind) {
+  for (const timeout of SOCKET_SCAN_TIMEOUTS) {
+    const result = runFind(find, [source, '-type', 's', '-print0'], { encoding: 'buffer', timeout, maxBuffer: 16 * 1024 * 1024 })
+    if (result.error?.code === 'ETIMEDOUT' && timeout !== SOCKET_SCAN_TIMEOUTS.at(-1)) continue
+    if (result.error || result.signal || result.status !== 0) {
+      throw new LaneSandboxRefusal(`cannot enumerate unix sockets under ${outside} (scan budget ${timeout} ms): ${socketScanFailure(result)}`)
+    }
+    return result.stdout.toString().split('\0').filter(Boolean)
+  }
+}
+
+function socketScanFailure(result) {
+  return result.error?.message || String(result.stderr ?? '').trim() || `signal ${result.signal}; exit ${result.status}`
+}
+
+/** @knipTestSeam Computed import in lane-sandbox.test.ts; runFind injects slow/failed walks. */
+export function socketMasks(bindings, socketDir, fs, searchPath, injectedFind, runFind = spawnSync) {
   if (fs !== realFs) return [] // injected fixture has no host pathname sockets
   const find = injectedFind ?? trustedSystemExecutable('find', searchPath)
   if (!find) throw new LaneSandboxRefusal('trusted find is required to mask unix sockets')
   const sockets = new Set()
   for (const { outside, inside } of bindings) {
     const source = fs.realpath(outside) ?? outside
-    if (!fs.isDir(source) && !isSocketSource(source)) continue
-    if (outside === socketDir || SYSTEM_READ_ONLY.some((root) => withinOnDisk(source, root))) continue
-    const result = spawnSync(find, [source, '-type', 's', '-print0'], { encoding: 'buffer', timeout: 10_000, maxBuffer: 16 * 1024 * 1024 })
-    if (result.error || result.signal || (result.status !== 0 && !String(result.stderr).split('\n').every((line) => !line || line.includes('Permission denied')))) {
-      throw new LaneSandboxRefusal(`cannot enumerate unix sockets under ${outside}: ${result.error?.message ?? String(result.stderr).trim()}`)
-    }
-    for (const item of result.stdout.toString().split('\0').filter(Boolean)) {
-      const destination = path.join(inside, path.relative(source, item))
-      if (!socketDir || !withinOnDisk(destination, socketDir)) sockets.add(destination)
-    }
+    if (!socketSourceNeedsScan(source, outside, socketDir, fs)) continue
+    collectSocketDestinations(sockets, scanSocketSource(source, outside, find, runFind), source, inside, socketDir)
   }
   return [...sockets].flatMap((destination) => ['--ro-bind', '/dev/null', destination])
+}
+
+function socketSourceNeedsScan(source, outside, socketDir, fs) {
+  if (!fs.isDir(source) && !isSocketSource(source)) return false
+  return !(outside === socketDir || SYSTEM_READ_ONLY.some((root) => withinOnDisk(source, root)))
+}
+
+function collectSocketDestinations(sockets, items, source, inside, socketDir) {
+  for (const item of items) {
+    const destination = path.join(inside, path.relative(source, item))
+    if (!socketDir || !withinOnDisk(destination, socketDir)) sockets.add(destination)
+  }
 }
 
 function isSocketSource(file) {

@@ -72,6 +72,29 @@ async function expectWarnFirstConfig(root: string, directory: string, areaName: 
   }
 }
 
+describe('vendored Mermaid lint boundary', () => {
+  it.each(['.', 'toolkit'])('exempts vendored Mermaid assets from lint in %s', async (cwd) => {
+    const eslint = new ESLint({ cwd: join(ROOT, cwd), overrideConfigFile: join(ROOT, 'toolkit/eslint.config.mjs') })
+    const files = ['mermaid.min.js', 'VERSION'].map((file) => `plugin/skills/artifact-server/assets/mermaid/${file}`)
+    for (const file of files) expect(await eslint.isPathIgnored(join(ROOT, file)), file).toBe(true)
+    const result = await classifyTrackedFiles(files, () => false, exclusions)
+    expect(result.escaped).toEqual([])
+    expect(result.excluded.map(({ file }: { file: string }) => file)).toEqual(files)
+  })
+
+  it.each(['mjs', 'js'])('keeps new non-vendored artifact-server %s source linted', async (extension) => {
+    const file = `plugin/skills/artifact-server/new-source.${extension}`
+    expect(exclusions.some(({ glob }) => globToRegExp(glob).test(file)), 'own source must not be excluded').toBe(false)
+    // Shipped-script and ratchet passes run at the repository root, not toolkit/.
+    expect(await makeIsLinted(ROOT)(file), 'own source must be covered by a real gate').toBe(true)
+    const eslint = new ESLint({ cwd: ROOT, overrideConfigFile: join(ROOT, 'toolkit/eslint.config.mjs') })
+    expect(await eslint.isPathIgnored(join(ROOT, file)), 'own source must remain linted').toBe(false)
+    const [result] = await eslint.lintText('undefinedArtifactWitness()\n', { filePath: join(ROOT, file) })
+    expect(result.messages.some(({ ruleId, severity }) => ruleId === 'no-undef' && severity === 2)).toBe(true)
+  })
+
+})
+
 describe('fail-closed tracked lint scope', () => {
   it.each(['missing.mjs', 'missing.py', 'missing.zig', 'hooks/new-hook'])('refuses an uncovered source: %s', async (file) => {
     expect((await classifyTrackedFiles([file], () => false, [])).escaped).toEqual([file])

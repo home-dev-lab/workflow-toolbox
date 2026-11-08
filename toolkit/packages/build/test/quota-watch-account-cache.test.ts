@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -16,6 +17,7 @@ async function run(keys: Array<string | null>, seed?: { key: string, fileKey: st
   const counter = join(root, 'counter')
   const sleep = join(root, 'sleep')
   const barrier = join(root, 'barrier')
+  writeFileSync(join(root, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'quota-fixture-account' } }))
   writeFileSync(probe, `import { readFileSync, writeFileSync } from 'node:fs';
 const file = ${JSON.stringify(counter)};
 let n = 0; try { n = Number(readFileSync(file, 'utf8')) } catch {}
@@ -38,7 +40,7 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...(key =
   try {
     await Promise.race([ready, done.then(() => { throw new Error('watcher exited before its sleep barrier') })])
     const initialCaches = readdirSync(root).filter((name) => /^\.quota-cache.*\.json$/.test(name))
-    if (seed) writeFileSync(join(root, seed.fileKey === 'login' ? '.quota-cache.json' : `.quota-cache.${seed.fileKey}.json`), JSON.stringify({ at: Date.now(), data: { configDir: root, accountKey: seed.key, five_hour: { pct: 99 }, seven_day: { pct: 99 } } }))
+    if (seed) writeFileSync(join(root, seed.fileKey === 'login' ? '.quota-cache.json' : `.quota-cache.${seed.fileKey}.json`), JSON.stringify({ at: Date.now(), data: { configDir: root, accountKey: seed.key, accountFingerprint: createHash('sha256').update('quota-fixture-account').digest('hex').slice(0, 8), five_hour: { pct: 99 }, seven_day: { pct: 99 } } }))
     else for (const name of readdirSync(root).filter((name) => /^\.quota-cache.*\.json$/.test(name))) rmSync(join(root, name))
     writeFileSync(barrier, '')
     expect(await done).toBe(0)

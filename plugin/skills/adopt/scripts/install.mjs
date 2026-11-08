@@ -73,7 +73,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, firstExistingPath, renameRetryingTransient, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
 import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -570,6 +570,7 @@ const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.
 const FP_RE = /content sha256:([0-9a-f]{12})/
 const STAMPED_BANNER_RE = /^(?:<!--|\/\/) installed from workflow-toolbox v(\d+\.\d+\.\d+)(?: · content sha256:([0-9a-f]{12}))? (?:(head) sha256:([0-9a-f]{12})|(kept) sha256:([0-9a-f]{12}) spec sha256:([0-9a-f]{12})) by the adopt skill/
 const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
+const TRIGGERS_MISSING = 'on-demand trigger head missing'
 const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
 
 // A DRIFT line reports one divergent line of TEXT, and that line lives on exactly one
@@ -683,6 +684,32 @@ function triggerState(classification, spec) {
   return { state, current, installed, spec, stamp }
 }
 
+// No readable managed text at the target: a fresh write (absent) or a --replace-symlinks write (symlink).
+const contentless = (classification) => ['absent', 'symlink'].includes(classification.state)
+
+function managedTriggerState(set, dir, item, args, root, classification) {
+  if (set.kind !== 'rules') return null
+  const absent = contentless(classification)
+  if (absent && args.mode !== 'install') return null
+  if (!absent && !['clean', 'edited', 'edited-unknown'].includes(classification.state)) return null
+  // The shared spec loader also admits headless targets in on-demand storage.
+  const spec = shippedSpecHead(set, item, root, classification.frontmatter || inOnDemandStorage(dir))
+  if (!spec) return null
+  if (!classification.frontmatter) return { state: 'missing', current: headFp(spec.head), spec, stamp: null }
+  return triggerState(classification, spec)
+}
+
+function canWriteTriggerHead(triggers, legacyDecision, classification, args) {
+  return !!triggers && !legacyDecision && !contentless(classification) &&
+    (!args.keepTriggers || !!classification.frontmatter)
+}
+
+function triggerHeadOnly(args, planned) {
+  return args.refreshTriggers || args.keepTriggers ||
+    (planned.triggers?.state === 'missing' && !contentless(planned.classification) && !args.force &&
+      !planned.decision.write)
+}
+
 const shellQuote = (value) => quoteRemedyWord(value, true)
 
 function triggerRemedy(item, dir, flag) {
@@ -693,11 +720,15 @@ function triggerClause(triggers, item, dir) {
   if (!triggers || triggers.state === 'current') return ''
   if (triggers.state === 'kept') return ` · on-demand triggers kept locally (against ${triggers.spec.name})`
   if (triggers.state === 'stale') return ` · ${TRIGGERS_STALE} ${triggers.spec.name}`
+  if (triggers.state === 'missing') return ` · ${TRIGGERS_MISSING}; take shipped: ${triggerRemedy(item, dir, 'refresh')}`
   return ` · ${TRIGGERS_UNRESOLVED} (${triggers.state}); take shipped: ${triggerRemedy(item, dir, 'refresh')}; keep yours: ${triggerRemedy(item, dir, 'keep')}`
 }
 
 function triggerStatus(status, triggers, item, dir) {
   if (!triggers) return status
+  if (triggers.state === 'missing') {
+    return `STALE (${TRIGGERS_MISSING} ${triggers.spec.name}; ${status.startsWith('UP-TO-DATE') ? 'body current' : status})`
+  }
   const clause = triggerClause(triggers, item, dir)
   if (status.startsWith('UP-TO-DATE') && triggers.state === 'stale') {
     return `STALE (${TRIGGERS_STALE} ${triggers.spec.name}; body current)`
@@ -813,6 +844,28 @@ function stripScriptBanner(text) {
   return text.slice(0, first + 1) + text.slice(secondEnd + 1).replace(/^\n+/, '')
 }
 
+function renderTriggerHead(onDemandHead, triggers, force) {
+  let writtenHead = onDemandHead
+  let stamp = null
+  if (triggers) {
+    writtenHead = force || ['current', 'stale', 'missing'].includes(triggers.state) ? triggers.spec.head : onDemandHead
+    stamp = writtenHead === triggers.spec.head
+      ? { kind: 'head', head: triggers.current }
+      : triggers.stamp
+  }
+  return { writtenHead, stamp }
+}
+
+function renderItemText(set, content, b, writtenHead) {
+  let text
+  if (set.kind === 'agents') text = insertAgentBanner(content, b)
+  else if (writtenHead) text = `${writtenHead}${b}\n\n${content}`
+  else if (set.kind === 'scripts' && content.startsWith('#!')) {
+    text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
+  } else text = `${b}\n\n${content}`
+  return text
+}
+
 /** The full installed file: content + a banner stamped with the fingerprint of the content
  *  ACTUALLY WRITTEN. When `oldContent` is given (the file about to be overwritten, agents set
  *  only), any local single-line frontmatter field it carries — one the shipped def does not
@@ -828,21 +881,9 @@ function renderItem(set, item, version, root, oldContent = null, triggers = null
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
   const onDemandHead = set.kind === 'rules' ? onDemandFrontmatter(oldContent ?? '') : null
-  let writtenHead = onDemandHead
-  let stamp = null
-  if (triggers) {
-    writtenHead = force || ['current', 'stale'].includes(triggers.state) ? triggers.spec.head : onDemandHead
-    stamp = writtenHead === triggers.spec.head
-      ? { kind: 'head', head: triggers.current }
-      : triggers.stamp
-  }
+  const { writtenHead, stamp } = renderTriggerHead(onDemandHead, triggers, force)
   const b = renderBanner(version, fingerprint(content), stamp, item.file)
-  let text
-  if (set.kind === 'agents') text = insertAgentBanner(content, b)
-  else if (onDemandHead) text = `${writtenHead}${b}\n\n${content}`
-  else if (set.kind === 'scripts' && content.startsWith('#!')) {
-    text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
-  } else text = `${b}\n\n${content}`
+  const text = renderItemText(set, content, b, writtenHead)
   return { text, preserved }
 }
 
@@ -2135,6 +2176,51 @@ function scriptDrift(set, classification, decision) {
     /^(?:STALE|EDITED|AHEAD|SYMLINK|TARGET-MISSING|PRESENT \(no toolbox banner)/.test(decision.status)
 }
 
+function duplicateItemDecision(set, target, item, alternateDirs, decision) {
+  let duplicate = false
+  if (alternateDirs.nested && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(alternateDirs.nested, item.file))) {
+    duplicate = true
+    decision = { status: `DUPLICATE (also present in ${alternateDirs.nested}/${item.file})`, write: false }
+  }
+  if (alternateDirs.onDemand && hasAdoptionBanner(set, path.join(alternateDirs.onDemand, item.file))) {
+    duplicate = true
+    decision = { status: `DUPLICATE (adopted copy already present in ${path.join(alternateDirs.onDemand, item.file)})`, write: false }
+  }
+  return { decision, duplicate }
+}
+
+function onDemandItemDecision(set, dir, item, root, classification, decision, duplicate) {
+  const migrated = classification.state === 'absent' ? migratedOnDemandCopy(set, dir, item, root) : null
+  if (migrated) {
+    duplicate = false
+    decision = { status: migratedStatus(migrated), write: false }
+  }
+  // Head not confirmed (engine missing, unloadable, or rejecting): fail CLOSED. The engine that actually runs
+  // may serve the copy, so a static twin could double-load.
+  const unverified = classification.state === 'absent' && !migrated ? unverifiedOnDemandCopy(set, dir, item, root) : null
+  if (unverified) {
+    duplicate = false
+    decision = { status: unverifiedStatus(unverified.target, unverified.reason), write: false }
+  }
+  return { decision, duplicate, migrated, unverified }
+}
+
+function triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, { item, dir }) {
+  if (args.refreshTriggers || args.keepTriggers) {
+    if (!canWriteTriggerHead(triggers, legacyDecision, classification, args)) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
+  }
+  if (triggers && !legacyDecision && !contentless(classification)) {
+    decision = { ...decision, status: triggerStatus(decision.status, triggers, item, dir) }
+  }
+  return decision
+}
+
+function managedItemStale(classification, version, shippedFp, currentContentFp) {
+  return classification.state === 'clean' &&
+    ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
+      (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
+}
+
 function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const target = path.join(dir, item.file)
   const classification = classify(target, set)
@@ -2149,42 +2235,15 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     currentContentFp,
   })
   decision = scriptTargetDecision(set, item, args, classification, decision)
-  let duplicate = false
-  if (alternateDirs.nested && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(alternateDirs.nested, item.file))) {
-    duplicate = true
-    decision = { status: `DUPLICATE (also present in ${alternateDirs.nested}/${item.file})`, write: false }
-  }
-  if (alternateDirs.onDemand && hasAdoptionBanner(set, path.join(alternateDirs.onDemand, item.file))) {
-    duplicate = true
-    decision = { status: `DUPLICATE (adopted copy already present in ${path.join(alternateDirs.onDemand, item.file)})`, write: false }
-  }
-  const migrated = classification.state === 'absent' ? migratedOnDemandCopy(set, dir, item, root) : null
-  if (migrated) {
-    duplicate = false
-    decision = { status: migratedStatus(migrated), write: false }
-  }
-  // Head not confirmed (engine missing, unloadable, or rejecting): fail CLOSED. The engine that actually runs
-  // may serve the copy, so a static twin could double-load.
-  const unverified = classification.state === 'absent' && !migrated ? unverifiedOnDemandCopy(set, dir, item, root) : null
-  if (unverified) {
-    duplicate = false
-    decision = { status: unverifiedStatus(unverified.target, unverified.reason), write: false }
-  }
+  const duplicates = duplicateItemDecision(set, target, item, alternateDirs, decision)
+  const onDemand = onDemandItemDecision(set, dir, item, root, classification, duplicates.decision, duplicates.duplicate)
+  decision = onDemand.decision
+  const { duplicate, migrated, unverified } = onDemand
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
-  const spec = ['clean', 'edited', 'edited-unknown'].includes(classification.state)
-    ? shippedSpecHead(set, item, root, classification.frontmatter) : null
-  const triggers = spec ? triggerState(classification, spec) : null
-  if (args.refreshTriggers || args.keepTriggers) {
-    if (!triggers || legacyDecision) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
-  }
-  if (triggers && !legacyDecision) {
-    decision = { ...decision, status: triggerStatus(decision.status, triggers, item, dir) }
-  }
-  const stale =
-    classification.state === 'clean' &&
-    ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
-      (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
+  const triggers = managedTriggerState(set, dir, item, args, root, classification)
+  decision = triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, { item, dir })
+  const stale = managedItemStale(classification, version, shippedFp, currentContentFp)
   return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate, migrated: !!migrated && !legacyDecision,
     unverified: !!unverified && !legacyDecision }
 }
@@ -2225,7 +2284,33 @@ function preserveManagedMode(target, fd) {
   }
 }
 
-function writeManagedFile(target, text, expected = undefined) {
+// Windows refuses the rename while another handle is open on the target (a concurrent refresh
+// reading it, an indexer). Before each retry: stop as published when the target already holds
+// these bytes, and stop as SKIPPED unless it still holds what this run classified.
+function publishTemp(temp, target, text, publication) {
+  const outcome = renameRetryingTransient(temp, target, {
+    rename: () => { adoptRefreshHost.fs.renameSync(temp, target) },
+    beforeRetry: () => {
+      if (publicationMatches(target, text)) return true
+      return publicationMatches(target, publication.expected) && publication.unchanged() ? undefined : false
+    },
+  })
+  return outcome.renamed || outcome.value
+}
+
+// A temp left behind is never a clean success: the run says so and exits non-zero.
+function removeTemp(temp) {
+  try {
+    fs.rmSync(temp, { force: true, maxRetries: 3, retryDelay: 25 })
+  } catch (err) {
+    process.stderr.write(`adopt: LEFT the temporary file ${temp} (remove it by hand): ${err && err.message ? err.message : String(err)}\n`)
+    process.exitCode = 1
+  }
+}
+
+/** `publication.expected`: bytes the target must still hold (undefined: not compared);
+ *  `publication.unchanged()`: whether the target is still as this run classified it. */
+function writeManagedFile(target, text, publication) {
   assertPlacement(target)
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}-${crypto.randomUUID()}.tmp`)
   let fd
@@ -2237,23 +2322,23 @@ function writeManagedFile(target, text, expected = undefined) {
     preserveManagedMode(target, fd)
     adoptRefreshHost.fs.closeSync(fd)
     fd = undefined
-    if (!publicationMatches(target, expected)) return false
-    adoptRefreshHost.fs.renameSync(temp, target)
-    return true
+    if (!publicationMatches(target, publication.expected)) return false
+    return publishTemp(temp, target, text, publication)
   } finally {
     try { if (fd !== undefined) adoptRefreshHost.fs.closeSync(fd) } finally {
-      if (ownsTemp) fs.rmSync(temp, { force: true })
+      if (ownsTemp) removeTemp(temp)
     }
   }
 }
 
-function replaceSymlinkAtomically(target, text) {
-  return writeManagedFile(target, text)
+function replaceSymlinkAtomically(target, text, unchanged) {
+  return writeManagedFile(target, text, { expected: undefined, unchanged })
 }
 
-function publishManagedItem(target, text, classification, args) {
-  if (classification.state === 'symlink') return replaceSymlinkAtomically(target, text)
-  return writeManagedFile(target, text, args.refreshOnly ? classification.raw : undefined)
+function publishManagedItem(target, text, classification, args, set) {
+  const unchanged = () => targetUnchanged(target, classification, set)
+  if (classification.state === 'symlink') return replaceSymlinkAtomically(target, text, unchanged)
+  return writeManagedFile(target, text, { expected: args.refreshOnly ? classification.raw : undefined, unchanged })
 }
 
 function managedWriteOutcome(args, verb) {
@@ -2273,7 +2358,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
     )
   }
-  if (!publishManagedItem(target, finalText, classification, args)) {
+  if (!publishManagedItem(target, finalText, classification, args, set)) {
     process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
     return
   }
@@ -2295,7 +2380,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
 }
 
 function decisionRendersHead(planned) {
-  return ['current', 'stale'].includes(planned.triggers?.state)
+  return ['current', 'stale', 'missing'].includes(planned.triggers?.state)
 }
 
 function targetUnchanged(target, classification, set) {
@@ -2320,13 +2405,13 @@ function writeTriggerHead(set, dir, item, planned, action) {
   const stamp = action === 'keep'
     ? { kind: 'kept', kept: headFp(head), spec: triggers.current }
     : { kind: 'head', head: triggers.current }
-  const rest = classification.raw.slice(classification.frontmatter.length)
+  const rest = classification.raw.slice((classification.frontmatter ?? '').length)
   const line = bannerLine(set, classification.raw)
   const parsed = parseBanner(line, item.file)
   const stamped = renderBanner(classification.installedVer, parsed.contentFp, stamp, item.file)
   const text = head + rest.replace(line, () => stamped)
   if (text === classification.raw) return
-  if (!writeManagedFile(target, text, classification.raw)) {
+  if (!writeManagedFile(target, text, { expected: classification.raw, unchanged: () => targetUnchanged(target, classification, set) })) {
     process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
     return
   }
@@ -2369,7 +2454,7 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const { classification, decision, triggers } = planned
   if (args.mode === 'install') {
     if (skipRefreshOnly(args, planned, set, item)) { /* The writer uses this exact classified snapshot. */ }
-    else if (args.refreshTriggers || args.keepTriggers) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
+    else if (triggerHeadOnly(args, planned)) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
     else if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
     else if (triggerHeadNeedsRefresh(triggers)) {
       writeTriggerHead(set, dir, item, planned, 'refresh')
@@ -2388,7 +2473,7 @@ function managedItemState(set, classification, planned, decision, triggers) {
   return {
     anyAbsent: classification.state === 'absent' && !planned.migrated && !planned.unverified,
     anyUnverified: planned.unverified,
-    anyStale: planned.stale || triggers?.state === 'stale',
+    anyStale: planned.stale || (['stale', 'missing'].includes(triggers?.state) && !contentless(classification)),
     anyTriggersUnresolved: !!triggers && ['edited', 'unverified', 'kept-spec-moved', 'edited-after-keep'].includes(triggers.state),
     anyEdited: ['edited', 'edited-unknown'].includes(classification.state),
     anySymlink: classification.state === 'symlink',

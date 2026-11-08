@@ -13,14 +13,10 @@ description: >-
 
 # independent-analysis
 
-A standing tool to counter the single-context biases of whatever model is driving the
-conversation — going fast, and confirming its own earlier assumptions. It runs the
-**`independent-analysis` workflow** (the 9th `@workflow-toolbox` composition, also bundled as the
-plugin workflow `workflow-toolbox:independent-analysis`): one analyst agent per lens, each
-*blind to this conversation*, finds forgotten angles; a synthesis step dedups them
-against what you already know; then `adversarialVerification` re-derives each survivor
-refute-first and reports a verdict. Because the agents can't see the chat, they can't
-inherit its blind spots — that is the whole point.
+The **`independent-analysis` workflow** (bundled as
+`workflow-toolbox:independent-analysis`) counters confirmation bias:
+one conversation-blind analyst per lens finds forgotten angles, synthesis dedups
+against assumptions, and `adversarialVerification` checks survivors refute-first.
 
 ## When to reach for it
 
@@ -93,7 +89,7 @@ invocation by `name` works once the registry has picked it up.
 // Always-reliable form:
 Workflow({
   scriptPath: "<repo>/toolkit/workflows/independent-analysis.js",
-  args: { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, verifierModel },
+  args: { subject, context, assumptions, lenses, sourceRefs, lensCount, votes, maxVerifyClaims, verifierModel },
 })
 // Bundled-plugin form (once registered): name: "workflow-toolbox:independent-analysis"
 ```
@@ -107,6 +103,7 @@ Workflow({
 | `sourceRefs` | string[] | Files the agents must READ to ground claims in real content — the only never-network-gated channel; required for any lens that implies external/doc verification. |
 | `lensCount` | number (default 5) | How many lenses to auto-propose when `lenses` is empty. |
 | `votes` | number (default 3) | Verifier votes per non-low candidate (low-severity → 1). |
+| `maxVerifyClaims` | positive integer (optional) | Verify at most N critiques, high → medium → low (stable ties); omitted → no cap. Earlier analyst/synthesis stages are uncapped. |
 | `verifierModel` | alias | Verifier model override. **Leave unset** — see below. |
 
 ### Model note
@@ -120,10 +117,14 @@ harmless but redundant — it matches the default and emits no warning.)
 ## What it returns
 
 A result envelope: `{ subject, lensesUsed, verifierType, probe, leafFence, confirmed,
-refuted, allVerified, candidateCount, stats, envelope, warnings }`. `confirmed` is the actionable list (each with a
+refuted, allVerified, unverifiedByCap, unverifiedByCapCount, candidateCount, stats, envelope, warnings }`. `confirmed` is the actionable list (each with a
 `verdict` of `confirmed`/`partially-confirmed`); `refuted` is what the verifiers
 killed; `stats`/`warnings` make dropped or capped work visible. Read `confirmed`,
 decide which to act on, and **apply them by hand**.
+
+`unverifiedByCap` retains excluded critiques with verdict `unverified-by-cap`
+and reason "not verified — beyond the maxVerifyClaims cap".
+`unverifiedByCapCount` counts them (zero when nothing is excluded).
 
 ## Example
 

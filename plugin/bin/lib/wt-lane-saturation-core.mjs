@@ -1,10 +1,9 @@
 import { stripNonCommandText } from './command-invocation.mjs'
 import { inspectLaneLockWait, pgrepLaneName } from './host/lane-lock-wait.mjs'
 
-/** The bound is a NAMED parameter, never a buried constant: the 8-16 wall is empirical and
- *  moves with the subscribed plan. The default is the LOW end deliberately — being warned
- *  slightly early costs a line of text; being warned too late costs the batch. */
-export const DEFAULT_MAX = 8
+/** Shared default for hook and wt-lane admission. The hook's explicit environment override
+ *  changes its advisory/deny bound; wt-lane retains this hard launch ceiling. */
+export const DEFAULT_MAX = 16
 /** Process names that ARE a lane call. Matched by exact process name (see below). */
 export const LANE_PROCESS_NAMES = ['opencode', 'codex']
 /** Substrings that mean the command is trying to USE the lane, as opposed to merely
@@ -46,6 +45,14 @@ function failedPgrepStatus(res) {
   return res.status !== 0 && res.status !== 1
 }
 
+function pgrepFailure(res, name) {
+  if (res.error?.code === 'ETIMEDOUT') return `pgrep did not answer in time for "${name}" and was stopped`
+  if (res.error) return `pgrep is unavailable (${res.error.message})`
+  // pgrep exits 1 when nothing matched — that is a real zero, not an error.
+  if (failedPgrepStatus(res)) return `pgrep exited ${res.status} for "${name}"`
+  return null
+}
+
 /** Count lane processes by EXACT PROCESS NAME, discounting only positively proved lock waits.
  *
  *  ⚠ THE OBVIOUS FORM IS WRONG AND INFLATES BY CONSTRUCTION. `pgrep -f 'opencode run'`
@@ -67,15 +74,13 @@ function failedPgrepStatus(res) {
  *  moment nobody can tell. */
 export function countLaneProcessesReal(names = LANE_PROCESS_NAMES, ownedPids = null, options) {
   const { pgrep, inspectLockWait } = counterOptions(options)
-  const matchedPids = []
+  // A Set: one process returned by two name queries (it changed name between them) counts once.
+  const matchedPids = new Set()
   const owned = ownedPids === null ? null : new Set(ownedPids)
   for (const name of names) {
     const res = pgrep(name)
-    if (res.error) return { state: 'unknown', reason: `pgrep is unavailable (${res.error.message})` }
-    // pgrep exits 1 when nothing matched — that is a real zero, not an error.
-    if (failedPgrepStatus(res)) {
-      return { state: 'unknown', reason: `pgrep exited ${res.status} for "${name}"` }
-    }
+    const failure = pgrepFailure(res, name)
+    if (failure) return { state: 'unknown', reason: failure }
     const lines = String(res.stdout ?? '').trim().split(/\s+/).filter(Boolean)
     if (lines.some((line) => !/^\d+$/.test(line) || !Number.isSafeInteger(Number(line)) || Number(line) < 1)) {
       // Never turn malformed output into a false zero. The caller reports measurement as
@@ -85,9 +90,9 @@ export function countLaneProcessesReal(names = LANE_PROCESS_NAMES, ownedPids = n
     }
     const pids = lines.map(Number)
     const selected = owned === null ? pids : pids.filter((pid) => owned.has(pid))
-    matchedPids.push(...selected)
+    for (const pid of selected) matchedPids.add(pid)
   }
-  return countNonWaitingLanes(matchedPids, inspectLockWait)
+  return countNonWaitingLanes([...matchedPids], inspectLockWait)
 }
 
 function countNonWaitingLanes(matchedPids, inspectLockWait) {

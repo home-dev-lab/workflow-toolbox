@@ -10,13 +10,23 @@ function requireProcfs(platform) {
   }
 }
 
+function procfsRootExists(exists, stat) {
+  if (exists()) return true
+  // existsSync also returns false for lookup errors. Only an error-preserving
+  // lookup can distinguish a missing root from evidence that could not be read.
+  try { stat(); return true } catch (error) {
+    if (['ENOENT', 'ENOTDIR'].includes(error?.code)) return false
+    throw error
+  }
+}
+
 // The seam is below path construction: injected readers see the same paths and arguments
 // as the real filesystem. Errors stay intact so a caller can distinguish exit races from
 // unreadable evidence. No operation substitutes an empty listing or zero for unavailable.
 export function createProcfs({
   root = DEFAULT_PROC_ROOT, platform = process.platform,
   readFile = readFileSync, readdir = readdirSync, readlink = readlinkSync,
-  realpath = realpathSync, stat = statSync,
+  realpath = realpathSync, stat = statSync, exists = existsSync,
 } = {}) {
   const invoke = (reader, parts, args) => {
     requireProcfs(platform)
@@ -24,7 +34,7 @@ export function createProcfs({
   }
   return Object.freeze({
     available: platform === 'linux',
-    rootExists: () => invoke(existsSync, [], []),
+    rootExists: () => procfsRootExists(() => invoke(exists, [], []), () => invoke(stat, [], [])),
     listProcesses: (...args) => invoke(readdir, [], args),
     processDirectoryStat: (pid, ...args) => invoke(stat, [String(pid)], args),
     readCommandLine: (pid, ...args) => invoke(readFile, [String(pid), 'cmdline'], args),
@@ -32,9 +42,19 @@ export function createProcfs({
     readProcessStatus: (pid, ...args) => invoke(readFile, [String(pid), 'status'], args),
     readEnvironment: (pid, ...args) => invoke(readFile, [String(pid), 'environ'], args),
     readWorkingDirectory: (pid, ...args) => invoke(readlink, [String(pid), 'cwd'], args),
+    statWorkingDirectory: (pid, ...args) => invoke(stat, [String(pid), 'cwd'], args),
+    readRootDirectory: (pid, ...args) => invoke(readlink, [String(pid), 'root'], args),
+    statRootDirectory: (pid, ...args) => invoke(stat, [String(pid), 'root'], args),
+    readExecutable: (pid, ...args) => invoke(readlink, [String(pid), 'exe'], args),
+    statExecutable: (pid, ...args) => invoke(stat, [String(pid), 'exe'], args),
+    readMaps: (pid, ...args) => invoke(readFile, [String(pid), 'maps'], args),
+    readMountInfo: (...args) => invoke(readFile, ['self', 'mountinfo'], args),
+    readPidNamespace: (pid = 'self', ...args) => invoke(readlink, [String(pid), 'ns', 'pid'], args),
+    readSelfLink: (...args) => invoke(readlink, ['self'], args),
     resolveWorkingDirectory: (pid, ...args) => invoke(realpath, [String(pid), 'cwd'], args),
     listDescriptors: (pid, ...args) => invoke(readdir, [String(pid), 'fd'], args),
     readDescriptorTarget: (pid, fd, ...args) => invoke(readlink, [String(pid), 'fd', String(fd)], args),
+    statDescriptor: (pid, fd, ...args) => invoke(stat, [String(pid), 'fd', String(fd)], args),
     readDescriptorInfo: (pid, fd, ...args) => invoke(readFile, [String(pid), 'fdinfo', String(fd)], args),
     readUptime: (...args) => invoke(readFile, ['uptime'], args),
     readLoadAverage: (...args) => invoke(readFile, ['loadavg'], args),

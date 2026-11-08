@@ -367,23 +367,61 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass): 
   })
 })
 
-describe('unobserved short-holder progress', () => {
-  it('C6 renews on counter advancement despite a worse historical place; a hung queue times out', async () => {
-    const root = temp(); const ahead = seed(root)
-    const notices: string[] = []; let grants = 0
+const lightCounterRetryCases = [
+  { code: 'none', during: 'no retry' },
+  ...['EBUSY', 'EPERM', 'EACCES'].flatMap((code) =>
+    ['hidden light admission', 'hung-queue holder'].map((during) => ({ code, during }))),
+]
+
+async function withAdvancingTimers<T>(pending: Promise<T>) {
+  let settled = false
+  void pending.then(() => { settled = true }, () => { settled = true })
+  for (let elapsed = 0; !settled && elapsed < 6000; elapsed += 10) await vi.advanceTimersByTimeAsync(10)
+  expect(settled, 'acquisition must settle while its retry timers advance').toBe(true)
+  return pending
+}
+
+function registerLightCounterRenewalTest() {
+  it.each(lightCounterRetryCases)('C6 renews on counter advancement despite a worse historical place; a hung queue times out ($during: $code)', async ({ code, during }) => {
+    const root = temp(); const initial = await lock.acquireSuiteLock({ root, env: envFor(root) }); lock.releaseSuiteLock(initial)
+    const ahead = seed(root)
+    const notices: string[] = []; const renew = vi.fn(); const progress = vi.fn(); const handover = vi.fn(); let grants = 0; let result = 'waiting'
+    const controller = new AbortController()
+    const retry = vi.fn()
+    if (code !== 'none') retry.mockImplementationOnce(() => { throw Object.assign(new Error(code), { code }) })
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     const pending = lock.acquireSuiteLock({ root, env: envFor(root), waitS: 0.25, staleS: 0.25, pollMs: 70,
-      onWait: (line: string) => notices.push(line) }).then((lease: unknown) => { lock.releaseSuiteLock(lease); return 'acquired' }, (error: { code: string }) => error.code)
-    await waitFor(() => notices.length > 0)
-    const timer = setInterval(() => {
-      // Real light admissions complete synchronously between the exclusive waiter's polls.
-      if (grants < 6) void lock.acquireSuiteLock({ root, env: envFor(root), light: true, waitS: 0, pollMs: 1 }).then((lease: unknown) => { grants += 1; lock.releaseSuiteLock(lease) })
-    }, 50)
-    try { await pause(450); removeTicket(join(root, 'queue.d'), ahead); expect(await pending).toBe('acquired'); expect(grants).toBeGreaterThan(4) }
-    finally { clearInterval(timer) }
-    const holder = await lock.acquireSuiteLock({ root, env: envFor(root) }); seed(root)
-    try { await expect(lock.acquireSuiteLock({ root, env: envFor(root), waitS: 0.15, staleS: 0.15, pollMs: 10 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' }) }
-    finally { lock.releaseSuiteLock(holder) }
+      signal: controller.signal, onRenew: renew, onProgress: progress, onHandover: handover,
+      onWait: (line: string) => notices.push(line) }).then((lease: unknown) => { lock.releaseSuiteLock(lease); result = 'acquired' }, (error: { code: string }) => { result = error.code })
+    try {
+      await vi.waitFor(() => expect(notices.length).toBeGreaterThan(0))
+      expect(progress).toHaveBeenCalledWith({ ahead: 1, aheadExcludingRelease: 1, total: 2 })
+      const laterP0 = seed(root, { level: 0 }) // Worsen the waiter's place without improving its historical best.
+      for (; grants < 6; grants += 1) {
+        await vi.advanceTimersByTimeAsync(50) // Leave room for a 100 ms transient retry inside the 250 ms watchdog.
+        // Real, complete light admissions remain invisible as holders; wait for the lock to acknowledge each.
+        await withAdvancingTimers(lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0', light: true, waitS: 0, pollMs: 1,
+          beforeAcquire: during === 'hidden light admission' ? retry : undefined })
+          .then((hidden: unknown) => lock.releaseSuiteLock(hidden)))
+        await vi.waitFor(() => expect(renew).toHaveBeenCalledTimes(grants + 1))
+        expect(renew).toHaveBeenLastCalledWith({ ahead: 2, aheadExcludingRelease: 2, total: 3 })
+      }
+      expect(result).toBe('waiting'); expect(grants).toBeGreaterThan(4)
+      expect(progress).toHaveBeenCalledTimes(1); expect(handover).not.toHaveBeenCalled()
+      removeTicket(join(root, 'queue.d'), ahead); removeTicket(join(root, 'queue.d'), laterP0)
+      await vi.waitFor(() => expect(result).toBe('acquired')); await pending
+      const holder = await withAdvancingTimers(lock.acquireSuiteLock({ root, env: envFor(root), beforeAcquire: during === 'hung-queue holder' ? retry : undefined })); seed(root)
+      try {
+        const hung = expect(lock.acquireSuiteLock({ root, env: envFor(root), waitS: 0.15, staleS: 0.15, pollMs: 10 }))
+          .rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+        await withAdvancingTimers(hung)
+      } finally { lock.releaseSuiteLock(holder) }
+      expect(retry).toHaveBeenCalledTimes(during === 'hidden light admission' ? 7 : during === 'hung-queue holder' ? 2 : 0)
+    } finally { controller.abort(); vi.useRealTimers(); await pending }
   }, 10_000)
+}
+
+function registerCancellationChurnTest() {
   it('F2 cancellation churn behind the same hung holder still times out within its budget', async () => {
     const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0' })
     seed(root, { level: 0 }); const now = Date.now(); const renew = vi.fn(); let result = 'waiting'; let endedAt = Infinity
@@ -402,6 +440,9 @@ describe('unobserved short-holder progress', () => {
       expect(endedAt).toBeLessThanOrEqual(250); expect(renew).not.toHaveBeenCalled()
     } finally { controller.abort(); vi.useRealTimers(); lock.releaseSuiteLock(held); await pending }
   })
+}
+
+function registerHiddenExclusiveRenewalTest() {
   it('F3 hidden exclusive P0 admissions renew a P2 waiter until it acquires', async () => {
     const root = temp(); const first = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0' }); lock.releaseSuiteLock(first)
     const ahead = seed(root, { level: 2 }); const renew = vi.fn(); const handover = vi.fn(); let result = 'waiting'
@@ -422,6 +463,12 @@ describe('unobserved short-holder progress', () => {
       expect(readLightCounter(root).grants).toBe(0)
     } finally { controller.abort(); vi.useRealTimers(); removeTicket(join(root, 'queue.d'), ahead); await pending }
   })
+}
+
+describe('unobserved short-holder progress', () => {
+  registerLightCounterRenewalTest()
+  registerCancellationChurnTest()
+  registerHiddenExclusiveRenewalTest()
   it('F3 renews only for increasing admissions under the same valid generation', () => {
     const before = { admissions: { generation: 'same', grants: 2 }, aheadNumbers: [1], counter: { generation: 'light', grants: 0 } }
     const place = { liveNumbers: [], admissions: { generation: 'same', grants: 3 }, counter: { generation: 'light', grants: 9 } }
@@ -469,7 +516,51 @@ describe('lane operator release boundary', () => {
   })
 })
 
+describe('lane priority without a sandbox broker', () => {
+  const laneLevels = [
+    { declared: null, ambient: undefined, level: 2 },
+    ...['P0', 'P1', 'P2'].flatMap((priority) => [
+      { declared: null, ambient: priority, level: Number(priority.slice(1)) },
+      { declared: priority, ambient: priority === 'P0' ? 'P2' : 'P0', level: Number(priority.slice(1)) },
+    ]),
+  ]
+  it.each(laneLevels.flatMap((entry) => [false, true].map((light) => ({ ...entry, light }))))('a lane without a broker acquires its effective level ($declared, ambient $ambient, light=$light)', async ({ declared, ambient, level, light }) => {
+    const { laneWorkerEnv } = await loadPluginModule('plugin/bin/wt-lane.mjs')
+    const root = temp()
+    const env = laneWorkerEnv(envFor(root, { WT_SUITE_LOCK_PRIORITY: ambient }), declared)
+    const lease = await lock.acquireSuiteLock({ env, light })
+    try {
+      expect(lease.broker).toBeUndefined()
+      expect(lease.holder.level, 'unsandboxed lane acquisition must use the host-resolved priority').toBe(level)
+      expect(lock.readSuiteLock({ root }).holder.level).toBe(level)
+    } finally { lock.releaseSuiteLock(lease) }
+  })
+})
+
+function registerIsolatedPriorityEnvTest() {
+  it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
+    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
+    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
+    const env = envFor(temp())
+    expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
+    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
+    expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
+  })
+}
+
 describe('declaration and isolated environments', () => {
+  it('ordinary non-lane acquisition still defaults to P1', async () => {
+    const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    try { expect(lease.holder.level).toBe(1) }
+    finally { lock.releaseSuiteLock(lease) }
+  })
+  it.each(['P0', 'P1', 'P2'])('non-sandbox --priority %s overrides an ambient level', (priority) => {
+    const root = temp()
+    const script = `process.stdout.write(require('fs').readFileSync(${JSON.stringify(join(root, 'lock.d', 'holder.json'))},'utf8'))`
+    const result = cli(root, ['run', '--priority', priority, '--', process.execPath, '-e', script], { WT_SUITE_LOCK_PRIORITY: priority === 'P0' ? 'P2' : 'P0' })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout).level).toBe(Number(priority.slice(1)))
+  })
   it('F6 explicit root retains P0 despite an ambient broker and never connects', async () => {
     const root = temp(); const connect = vi.spyOn(net, 'connect')
     const held = await lock.acquireSuiteLock({ root, env: envFor(root, { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock') }), priority: 'P0' })
@@ -493,14 +584,7 @@ describe('declaration and isolated environments', () => {
     const result = cli(root, ['run', '--priority', 'release', '--', process.execPath, '-e', 'process.stdout.write(process.env.WT_SUITE_LOCK_PRIORITY || "unset")'])
     expect(result.status).toBe(0); expect(result.stdout).toBe('unset')
   })
-  it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
-    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
-    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
-    const env = envFor(temp())
-    expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
-    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
-    expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
-  })
+  registerIsolatedPriorityEnvTest()
 })
 
 describe('light class holder warning timer', () => {

@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tsFrameReader } from './ts-lsp-wire.mjs'
 
 const LIMIT = 1024 * 1024
 const FOLDERS = ['node_modules/typescript/lib', '.vscode/pnpify/typescript/lib', '.yarn/sdks/typescript/lib', '.pnpm/sdks/typescript/lib']
@@ -313,21 +314,83 @@ function refuse(message, bytes, { input, output, stderr, exit }) {
   setTimeout(finish, 30_000).unref()
 }
 
-export function runTsLaunch({ input = process.stdin, output = process.stdout, stderr = process.stderr, exit = (code) => process.exit(code), exitSignal = (signal) => process.kill(process.pid, signal), select = planTsLaunch, start = spawn } = {}) {
-  let buffered = Buffer.alloc(0)
-  let prior = Buffer.alloc(0)
-  const streams = { input, output, stderr, exit }
+function observeTsAnswer(result, state) {
+  const receive = tsFrameReader(reply => {
+    if (reply.id === result.id && ('result' in reply || 'error' in reply)) state.answered = true
+  })
+  return (chunk) => {
+    try { receive(chunk) } catch { /* The relay forwards malformed backend bytes unchanged. */ }
+  }
+}
+
+function forwardTsSignals(child) {
+  const signals = ['SIGTERM', 'SIGINT'].map((signal) => {
+    const forward = () => { if (child.exitCode === null) child.kill(signal) }
+    process.on(signal, forward)
+    return [signal, forward]
+  })
+  return () => { for (const [signal, forward] of signals) process.off(signal, forward) }
+}
+
+function connectTsStreams(child, result, replay, streams, state) {
+  const { input, output, stderr } = streams
+  state.started = true
+  child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') stderr.write(`wt-tsls: ${error.message}\n`) })
+  const observe = observeTsAnswer(result, state)
+  const onAnswer = (chunk) => {
+    observe(chunk)
+    if (state.answered) child.stdout.off('data', onAnswer)
+  }
+  child.stdout.on('data', onAnswer)
+  child.stdout.pipe(output, { end: false })
+  child.stderr.pipe(stderr, { end: false })
+  const handoff = () => {
+    if (input.readableEnded) child.stdin.end()
+    else input.pipe(child.stdin)
+  }
+  if (child.stdin.write(replay)) handoff()
+  else child.stdin.once('drain', handoff)
+}
+
+function superviseTsChild(child, plan, result, replay, streams, exitSignal) {
+  const { input, output, exit } = streams
+  const state = { answered: false, started: false, refusing: false, responseBytes: Buffer.alloc(0) }
+  const cleanup = streams.forwardSignals === false ? () => {} : forwardTsSignals(child)
+  child.on('error', (error) => {
+    cleanup()
+    if (!state.answered) { state.refusing = true; refuse(`wt-tsls: could not start ${plan.command}: ${error.message}`, replay, streams) }
+    else exit(1)
+  })
+  child.on('spawn', () => connectTsStreams(child, result, replay, streams, state))
+  child.on('close', (code, signal) => {
+    cleanup()
+    input.unpipe(child.stdin)
+    if (state.refusing) return
+    if (!state.started || state.answered) output.write('', () => { if (signal) exitSignal(signal); else exit(code ?? 0) })
+    else refuse(`wt-tsls: ${plan.backend} exited before answering initialize`, replay, streams)
+  })
+}
+
+function startTsBackend(result, replay, plan, streams, start, exitSignal) {
+  const tsserver = plan.tsserverPath ? ` with tsserver ${plan.tsserverPath} (${plan.tsserverSource})` : ''
+  streams.stderr.write(`wt-tsls: ${plan.backend} (${plan.command})${tsserver}\n`)
+  const child = start(plan.command, plan.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  superviseTsChild(child, plan, result, replay, streams, exitSignal)
+}
+
+function initializeTsPeek(state, streams, select, start, exitSignal) {
+  const { input, exit } = streams
   const peek = (chunk) => {
-    buffered = Buffer.concat([buffered, chunk])
-    const result = inspectInitialize(buffered)
+    state.buffered = Buffer.concat([state.buffered, chunk])
+    const result = inspectInitialize(state.buffered)
     if (result.status === 'pending') return
     if (result.status === 'notification') {
-      prior = Buffer.concat([prior, buffered.subarray(0, result.consumed)])
-      buffered = buffered.subarray(result.consumed)
-      if (prior.length + buffered.length > LIMIT) {
+      state.prior = Buffer.concat([state.prior, state.buffered.subarray(0, result.consumed)])
+      state.buffered = state.buffered.subarray(result.consumed)
+      if (state.prior.length + state.buffered.length > LIMIT) {
         input.pause()
         input.off('data', peek)
-        return refuse('wt-tsls: pre-initialize frames exceed the size limit', prior, streams)
+        return refuse('wt-tsls: pre-initialize frames exceed the size limit', state.prior, streams)
       }
       peek(Buffer.alloc(0))
       return
@@ -335,64 +398,19 @@ export function runTsLaunch({ input = process.stdin, output = process.stdout, st
     input.pause()
     input.off('data', peek)
     if (result.status === 'exit') return exit(0)
-    if (result.status === 'refused') return refuse(result.message, Buffer.concat([prior, buffered]), streams)
+    if (result.status === 'refused') return refuse(result.message, Buffer.concat([state.prior, state.buffered]), streams)
     const plan = select(result.params)
-    if (plan.status !== 'launch') return refuse(plan.message, Buffer.concat([prior, buffered]), streams)
-    const replay = launchReplay(prior, buffered, result.consumed, plan)
-    const tsserver = plan.tsserverPath ? ` with tsserver ${plan.tsserverPath} (${plan.tsserverSource})` : ''
-    stderr.write(`wt-tsls: ${plan.backend} (${plan.command})${tsserver}\n`)
-    const child = start(plan.command, plan.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-    let answered = false
-    let started = false
-    let refusing = false
-    let responseBytes = Buffer.alloc(0)
-    const signals = ['SIGTERM', 'SIGINT'].map((signal) => {
-      const forward = () => { if (child.exitCode === null) child.kill(signal) }
-      process.on(signal, forward)
-      return [signal, forward]
-    })
-    const cleanup = () => { for (const [signal, forward] of signals) process.off(signal, forward) }
-    child.on('error', (error) => {
-      cleanup()
-      if (!answered) { refusing = true; refuse(`wt-tsls: could not start ${plan.command}: ${error.message}`, replay, streams) }
-      else exit(1)
-    })
-    child.on('spawn', () => {
-      started = true
-      child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') stderr.write(`wt-tsls: ${error.message}\n`) })
-      child.stdout.on('data', (chunk) => {
-        responseBytes = Buffer.concat([responseBytes, chunk])
-        while (responseBytes.length <= LIMIT) {
-          const headerEnd = responseBytes.indexOf('\r\n\r\n')
-          if (headerEnd < 0) break
-          const size = Number(/Content-Length:\s*(\d+)/i.exec(responseBytes.subarray(0, headerEnd).toString('latin1'))?.[1])
-          if (!Number.isSafeInteger(size) || size < 0 || size + headerEnd + 4 > LIMIT) break
-          if (responseBytes.length < headerEnd + 4 + size) break
-          try {
-            const reply = JSON.parse(responseBytes.subarray(headerEnd + 4, headerEnd + 4 + size).toString('utf8'))
-            if (reply?.id === result.id && ('result' in reply || 'error' in reply)) answered = true
-          } catch { /* Forward protocol bytes unchanged; the backend owns malformed output. */ }
-          responseBytes = responseBytes.subarray(headerEnd + 4 + size)
-        }
-        if (responseBytes.length > LIMIT) responseBytes = Buffer.alloc(0)
-      })
-      child.stdout.pipe(output, { end: false })
-      child.stderr.pipe(stderr, { end: false })
-      const handoff = () => {
-        if (input.readableEnded) child.stdin.end()
-        else input.pipe(child.stdin)
-      }
-      if (child.stdin.write(replay)) handoff()
-      else child.stdin.once('drain', handoff)
-    })
-    child.on('close', (code, signal) => {
-      cleanup()
-      input.unpipe(child.stdin)
-      if (refusing) return
-      if (!started || answered) output.write('', () => { if (signal) exitSignal(signal); else exit(code ?? 0) })
-      else refuse(`wt-tsls: ${plan.backend} exited before answering initialize`, replay, streams)
-    })
+    if (plan.status !== 'launch') return refuse(plan.message, Buffer.concat([state.prior, state.buffered]), streams)
+    const replay = launchReplay(state.prior, state.buffered, result.consumed, plan)
+    startTsBackend(result, replay, plan, streams, start, exitSignal)
   }
+  return peek
+}
+
+export function runTsLaunch({ input = process.stdin, output = process.stdout, stderr = process.stderr, exit = (code) => process.exit(code), exitSignal = (signal) => process.kill(process.pid, signal), select = planTsLaunch, start = spawn, forwardSignals = true } = {}) {
+  const state = { buffered: Buffer.alloc(0), prior: Buffer.alloc(0) }
+  const streams = { input, output, stderr, exit, forwardSignals }
+  const peek = initializeTsPeek(state, streams, select, start, exitSignal)
   input.on('data', peek)
-  input.on('end', () => { if (!buffered.length) exit(0); else if (inspectInitialize(buffered).status === 'pending') exit(0) })
+  input.on('end', () => { if (!state.buffered.length) exit(0); else if (inspectInitialize(state.buffered).status === 'pending') exit(0) })
 }

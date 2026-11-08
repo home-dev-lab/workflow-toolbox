@@ -23,6 +23,7 @@ export const spawningTestFiles = [
   'packages/build/test/actionability-bounded-refresh.test.ts',
   'packages/build/test/actionability-gate.test.ts',
   'packages/build/test/actionability-planka-producer.test.ts',
+  'packages/build/test/admission-containment.test.ts',
   'packages/build/test/admission-descriptor-output.test.ts',
   'packages/build/test/admission-snapshot.test.ts',
   'packages/build/test/adopt-agents-overlap.test.ts',
@@ -73,6 +74,7 @@ export const spawningTestFiles = [
   'packages/build/test/gate-evidence-guard.test.ts',
   'packages/build/test/git-commit-backtick-guard-hook.test.ts',
   'packages/build/test/git-config-isolation.test.ts',
+  'packages/build/test/guard-deny-delivery.test.ts',
   'packages/build/test/guard-journal-family.test.ts',
   'packages/build/test/guard-journal-test-isolation.test.ts',
   'packages/build/test/guard-journal.test.ts',
@@ -94,6 +96,7 @@ export const spawningTestFiles = [
   'packages/build/test/lane-exit-notices.test.ts',
   'packages/build/test/lane-gate-section.test.ts',
   'packages/build/test/lane-host-state.test.ts',
+  'packages/build/test/lane-launch-admission.test.ts',
   'packages/build/test/lane-postdiff-check-cli.test.ts',
   'packages/build/test/lane-probe.test.ts',
   'packages/build/test/lane-queue-deadline.test.ts',
@@ -108,6 +111,7 @@ export const spawningTestFiles = [
   'packages/build/test/lifecycle-session-server.test.ts',
   'packages/build/test/live-config-tree-guard-hook.test.ts',
   'packages/build/test/liveness.test.ts',
+  'packages/build/test/loaded-version-cli.test.ts',
   'packages/build/test/main-guard-hook.test.ts',
   'packages/build/test/memory-index-check.test.ts',
   'packages/build/test/merge-chain-guard-hook.test.ts',
@@ -131,6 +135,7 @@ export const spawningTestFiles = [
   'packages/build/test/opencode-verifier-entry.test.ts',
   'packages/build/test/orchestrator-core.test.ts',
   'packages/build/test/outbound-guard-hooks.test.ts',
+  'packages/build/test/owned-lane-process.test.ts',
   'packages/build/test/pgrep-env-dump-guard-hook.test.ts',
   'packages/build/test/pilot-card-reconcile.test.ts',
   'packages/build/test/pilot-decision-store.test.ts',
@@ -164,6 +169,7 @@ export const spawningTestFiles = [
   'packages/build/test/quota-probe-token.test.ts',
   'packages/build/test/quota-watch-account-cache.test.ts',
   'packages/build/test/quota-watch-no-subscription.test.ts',
+  'packages/build/test/quota-watch-plan-windows.test.ts',
   'packages/build/test/quota-watch-route.test.ts',
   'packages/build/test/quota-watch-single-instance.test.ts',
   'packages/build/test/remedy-quote.test.ts',
@@ -179,6 +185,7 @@ export const spawningTestFiles = [
   'packages/build/test/run-cost.test.ts',
   'packages/build/test/run-gate.test.ts',
   'packages/build/test/sdk-parent-wake-fixture-board.test.ts',
+  'packages/build/test/sdk-pilot-dirty-start.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-full.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-server.test.ts',
   'packages/build/test/second-opinion-admission.test.ts',
@@ -205,11 +212,16 @@ export const spawningTestFiles = [
   'packages/build/test/suite-lock-journal.test.ts',
   'packages/build/test/suite-lock-levels.test.ts',
   'packages/build/test/suite-lock-offload.test.ts',
+  'packages/build/test/suite-lock-park.test.ts',
   'packages/build/test/suite-lock-priority.test.ts',
   'packages/build/test/suite-lock-static-nesting.test.ts',
   'packages/build/test/suite-lock-static.test.ts',
   'packages/build/test/suite-lock.test.ts',
   'packages/build/test/test-orphan-reaper.test.ts',
+  'packages/build/test/ts-language-server-cpu-r2.test.ts',
+  'packages/build/test/ts-language-server-cpu.test.ts',
+  'packages/build/test/ts-language-server-idle-host.test.ts',
+  'packages/build/test/ts-language-server-idle.test.ts',
   'packages/build/test/ts-language-server-launcher.test.ts',
   'packages/build/test/ts-language-server-watches.test.ts',
   'packages/build/test/unquoted-tool-glob-guard-hook.test.ts',
@@ -222,6 +234,9 @@ export const spawningTestFiles = [
   'packages/build/test/work-journal-cli.test.ts',
   'packages/build/test/work-journal-storage-unnamed.test.ts',
   'packages/build/test/worktree-remove-board-id.test.ts',
+  'packages/build/test/worktree-sweep-holders.test.ts',
+  'packages/build/test/worktree-sweep-hooks.test.ts',
+  'packages/build/test/worktree-sweep-report.test.ts',
   'packages/build/test/wt-config.test.ts',
   'packages/build/test/wt-lane-helpers.test.ts',
   'packages/build/test/wt-lane-integrate.test.ts',
@@ -256,7 +271,7 @@ function testFilesUnder(directory) {
   return entries.flatMap((entry) => {
     const path = resolve(directory, entry.name)
     if (entry.isDirectory()) return testFilesUnder(path)
-    return entry.isFile() && entry.name.endsWith('.test.ts') ? [path] : []
+    return entry.isFile() && /\.test\.(ts|mjs)$/.test(entry.name) ? [path] : []
   })
 }
 
@@ -266,6 +281,27 @@ function moduleName(node) {
   if (!ts.isStringLiteral(argument) || !CHILD_PROCESS_MODULES.has(argument.text)) return undefined
   if (ts.isIdentifier(node.expression) && (node.expression.text === 'require' || node.expression.text === 'import')) return argument.text
   return undefined
+}
+
+function collectNamedImportBindings(bindings, direct) {
+  for (const element of bindings.elements) {
+    if (PROCESS_FUNCTIONS.has(element.propertyName?.text ?? element.name.text)) direct.add(element.name.text)
+  }
+}
+
+function collectClauseBindings(clause, direct, namespaces) {
+  if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+    collectNamedImportBindings(clause.namedBindings, direct)
+  } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+    namespaces.add(clause.namedBindings.name.text)
+  }
+}
+
+function collectImportedBindings(node, direct, namespaces) {
+  if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && CHILD_PROCESS_MODULES.has(node.moduleSpecifier.text)) {
+    const clause = node.importClause
+    collectClauseBindings(clause, direct, namespaces)
+  }
 }
 
 function collectBindings(sourceFile) {
@@ -281,16 +317,7 @@ function collectBindings(sourceFile) {
   }
 
   const visit = (node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && CHILD_PROCESS_MODULES.has(node.moduleSpecifier.text)) {
-      const clause = node.importClause
-      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-        for (const element of clause.namedBindings.elements) {
-          if (PROCESS_FUNCTIONS.has(element.propertyName?.text ?? element.name.text)) direct.add(element.name.text)
-        }
-      } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
-        namespaces.add(clause.namedBindings.name.text)
-      }
-    }
+    collectImportedBindings(node, direct, namespaces)
     if (ts.isVariableDeclaration(node) && node.initializer) {
       let initializer = node.initializer
       if (ts.isAwaitExpression(initializer)) initializer = initializer.expression
