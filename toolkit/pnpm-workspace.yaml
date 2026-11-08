@@ -71,16 +71,23 @@ minimumReleaseAgeExclude:
 #     (<4.12.34, medium) — same floor already carried by the observatory's own override.
 overrides:
   esbuild: ~0.28.1
-  body-parser@>=2.0.0 <2.3.0: 2.3.0
-  brace-expansion@>=3.0.0 <5.0.9: 5.0.9
-  brace-expansion@<1.1.18: 1.1.18
+  # ⚠ FLOORS AND SELECTORS RAISED 2026-11-08 (GitHub reported 28 open alerts on the 0.198.0 push):
+  #   body-parser GHSA-27r3-jxmh-p828 (high) needs 2.4.0; brace-expansion GHSA-q2hr-2g5m-vwhr
+  #   (medium) needs 5.0.12 on the 5.x line and 1.1.21 on the 1.x line. Each selector moves with
+  #   its floor, so the version resolved before this pass still falls inside the range it rewrites.
+  body-parser@>=2.0.0 <2.4.0: '>=2.4.0 <3'
+  brace-expansion@>=3.0.0 <5.0.12: 5.0.12
+  brace-expansion@<1.1.21: 1.1.21
   # ⚠ FLOOR RAISED 2026-09-15: was '>=4.1.2', SATISFIED by the resolved 4.1.2 while the advisory
   #   had moved to GHSA >= 4.1.3 (high). Exactly the failure this file names twice already — a
   #   satisfied floor and a current floor are indistinguishable from inside the repo.
-  fast-uri: '>=4.1.3'
+  # ⚠ RAISED 2026-11-08: 4.1.4 was resolved; GHSA-jvvf-x445-j334, -333x-w4r6-6crp, -wjr9-j795-jxcr,
+  #   -xhq7-xmqj-769h and -w74x-v6f9-j3xg (medium/low) need 4.2.3. Now bounded above.
+  fast-uri: '>=4.2.3 <5'
   # ⚠ FLOOR RAISED 2026-09-15: was '>=4.12.34', satisfied by the resolved 4.13.0; the advisory
   #   now requires >= 4.13.5 (medium).
-  hono: '>=4.13.5'
+  # ⚠ RAISED 2026-11-08: 4.13.7 was resolved; GHSA-5r4p-p66f-jhc7 (medium) needs 4.13.11.
+  hono: '>=4.13.11 <5'
   # GHSA-frvp-7c67-39w9 (medium, card #1836392997323801751): path traversal in serve-static
   # on Windows via an encoded backslash (%5C). Pulled in transitively, dev-only, via
   # packages/smoke's devDependency on @anthropic-ai/claude-agent-sdk ->
@@ -89,10 +96,13 @@ overrides:
   # '@hono/node-server': '^1.19.9' (so this override crosses that peer's major line on
   # purpose) — smoke is private, excluded from `pnpm test`, so a breaking change here has
   # no blast radius beyond that one dev-only canary script.
-  '@hono/node-server': '>=2.0.5'
+  # ⚠ RAISED 2026-11-08: 2.1.0 was resolved; GHSA-rmxm-3fg6-px4f (medium) needs 2.1.3.
+  '@hono/node-server': '>=2.1.3 <3'
   # Surfaced 2026-08-06, in the first minute after Dependabot alerts were enabled on this repo.
   # Manual GHSA polling had missed all three, because you can only query the packages you think of.
-  ip-address: '>=10.3.1' # GHSA high: leading-zero octets decoded as decimal, resolvers read octal
+  # ⚠ RAISED 2026-11-08: the '>=10.3.1' floor was satisfied by 10.4.0 while GHSA-2vr4-cq9g-pvrc,
+  #   -rpw4-54j3-4h4q, -j6r3-76f7-8jcv, -h3mg-xc3c-68pw and -rxp7-6hxx-x8q5 (medium) moved the bar to 10.7.4.
+  ip-address: '>=10.7.4 <11'
   postcss: '>=8.5.23' # GHSA high + medium: sourceMappingURL path traversal (the medium is the incomplete fix)
   # ⚠ BOUNDED ON PURPOSE. The advisory range is >=4.0.0 <4.3.0 — the 3.x line is NOT affected, and
   # this tree still resolves js-yaml@3.15.0 for other consumers. An unbounded '>=4.3.0' would drag
@@ -116,3 +126,24 @@ overrides:
   #   and the advisory now requires >= 3.15.2.
   js-yaml@>=3.0.0 <3.15.2: '>=3.15.2 <4'
   '@types/node': 24.13.1
+  # Added 2026-11-08, one bounded override per advisory family. These sit on the chain
+  # @anthropic-ai/claude-agent-sdk -> @modelcontextprotocol/sdk (a peer the SDK auto-installs)
+  # -> express/hono, on the vitest/vite/tsup toolchain, or on knip. The SDK chain is not only a
+  # dev concern: the plugin loads the agent SDK in-process and its resolver tries this toolkit's
+  # install first (plugin/bin/lib/host/sdk-resolution.mjs), so a checkout with installed
+  # node_modules runs these copies.
+  proxy-addr@<2.0.8: '>=2.0.8 <3' # GHSA-jqcg-44mw-7w3h (critical): IPv4-mapped IPv6 trust bypass
+  source-map-js@>=1.0.0 <1.2.2: '>=1.2.2 <2' # GHSA-68fv-2mgg-jv7q (high): event-loop DoS
+  # GHSA-6qxp-vccf-f47h, GHSA-22jm-h49p-29qw (high), GHSA-6prh-2h8m-c8cw, GHSA-rvq5-wwqv-78pq,
+  # GHSA-46jr-4wx8-v453, GHSA-f897-62hf-6gxq: the agent SDK's peer range ^1.29.0 still holds.
+  '@modelcontextprotocol/sdk@<1.32.0': '>=1.32.0 <2'
+  # GHSA-587h-7wmj-h5pm (high), GHSA-698v-4r3x-3vcv, GHSA-r825-w8mm-5pxw, GHSA-rq7h-c2jc-7f22,
+  # GHSA-9jrq-w75r-8gcw: stays on the vite 6 line vitest 4.1 was resolved against.
+  vite@<=6.4.3: '>=6.4.4 <7'
+  smol-toml@<1.9.0: '>=1.9.0 <2' # GHSA-r4xh-jqrq-34v2 (medium): quadratic parse
+  qs@>=6.7.0 <6.16.1: '>=6.16.1 <7' # GHSA-6pq8-jhm2-2vcw (medium): stringify comma TypeError
+  zod@>=4.0.0 <4.6.6: '>=4.6.6 <5' # GHSA-mrhx-c7xc-m3w5 (high): memory exhaustion on large collections
+  nanoid@<3.3.18: '>=3.3.18 <4' # GHSA-2v37-7h3g-55p8 (high): custom generator loops on size zero
+  # GHSA-g3hv-75wg-m249 (medium): globparts amplification. The fix exists only on minimatch 11,
+  # so this crosses a major for eslint's config-array on purpose; gates decide whether it holds.
+  minimatch@>=7.0.0 <11.0.1: '>=11.0.1 <12'
