@@ -2298,11 +2298,13 @@ function publishTemp(temp, target, text, publication) {
   return outcome.renamed || outcome.value
 }
 
+// A temp left behind is never a clean success: the run says so and exits non-zero.
 function removeTemp(temp) {
   try {
     fs.rmSync(temp, { force: true, maxRetries: 3, retryDelay: 25 })
   } catch (err) {
-    process.stderr.write(`adopt: could not remove the temporary file ${temp}: ${err && err.message ? err.message : String(err)}\n`)
+    process.stderr.write(`adopt: LEFT the temporary file ${temp} (remove it by hand): ${err && err.message ? err.message : String(err)}\n`)
+    process.exitCode = 1
   }
 }
 

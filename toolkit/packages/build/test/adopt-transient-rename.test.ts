@@ -12,7 +12,7 @@ function scripted(failures: (string | null)[]) {
     const code = failures[calls.length - 1]
     if (code) throw coded(code)
   }
-  return { calls, pauses, rename, pause: (ms: number) => { pauses.push(ms) } }
+  return { calls, pauses, rename, pause: (ms: number) => { pauses.push(ms) }, platform: 'win32' }
 }
 
 describe('renameRetryingTransient', () => {
@@ -43,6 +43,7 @@ describe('renameRetryingTransient — stopping', () => {
     const seams = scripted(Array(TRANSIENT_RENAME_ATTEMPTS).fill('EPERM'))
     expect(() => renameRetryingTransient('a', 'b', seams)).toThrow('refused EPERM')
     expect(seams.calls).toHaveLength(TRANSIENT_RENAME_ATTEMPTS)
+    expect(seams.calls).toHaveLength(10)
     expect(seams.pauses).toHaveLength(TRANSIENT_RENAME_ATTEMPTS - 1)
   })
 
@@ -64,6 +65,7 @@ describe('renameRetryingTransient — pausing', () => {
     const outcome = renameRetryingTransient('a', 'b', {
       rename: () => { events.push('rename'); if (events.length === 1) throw coded('EPERM') },
       pause: () => { events.push('pause') },
+      platform: 'win32',
       beforeRetry: () => { events.push('check'); return undefined },
     })
     expect(outcome).toEqual({ renamed: true })
@@ -73,7 +75,16 @@ describe('renameRetryingTransient — pausing', () => {
   it('pauses for real by default', () => {
     const seams = scripted(['EBUSY', null])
     const started = performance.now()
-    expect(renameRetryingTransient('a', 'b', { rename: seams.rename, pauseMs: 30 })).toEqual({ renamed: true })
+    expect(renameRetryingTransient('a', 'b', { rename: seams.rename, pauseMs: 30, platform: 'win32' })).toEqual({ renamed: true })
     expect(performance.now() - started).toBeGreaterThanOrEqual(25)
+  })
+})
+
+describe('renameRetryingTransient — platforms', () => {
+  it.each(['linux', 'darwin'])('rethrows a refusal on %s at the first attempt, without pausing', (platform) => {
+    const seams = scripted(['EPERM', null])
+    expect(() => renameRetryingTransient('a', 'b', { ...seams, platform })).toThrow('refused EPERM')
+    expect(seams.calls).toHaveLength(1)
+    expect(seams.pauses).toEqual([])
   })
 })
