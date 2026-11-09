@@ -97,11 +97,30 @@ function readInput() {
  *  else the shell's cwd. Returns an absolute path, or null when it cannot be resolved — an
  *  unresolvable target is NOT treated as a hit, because guessing produces false denials. */
 function targetDir(cmd, cwd) {
-  const dashC = cmd.match(/\bgit\s+(?:[^\s|;&]*\s+)*?-C\s+("([^"]+)"|'([^']+)'|(\S+))/)
-  const cd = cmd.match(/(?:^|[;&|]\s*)cd\s+("([^"]+)"|'([^']+)'|(\S+))/)
-  const raw = dashC ? (dashC[2] ?? dashC[3] ?? dashC[4]) : cd ? (cd[2] ?? cd[3] ?? cd[4]) : cwd
+  const raw = rawTarget(cmd, cwd)
   if (typeof raw !== 'string' || raw.length === 0) return null
   if (/[$*?`]/.test(raw)) return null // a variable or a glob: unresolvable, do not guess
+  return resolveTarget(raw, cwd)
+}
+
+/** The first captured spelling of a `-C <path>` / `cd <path>` match: double-quoted, single-quoted
+ *  or bare. The `-C` token needs a NON-EMPTY word before it (`+`, never `*`): with `*` the
+ *  optional word and the whitespace after it overlap, and a long run of spaces backtracks
+ *  quadratically. */
+function matchedPath(m) {
+  return m[2] ?? m[3] ?? m[4]
+}
+
+/** The raw path text: an explicit `-C`, else a `cd`, else the shell's cwd. */
+function rawTarget(cmd, cwd) {
+  const dashC = cmd.match(/\bgit\s+(?:[^\s|;&]+\s+)*?-C\s+("([^"]+)"|'([^']+)'|(\S+))/)
+  const cd = cmd.match(/(?:^|[;&|]\s*)cd\s+("([^"]+)"|'([^']+)'|(\S+))/)
+  if (dashC) return matchedPath(dashC)
+  if (cd) return matchedPath(cd)
+  return cwd
+}
+
+function resolveTarget(raw, cwd) {
   const expanded = raw.startsWith('~') ? homedir() + raw.slice(1) : raw
   try {
     return resolve(cwd && !expanded.startsWith('/') ? cwd : '/', expanded)
@@ -215,6 +234,10 @@ function liveChangeReason(hitDir) {
     `The correct pattern, and it is NOT matched by this guard:`,
     `    git -C ${hitDir} worktree add <path-outside-the-config-dir> -b <branch>`,
     `then edit inside that worktree and merge back to main when the work is done.`,
+    ``,
+    `If the git text is DATA (text being written into a file, a commit message, or a`,
+    `replacement string), write that file with the Edit or Write tool instead of a shell command.`,
+    `This guard only reads Bash commands, so that route is never refused.`,
     ``,
     `⚠ This guard only sees GIT commands. A direct Edit/Write/rm inside the live rules dir is`,
     `  invisible to it — that half is not mechanised. Run this hook with --diagnose to check`,

@@ -10,6 +10,11 @@
 // silently replaced by nothing. The commit succeeded, so nothing failed loudly — only reading
 // the stored message afterwards revealed the hole.
 //
+// A second hazard is covered by the same warn-only posture: `git commit --allow-empty` whose
+// -m/--message texts name no marker word. An empty commit whose subject announces a delivery
+// leaves a false "done" for whatever cites it. When a command has both hazards, ONE notice
+// carries both warnings.
+//
 // ⚠ WARNS, NEVER DENIES — a new guard's precision is measured on material it did not choose
 // before it is allowed to block (mechanise-on-sight.md). This one reasons about a shell string
 // via regex, which cannot perfectly parse quoting; a false positive on a benign already-escaped
@@ -17,8 +22,10 @@
 // its false-positive rate is measured on real usage.
 //
 // ⚠ WHAT IT DOES NOT COVER, so its silence is not read as coverage:
-//   - single-quoted -m arguments (no substitution risk — deliberately silent);
-//   - the heredoc / `-F` form (the documented safe form — deliberately silent);
+//   - single-quoted -m arguments for the BACKTICK check (no substitution risk — deliberately
+//     silent; the empty-commit check does read them);
+//   - the heredoc / `-F` form (the documented safe form — deliberately silent); an empty commit
+//     whose message comes from -F has no readable subject, so it is never judged;
 //   - the `-m "$(cat <<'EOF' ... EOF)"` form — a heredoc body embedded in a command
 //     substitution, this project's own dominant commit convention. Its backticks are DATA (the
 //     quoted heredoc delimiter disables all shell expansion inside the body), never CODE, so
@@ -67,6 +74,63 @@ function hasUnescapedBacktick(content) {
   return false
 }
 
+// An empty commit is fine as a marker, and a defect when its subject announces work it did not
+// do. The marker vocabulary is a guess about how people word an honest empty commit; a message
+// naming any of these words is taken as honest and stays silent.
+const MARKER_SINGLE = /\b(?:marker|empty|placeholder|no-?op|wip|checkpoint|trigger|ci)\b/i
+const MARKER_PHRASES = /\bno\s+(?:code|change|diff)\b|\bnothing\s+to\s+(?:commit|write)\b/i
+const namesMarker = (text) => MARKER_SINGLE.test(text) || MARKER_PHRASES.test(text)
+
+// Every -m/--message argument, double- or single-quoted, with `-m "x"`, `-m="x"` or `--message=x`.
+const ANY_MESSAGE_ARG = /(?:-m|--message)[= ]\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/g
+
+const CLASS_BACKTICK = 'unescaped-backtick'
+const CLASS_EMPTY = 'empty-commit-claims-delivery'
+
+const BACKTICK_NOTICE =
+  '⚠ [workflow-toolbox git-commit backtick guard] A double-quoted git -m/--message ' +
+  'argument contains an unescaped backtick — inside double quotes that IS command ' +
+  'substitution: the shell will run whatever follows it and splice its output (often ' +
+  'nothing) into the message, with no error. Measured: a word silently vanished from a ' +
+  "real commit message this way. Safe forms: a heredoc (`git commit -F - <<'MSG' ... " +
+  'MSG`), single quotes, or an escaped backtick (`\\``).'
+
+const EMPTY_NOTICE =
+  '⚠ [workflow-toolbox git-commit backtick guard] This commit is EMPTY (--allow-empty) and ' +
+  'its message does not say so. An empty commit is fine as a marker, and a defect when its ' +
+  'subject announces work it did not do: whatever cites it then carries a false "done", and ' +
+  'the next session briefs work from it. Say what the marker IS ("marker: no code written, ' +
+  'reason X"), or make the commit carry the change. Warning only; proceed if the subject is honest.'
+
+// Warn text for an empty commit whose readable messages name no marker, else null. No readable
+// message (a -F file, a heredoc) means the subject cannot be judged: fail open, silently.
+function emptyCommitNotice(scanned) {
+  if (!/--allow-empty(?!-message)\b/.test(scanned)) return null
+  const messages = [...scanned.matchAll(ANY_MESSAGE_ARG)].map((m) => m[1] ?? m[2] ?? '')
+  if (!messages.length || messages.some(namesMarker)) return null
+  return EMPTY_NOTICE
+}
+
+function backtickNotice(scanned) {
+  for (const m of scanned.matchAll(DQUOTE_MESSAGE_ARG)) {
+    if (hasUnescapedBacktick(m[1])) return BACKTICK_NOTICE
+  }
+  return null
+}
+
+function journalWarning(input, klass, evidence) {
+  // No `reason`: the flagged fragment is the commit message text itself, and raw command
+  // text never reaches the journal on a machine that exports credentials into shells.
+  recordGuardEvent({
+    guard: 'wt-git-commit-backtick-guard-hook.mjs',
+    decision: 'warned',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: klass,
+    evidence,
+  })
+}
+
 function main() {
   const input = readInput()
   if (input.hook_event_name !== 'PreToolUse') return
@@ -79,38 +143,24 @@ function main() {
   if (!/\bgit\s+(commit|tag|notes)\b/.test(cmd)) return // scope: git operations that store prose
 
   const scanned = stripHeredocBodies(cmd)
-
-  let flagged = null
-  for (const m of scanned.matchAll(DQUOTE_MESSAGE_ARG)) {
-    if (hasUnescapedBacktick(m[1])) {
-      flagged = m[1]
-      break
-    }
+  // Both hazards are checked and both are reported, in ONE notice: an empty commit with an
+  // unescaped backtick must not lose the second warning.
+  const notices = []
+  const empty = emptyCommitNotice(scanned)
+  if (empty) {
+    journalWarning(input, CLASS_EMPTY, { flag: '--allow-empty' })
+    notices.push(empty)
   }
-  if (!flagged) return
+  const backtick = backtickNotice(scanned)
+  if (backtick) {
+    journalWarning(input, CLASS_BACKTICK, { flag: '-m' })
+    notices.push(backtick)
+  }
+  if (!notices.length) return
 
   const payload = {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      additionalContext:
-        '⚠ [workflow-toolbox git-commit backtick guard] A double-quoted git -m/--message ' +
-        'argument contains an unescaped backtick — inside double quotes that IS command ' +
-        'substitution: the shell will run whatever follows it and splice its output (often ' +
-        'nothing) into the message, with no error. Measured: a word silently vanished from a ' +
-        "real commit message this way. Safe forms: a heredoc (`git commit -F - <<'MSG' ... " +
-        'MSG`), single quotes, or an escaped backtick (`\\``).',
-    },
+    hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notices.join('\n\n') },
   }
-  recordGuardEvent({
-    guard: 'wt-git-commit-backtick-guard-hook.mjs',
-    decision: 'warned',
-    session: input.session_id,
-    agent: input.agent_id,
-    class: 'unescaped-backtick',
-    // No `reason`: the flagged fragment is the commit message text itself, and raw command
-    // text never reaches the journal on a machine that exports credentials into shells.
-    evidence: { flag: '-m' },
-  })
   emitGuardNotice({ payload: input, stdoutJson: payload })
 }
 

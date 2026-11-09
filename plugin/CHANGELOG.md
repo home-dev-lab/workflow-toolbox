@@ -26,6 +26,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Four Bash guards now catch cases they used to miss. The find -newermt guard checks a `find` inside `$(...)` or inside a `sh -c`/`bash -c`/`zsh -c` script, and warns on a fractional `@epoch`. The git-commit backtick guard warns on an `--allow-empty` commit whose message does not say it is a marker. The missing-package-script guard now shows its finding to the model as context; it was journal-only, and it never approves a call. The live-config-tree guard ignores an empty `-C` target, no longer slows down on long runs of spaces, and points to the Edit/Write tools when the git text is data.
 - The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
   ran in super-linear time (a 50 000-character line took over a second each) and now run
   in linear time, redacting exactly what they redacted before.
