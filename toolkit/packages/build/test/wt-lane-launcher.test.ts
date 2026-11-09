@@ -2227,6 +2227,11 @@ describe('wt-lane pnpm dependency verification spellings', () => {
   })
 })
 
+// A launch case runs the launcher to completion, then waits up to waitFor's 15 s bound for the lane's EXIT line.
+// On Windows the launcher also reads process identity through PowerShell, each read bounded at 10 s, so the 20 s
+// default sat below the case's own bounds: 8 to 11 s per case was typical on a hosted Windows runner, 23.6 s was seen.
+const LAUNCH_THEN_EXIT_TEST_TIMEOUT_MS = 60_000
+
 describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
   it.each([undefined, 'true', 'false', ''])('passes pnpm dependency verification through every child env filter (%j)', (value) => {
     const f = fixture('pnpm-verify-deps-env')
@@ -2236,7 +2241,7 @@ describe('wt-lane --lock-priority reaches the processes the launcher starts', ()
     expect(res.status, diagnostic).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'pnpm-verify-deps-env'), 'utf8'), diagnostic).toBe(value ?? 'false')
-  })
+  }, LAUNCH_THEN_EXIT_TEST_TIMEOUT_MS)
 
   it.each([[['--lock-priority', 'p0'], 'P2', 'P0'], [['--lock-priority', 'p1'], 'P0', 'P1'], [['--lock-priority', 'p2'], 'P0', 'P2'], [[], undefined, 'P2'], [[], 'P0', 'P0'], [[], 'P1', 'P1'], [[], 'P2', 'P2']] as const)('the opencode child env carries the effective level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
     const f = fixture('lock-priority-env')
@@ -2245,7 +2250,7 @@ describe('wt-lane --lock-priority reaches the processes the launcher starts', ()
     const res = run(f, ['--timeout', '1', ...extra]); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'lock-priority-env'), 'utf8')).toBe(expected)
-  })
+  }, LAUNCH_THEN_EXIT_TEST_TIMEOUT_MS)
   it.skipIf(process.platform !== 'linux')('a launched worker runs with the declared level, else P2 [reads /proc/<pid>/environ]', () => {
     for (const [extra, expected] of [[['--lock-priority', 'p0'], 'WT_SUITE_LOCK_PRIORITY=P0'], [[], 'WT_SUITE_LOCK_PRIORITY=P2']] as const) {
       const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')

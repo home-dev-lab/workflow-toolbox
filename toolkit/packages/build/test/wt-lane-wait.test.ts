@@ -39,20 +39,49 @@ function fixture(script: string, { inspectionDelayMs = 0 } = {}) {
   const supervision = join(host, 'supervision')
   mkdirSync(supervision)
   const gatedScript = `while (!require('node:fs').existsSync('.lane/start')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); const fsForReceipt=require('node:fs'); const originalAppend=fsForReceipt.appendFileSync; fsForReceipt.appendFileSync=(file,...args)=>{ originalAppend(file,...args); const match=/EXIT=(-?\\d+)/.exec(String(args[0])); if(file==='.lane/run.log' && match && !${script.includes('30_000')}) { const record=${JSON.stringify(join(supervision, `${runId}.json`))}; const state=JSON.parse(fsForReceipt.readFileSync(record)); fsForReceipt.writeFileSync(record,JSON.stringify({...state,state:'exited',exit:Number(match[1])})) } }; ${script.replaceAll('.lane/supervision', supervision.replaceAll('\\', '/'))}`
+  const spawnedAt = Date.now()
   const worker = spawn(process.execPath, ['-e', gatedScript], { cwd: root, detached: true, stdio: ['ignore', 'ignore', fixtureStderrFd] })
   closeSync(fixtureStderrFd)
   workers.push(worker)
   worker.unref()
   writeFileSync(join(host, 'pid'), String(worker.pid))
   if (inspectionDelayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, inspectionDelayMs)
-  const identity = inspectProcess(worker.pid!) ?? {
-    pid: worker.pid!, argv: [process.execPath, '-e', script], startTime: Date.now(), startTimeApproximate: true,
-  }
+  const identity = fixtureIdentity(worker, spawnedAt)
   writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, workerStartTimeApproximate: identity.startTimeApproximate, childPid: worker.pid, childArgv: identity.argv, childStartTime: identity.startTime, childStartTimeApproximate: identity.startTimeApproximate, worktree: root }))
   writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
   writeFileSync(join(lane, 'start'), '')
   return { root, lane, host, pid: worker.pid!, fixtureStderr }
 }
+
+interface FixtureIdentity { pid: number; argv: string[]; startTime: number; startTimeApproximate?: boolean }
+type Inspect = (pid: number, options?: Record<string, unknown>) => FixtureIdentity | null
+const FIXTURE_CAPTURE_BOUND_MS = 1_000
+
+// The fixture records its child under the launcher's rule (wt-lane.mjs inspectStartedProcess): keep reading
+// until the argv is non-empty, within a bound. spawn() returns once the exec pipe closes, which is before the
+// kernel publishes the new image's arguments, so a single /proc read at that instant can see an empty argv,
+// and a record holding it reads "liveness unknown (identity-unreadable)" for a live lane.
+function fixtureIdentity(worker: { pid?: number | undefined; spawnargs: string[] }, spawnedAt: number, inspect: Inspect = inspectProcess, platform: string = process.platform): FixtureIdentity {
+  // recordedArgv as the launcher passes it: on win32 the argv comes from the record, never from the OS.
+  const options = { platform, recordedArgv: worker.spawnargs }
+  const deadline = Date.now() + FIXTURE_CAPTURE_BOUND_MS
+  let identity = inspect(worker.pid!, options)
+  while (identity && identity.argv.length === 0 && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+    identity = inspect(worker.pid!, options)
+  }
+  return identity ?? { pid: worker.pid!, argv: worker.spawnargs, startTime: spawnedAt, startTimeApproximate: true }
+}
+
+describe('wt-lane-wait fixture identity', () => {
+  it('records the child argv, never an empty argv read while the child is still inside exec', () => {
+    const real = { pid: 4242, argv: [process.execPath, '-e', 'fixture'], startTime: 77, groupId: 4242, cwd: null }
+    const reads: FixtureIdentity[] = [{ ...real, argv: [] }, real]
+    const identity = fixtureIdentity({ pid: 4242, spawnargs: real.argv }, Date.now(), () => reads.shift() ?? real, 'linux')
+    expect(identity.argv).toEqual(real.argv)
+    expect(identity.startTime).toBe(77)
+  })
+})
 
 function run(root: string, ...args: string[]) {
   return spawnSync(process.execPath, [WAITER, '--dir', root, '--poll', '0.02', '--timeout', '30', ...args], {
