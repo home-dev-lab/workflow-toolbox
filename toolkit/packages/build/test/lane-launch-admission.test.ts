@@ -15,6 +15,8 @@ const PLATFORMS = ['linux', 'darwin', 'win32'] as const
 const load = () => import('../../../../plugin/bin/lib/host/lane-launch-admission.mjs')
 // @ts-expect-error runtime .mjs module
 const launcher = () => import('../../../../plugin/bin/wt-lane.mjs')
+// @ts-expect-error runtime .mjs module
+const adapter = () => import('../../../../plugin/bin/lib/host/adapter.mjs')
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'lane-admission-'))
   roots.push(root)
@@ -526,6 +528,193 @@ it('names the live holder once to a long waiter, never suggesting deletion, and 
     expect.stringContaining(`still waiting for admission lock ${lockPath} (owner pid ${process.pid})`),
   ])
   expect(messages.join('\n')).not.toMatch(/remove/i)
+})
+
+it('bounds identity reads for a long waiter behind this process to at most two', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { hostAdapter } = await adapter()
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity')
+  const snapshot = vi.spyOn(hostAdapter, 'readProcessSnapshot')
+  let holder
+  let now = 0
+  try {
+    holder = await acquireLaneAdmissionLock(lockPath)
+    await expect(acquireLaneAdmissionLock(lockPath, { clock: () => (now += 10_000), waitMs: 190_000, pollMs: 1, warn: () => {} })).rejects.toThrow('admission lock')
+    expect(identity.mock.calls.length, 'self claims must not read identity on every poll').toBeLessThanOrEqual(2)
+    expect(snapshot.mock.calls.length, 'self claims must not read snapshots on every poll').toBeLessThanOrEqual(2)
+  } finally { releaseLaneLaunchAdmission(holder); vi.restoreAllMocks() }
+})
+
+async function foreignHolder() {
+  const { root, lockPath } = setup()
+  writeFileSync(join(root, 'count.json'), JSON.stringify({ state: 'ok', count: 0, pids: [] }))
+  const holder = contender(root)
+  await holder.entered
+  const owner = JSON.parse(readFileSync(lockPath, 'utf8'))
+  writeFileSync(lockPath, JSON.stringify({ ...owner, startIdentity: 1000 }))
+  return { lockPath, holder }
+}
+
+it.each(PLATFORMS)('bounds foreign identity reads by elapsed time on %s while checking liveness every poll', async (platform) => {
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  releaseLaneLaunchAdmission(await acquireLaneAdmissionLock(join(setup().root, 'warmup.lock')))
+  const { lockPath, holder } = await foreignHolder()
+  const { hostAdapter } = await adapter()
+  const originalPlatform = hostAdapter.platform
+  hostAdapter.platform = platform
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: number) => platform === 'linux' || pid === process.pid
+    ? { status: 'known', startIdentity: 1000 } : { status: 'unknown', reason: 'PROCESS_IDENTITY_UNAVAILABLE' })
+  const snapshot = vi.spyOn(hostAdapter, 'readProcessSnapshot').mockReturnValue({ processes: [{ pid: holder.child.pid, startIdentity: 1000 }] })
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'unknown' })
+  const live = vi.spyOn(hostAdapter, 'readProcessLiveness')
+  let now = -100
+  try {
+    await expect(acquireLaneAdmissionLock(lockPath, { clock: () => (now += 100), waitMs: 2500, pollMs: 1, warn: () => {} })).rejects.toThrow('admission lock')
+    const bound = Math.floor(now / 1000) + 1
+    expect(identity.mock.calls.filter(([pid]) => pid === holder.child.pid).length, 'foreign identity reads must be bounded by elapsed time, not polls').toBeLessThanOrEqual(bound)
+    expect(snapshot.mock.calls.length, 'foreign snapshots must be bounded by elapsed time, not polls').toBeLessThanOrEqual(bound)
+    expect(live.mock.calls.filter(([pid]) => pid === holder.child.pid).length, 'signal zero still runs every poll').toBeGreaterThanOrEqual(25)
+  } finally { hostAdapter.platform = originalPlatform; vi.restoreAllMocks(); holder.child.kill('SIGKILL'); await holder.exited }
+})
+
+it('rechecks a reused foreign PID at the one-second boundary, without polling identity before then', async () => {
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { lockPath, holder } = await foreignHolder()
+  const { hostAdapter } = await adapter()
+  let now = 0
+  const reads: number[] = []
+  const realIdentity = hostAdapter.readProcessIdentity
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: number) => {
+    if (pid !== holder.child.pid) return realIdentity(pid)
+    reads.push(now)
+    return { status: 'known', startIdentity: now === 0 ? 1000 : 2000 }
+  })
+  let claim
+  const pending = acquireLaneAdmissionLock(lockPath, { clock: () => now, pollMs: 1, warn: () => {} })
+  try {
+    now = 999
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(reads, 'a live cached birth must last until its re-check boundary').toEqual([0])
+    expect(JSON.parse(readFileSync(lockPath, 'utf8')).pid).toBe(holder.child.pid)
+    now = 1000
+    await vi.waitFor(() => expect(reads, 'PID reuse and guarded confirmation each need fresh evidence at the boundary').toEqual([0, 1000, 1000]))
+    claim = await pending
+    expect(claim.owner.pid).toBe(process.pid)
+  } finally {
+    now = 1000
+    if (!claim) releaseLaneLaunchAdmission({ file: lockPath, owner: JSON.parse(readFileSync(lockPath, 'utf8')) })
+    claim ??= await pending
+    releaseLaneLaunchAdmission(claim); vi.restoreAllMocks(); holder.child.kill('SIGKILL'); await holder.exited
+  }
+})
+
+it('detects a gone foreign holder on the next poll even with a cached birth', async () => {
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { lockPath, holder } = await foreignHolder()
+  const { hostAdapter } = await adapter()
+  let gone = false
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockReturnValue({ status: 'known', startIdentity: 1000 })
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'unknown' })
+  const live = vi.spyOn(hostAdapter, 'readProcessLiveness').mockImplementation((pid: number) => ({ status: pid === holder.child.pid && gone ? 'gone' : 'alive' }))
+  let claim
+  const pending = acquireLaneAdmissionLock(lockPath, { clock: () => 0, pollMs: 1 })
+  try {
+    await vi.waitFor(() => expect(live.mock.calls.filter(([pid]) => pid === holder.child.pid).length).toBeGreaterThanOrEqual(3))
+    const liveChecks = live.mock.calls.filter(([pid]) => pid === holder.child.pid).length
+    expect(identity.mock.calls.filter(([pid]) => pid === holder.child.pid), 'live polls before death must reuse the matching cached identity').toHaveLength(1)
+    gone = true
+    claim = await pending
+    expect(live.mock.calls.filter(([pid]) => pid === holder.child.pid)).toHaveLength(liveChecks + 2)
+    expect(claim.owner.pid).toBe(process.pid)
+  } finally {
+    gone = true
+    claim ??= await pending
+    releaseLaneLaunchAdmission(claim); vi.restoreAllMocks(); holder.child.kill('SIGKILL'); await holder.exited
+  }
+})
+
+it.each(['holder', 'queued claim', 'reclaim guard'])('preserves a live replacement %s inside the identity cache interval', async (kind) => {
+  const { root, lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { hostAdapter } = await adapter()
+  const pid = 2147483600
+  const old = { pid, startIdentity: 'birth-A', token: 'old', ticket: 1 }
+  const replacement = { ...old, startIdentity: 'birth-B', token: 'replacement' }
+  const seed = `${lockPath}.seed.claim`
+  writeFileSync(seed, JSON.stringify(old))
+  let nativeBirth = 'birth-A'
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: number) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'alive' })
+  const path = kind === 'holder' ? lockPath : kind === 'queued claim' ? `${lockPath}.replacement.claim` : join(`${lockPath}.reclaim`, replacement.token)
+  let ticks = 0
+  let waitingTicket
+  let admitted
+  try {
+    const result = await acquireLaneAdmissionLock(lockPath, { waitMs: 100, pollMs: 1, clock: () => {
+      if (ticks++ === 0) return 0
+      if (existsSync(seed)) {
+        rmSync(seed); nativeBirth = 'birth-B'
+        if (kind === 'reclaim guard') mkdirSync(`${lockPath}.reclaim`)
+        writeFileSync(path, JSON.stringify(replacement))
+      }
+      const waiting = readdirSync(root).find((name) => name.endsWith('.claim') && !name.endsWith('.replacement.claim'))
+      if (waiting) waitingTicket = JSON.parse(readFileSync(join(root, waiting), 'utf8')).ticket
+      return 100
+    } }).catch((error: Error) => error)
+    if (!(result instanceof Error)) admitted = result
+    expect(existsSync(path), 'a live replacement owner file must never be removed by cached mismatch').toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(replacement)
+    expect(result, 'a live replacement must retain admission priority').toBeInstanceOf(Error)
+    expect(waitingTicket, 'the waiting acquisition must remain behind replacement ticket one').toBe(2)
+  } finally { releaseLaneLaunchAdmission(admitted); vi.restoreAllMocks() }
+})
+
+it('freshly verifies a replacement holder again under the reclaim guard', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock } = await load()
+  const { hostAdapter } = await adapter()
+  const pid = 2147483600
+  const replacement = { pid, startIdentity: 'birth-C', token: 'replacement' }
+  writeFileSync(lockPath, JSON.stringify({ ...replacement, startIdentity: 'birth-A', token: 'old' }))
+  let nativeBirth = 'birth-B'
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: number) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'alive' })
+  const rename = fs.renameSync
+  vi.spyOn(fs, 'renameSync').mockImplementation((...args: Parameters<typeof fs.renameSync>) => {
+    rename(...args)
+    if (String(args[1]) === `${lockPath}.reclaim`) {
+      nativeBirth = 'birth-C'
+      writeFileSync(lockPath, JSON.stringify(replacement))
+    }
+  })
+  syncBuiltinESMExports()
+  try {
+    await expect(acquireLaneAdmissionLock(lockPath, { waitMs: 0 })).rejects.toThrow('admission lock')
+    expect(existsSync(lockPath), 'guarded recheck must not delete a live replacement holder').toBe(true)
+    expect(JSON.parse(readFileSync(lockPath, 'utf8'))).toEqual(replacement)
+  } finally { vi.restoreAllMocks(); syncBuiltinESMExports() }
+})
+
+it('retries an unavailable own identity on a later acquisition', async () => {
+  vi.resetModules()
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { hostAdapter } = await adapter()
+  const platform = hostAdapter.platform
+  hostAdapter.platform = 'linux'
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockReturnValue({ status: 'unknown', reason: 'PROCESS_IDENTITY_UNAVAILABLE' })
+  let claim
+  try {
+    claim = await acquireLaneAdmissionLock(lockPath)
+    expect(claim.owner.startIdentity).toMatch(/^self:/)
+    expect(identity).toHaveBeenCalledTimes(1)
+    releaseLaneLaunchAdmission(claim)
+    identity.mockReturnValue({ status: 'known', startIdentity: 'recovered-native-birth' })
+    claim = await acquireLaneAdmissionLock(lockPath)
+    expect(claim.owner.startIdentity, 'a later acquisition must record the recovered native birth').toBe('recovered-native-birth')
+    expect(identity).toHaveBeenCalledTimes(2)
+  } finally { releaseLaneLaunchAdmission(claim); hostAdapter.platform = platform; vi.restoreAllMocks() }
 })
 
 it('waits through a burst without the arbitrary default two-minute refusal', async () => {
