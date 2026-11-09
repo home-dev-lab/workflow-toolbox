@@ -26,6 +26,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
+  ran in super-linear time (a 50 000-character line took over a second each) and now run
+  in linear time, redacting exactly what they redacted before.
 - The critic and delegate return contract now reads the same in every place that states it: the pilot template chooses the final-report channel by `Write` (never by `SendMessage`), the delegation-chain skill restricts its foreground exception to an anonymous call and gives the file-report completion line as `REPORT WRITTEN: <verdict>` like the templates, and the content test now fails on an inverted contract, a deleted persistence clause, a removed SendMessage fallback, or a launch-agents copy that drifts from its template.
 - Routed findings reconcile ambiguous card-creation answers by exact title and a unique per-call provenance section, never adopt quoted copies or one of several matches, retain recovered card identities, and report post-creation recording failures without claiming creation was refused.
 - The pilot and pilot-orchestrator templates, and the delegation-chain skill, no longer tell a read-only critic or verifier (a type with no Write tool) to write a report file, which the spawn-capability guard refuses. Such a type is now spawned anonymously in the foreground and its final message is the report, which the spawner saves; the file-report contract stays for named spawns and types that have Write.

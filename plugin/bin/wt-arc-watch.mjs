@@ -115,10 +115,22 @@ function safeName(name) {
 
 // Paths and error text are echoed back to the user, so scrub anything that
 // looks like a credential and flatten newlines (one event must stay one line).
+// Both patterns are written so no input can make them backtrack super-linearly
+// (a 50 000-character line used to take seconds):
+// - a run of [A-Za-z0-9_.-] is redacted when, after its leading [_.-], at least
+//   16 characters remain and they hold a digit and a letter;
+// - a keyword is redacted with what follows it: the next non-blank run, or a bare
+//   `:`/`=` when only blanks follow it. A keyword followed only by blanks is kept.
 function redact(text) {
   return String(text)
-    .replace(/[A-Za-z0-9_.-]*[A-Za-z0-9][A-Za-z0-9_.-]{15,}/g, (m) => (/\d/.test(m) && /[A-Za-z]/.test(m) ? '<redacted>' : m))
-    .replace(/(bearer|token|authorization|api[-_ ]?key|secret)\s*[:=]?\s*\S+/gi, '$1 <redacted>')
+    .replace(/[A-Za-z0-9_.-]{16,}/g, (run) => {
+      const core = run.replace(/^[_.-]+/, '')
+      return core.length >= 16 && /\d/.test(core) && /[A-Za-z]/.test(core) ? '<redacted>' : run
+    })
+    .replace(/(bearer|token|authorization|api[-_ ]?key|secret)\s*(?:([:=])(\s*))?(\S*)/gi, (match, key, sep, blanks, value) => {
+      if (value) return `${key} <redacted>`
+      return sep ? `${key} <redacted>${blanks}` : match
+    })
     .replace(/[\r\n]+/g, ' ')
 }
 
