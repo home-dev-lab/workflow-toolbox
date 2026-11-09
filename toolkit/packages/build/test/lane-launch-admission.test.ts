@@ -563,7 +563,7 @@ it.each(PLATFORMS)('bounds foreign identity reads by elapsed time on %s while ch
   const { hostAdapter } = await adapter()
   const originalPlatform = hostAdapter.platform
   hostAdapter.platform = platform
-  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: number) => platform === 'linux' || pid === process.pid
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: unknown) => platform === 'linux' || pid === process.pid
     ? { status: 'known', startIdentity: 1000 } : { status: 'unknown', reason: 'PROCESS_IDENTITY_UNAVAILABLE' })
   const snapshot = vi.spyOn(hostAdapter, 'readProcessSnapshot').mockReturnValue({ processes: [{ pid: holder.child.pid, startIdentity: 1000 }] })
   vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'unknown' })
@@ -585,16 +585,17 @@ it('rechecks a reused foreign PID at the one-second boundary, without polling id
   let now = 0
   const reads: number[] = []
   const realIdentity = hostAdapter.readProcessIdentity
-  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: number) => {
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: unknown) => {
     if (pid !== holder.child.pid) return realIdentity(pid)
     reads.push(now)
     return { status: 'known', startIdentity: now === 0 ? 1000 : 2000 }
   })
+  const execution = vi.spyOn(hostAdapter, 'readProcessExecutionState')
   let claim
   const pending = acquireLaneAdmissionLock(lockPath, { clock: () => now, pollMs: 1, warn: () => {} })
   try {
     now = 999
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await vi.waitFor(() => expect(execution.mock.calls.filter(([pid]) => pid === holder.child.pid).length).toBeGreaterThanOrEqual(3))
     expect(reads, 'a live cached birth must last until its re-check boundary').toEqual([0])
     expect(JSON.parse(readFileSync(lockPath, 'utf8')).pid).toBe(holder.child.pid)
     now = 1000
@@ -616,7 +617,7 @@ it('detects a gone foreign holder on the next poll even with a cached birth', as
   let gone = false
   const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockReturnValue({ status: 'known', startIdentity: 1000 })
   vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'unknown' })
-  const live = vi.spyOn(hostAdapter, 'readProcessLiveness').mockImplementation((pid: number) => ({ status: pid === holder.child.pid && gone ? 'gone' : 'alive' }))
+  const live = vi.spyOn(hostAdapter, 'readProcessLiveness').mockImplementation((pid: unknown) => ({ status: pid === holder.child.pid && gone ? 'gone' : 'alive' }))
   let claim
   const pending = acquireLaneAdmissionLock(lockPath, { clock: () => 0, pollMs: 1 })
   try {
@@ -644,7 +645,7 @@ it.each(['holder', 'queued claim', 'reclaim guard'])('preserves a live replaceme
   const seed = `${lockPath}.seed.claim`
   writeFileSync(seed, JSON.stringify(old))
   let nativeBirth = 'birth-A'
-  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: number) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: unknown) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
   vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'alive' })
   const path = kind === 'holder' ? lockPath : kind === 'queued claim' ? `${lockPath}.replacement.claim` : join(`${lockPath}.reclaim`, replacement.token)
   let ticks = 0
@@ -678,7 +679,7 @@ it('freshly verifies a replacement holder again under the reclaim guard', async 
   const replacement = { pid, startIdentity: 'birth-C', token: 'replacement' }
   writeFileSync(lockPath, JSON.stringify({ ...replacement, startIdentity: 'birth-A', token: 'old' }))
   let nativeBirth = 'birth-B'
-  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: number) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: unknown) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
   vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'alive' })
   const rename = fs.renameSync
   vi.spyOn(fs, 'renameSync').mockImplementation((...args: Parameters<typeof fs.renameSync>) => {
