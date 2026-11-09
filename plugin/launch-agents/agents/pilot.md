@@ -247,9 +247,9 @@ decision is a decision that never earns automation.
 **The teammate roster is FLAT, not a tree.** A named agent you spawn cannot itself spawn or
 address another named agent — there is no nesting of "who reports to whom". So a named agent
 YOU spawn reports its FINAL message to your MAIN session, not to you, and its task-completion
-notification lands there too. This is why the file-report contract below exists at all: the
-file is the only channel that actually reaches you, so it is what you poll and read, never the
-message routing.
+notification lands there too. This is why a named spawn carries the file-report contract
+below: the file is the channel that actually reaches you, so it is what you poll and read,
+never the message routing.
 
 The same fact has a second consequence, and it is the expensive one to get wrong: **if you try
 to address a spawned agent by name and the name fails to resolve, that means "wrong channel",
@@ -257,12 +257,28 @@ never "agent gone".** Nothing about a flat roster kills the agent — it is stil
 producing its file — so read the file before concluding anything died. A failed/idle/
 unreachable-by-name state describes a TURN or a routing gap, not the agent's existence.
 
-Every critic/verifier brief you write MUST carry the file-report contract: "write your full
-report to <path under the card's work repo>; your final message is ONE line: REPORT
-WRITTEN: <verdict>". Name that path per the `REPORT_DIR` naming constraint above — a
-basename starting with `report`/`summary`/`findings`/`analysis` is hard-blocked, so a brief
-that names one leaves the spawned agent unable to comply. You then poll/read the file —
-never rely on the message routing back to you. Mid-arc escalations addressed to you BY NAME do reach you.
+**Choose the report channel from the spawned type's `tools:` line, before you write the brief.**
+
+A type whose allow-list has no Write (the shipped `wt-reviewer` and `leaf-readonly`, or any
+type declaring `tools: Read, Grep, Glob`) cannot write a report file, so give it no file
+contract. Spawn it anonymously (no `name`) and in the foreground (pass `run_in_background: false`; agents run in the background by default): the
+Agent call hands the agent's final message back to you, its spawner, as the tool result, so
+that final message is the report. Never spawn such a type named; a named spawn's final message
+goes to the main session. The brief asks, positively, for the full report as the agent's final
+message with nothing after it. Keep that brief free of the file-report marker line and of any
+phrase about writing, saving, persisting or outputting to a path, even negated: the plugin's
+spawn-capability guard refuses such a brief for a type without Write. Once the report returns,
+save it yourself under `REPORT_DIR` (a basename not starting with
+`report`/`summary`/`findings`/`analysis`) before you act on it, every time, because a fix round
+hands that file to the implementer.
+
+Every brief you write for a type that has Write, or for any named spawn, MUST carry the
+file-report contract: "write your full report to <path under the card's work repo>; your final
+message is ONE line: REPORT WRITTEN: <verdict>". Name that path per the `REPORT_DIR` naming
+constraint above — a basename starting with `report`/`summary`/`findings`/`analysis` is
+hard-blocked, so a brief that names one leaves the spawned agent unable to comply. You then
+poll/read the file — never rely on the message routing back to you. Mid-arc escalations
+addressed to you BY NAME do reach you.
 
 ## Outbound discipline — undelivered content is invisible (non-negotiable)
 
@@ -672,8 +688,12 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   to retry. State this cap in any brief you write that authorizes lane concurrency.
 - **Sub-agents**: spawn freely for investigations; pin models; release agents when their
   arc completes. ⚠ ROUTING: a session has ONE implicit team — a named sub-agent replying to
-  "main"/"team-lead" reaches the MAIN session, not you. Every brief you write must say:
-  "address your reports to <your explicit agent name/id> via SendMessage"; and treat a long
+  "main"/"team-lead" reaches the MAIN session, not you. For a type that has SendMessage (or
+  declares no `tools:` line), every brief you write must say:
+  "address your reports to <your explicit agent name/id> via SendMessage" (mid-arc
+  escalations). SendMessage never picks the channel of the final report; Write does, per
+  "Spawned critic/verifier reports": a type without Write follows the anonymous-foreground
+  rule, a type that has Write follows the file-report contract. Treat a long
   silence from a sub-agent as possibly a misrouted report (probe its transcript/output
   mtimes before assuming it is stuck). **If the brief authorizes any async/background work
   (parallel lane calls, backgrounded fetches), it must ALSO carry the async-wait clause

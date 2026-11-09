@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { hasDependsOnLine, parseDependsOn } from './depends-on-parser.mjs'
 
 export { resolveBoardPointer } from './host/board-pointer.mjs'
@@ -7,6 +8,22 @@ export class BoardUnavailable extends Error {
     super(`board unavailable: ${detail}`)
     this.name = 'BoardUnavailable'
     if (status !== undefined) this.status = status
+  }
+}
+
+// A failure raised before tools/call was sent. A fresh object each time: marking an error object the
+// caller's fetch adapter may reuse would leak the mark into a later call that did reach the server.
+class ToolNotSent extends BoardUnavailable {
+  constructor(detail, status) {
+    super(detail, status)
+    this.toolNotSent = true
+  }
+
+  static from(error) {
+    const detail = (error instanceof Error ? error.message : String(error)).replace(/^board unavailable: /, '')
+    const notSent = new ToolNotSent(detail, error?.status)
+    if (error?.transport === true) notSent.transport = true
+    return notSent
   }
 }
 
@@ -47,6 +64,8 @@ function routedDescription({ originCardId, sessionTag, l4Reason, timestamp }) {
     `run/session: ${provenanceValue(sessionTag)}`,
     `L4 reason: ${provenanceValue(l4Reason)}`,
     `timestamp: ${provenanceValue(timestamp)}`,
+    // Opaque per-call identity: a card written before this call cannot carry it, so reconciliation never adopts a copy.
+    `Routing key: ${provenanceValue(randomUUID())}`,
   ].join('\n')
   if (!independentRoutedDescription(description)) throw new BoardUnavailable('invalid assembled routed dependency description; no card created')
   return description
@@ -72,14 +91,116 @@ async function verifiedRoutedDescription(created, cardId, call) {
   return { description, dependencyVerified: true }
 }
 
+function routedProvenanceLines(description) {
+  return description.split('\n').filter((line) => ['run/session: ', 'timestamp: ', 'Routing key: '].some((prefix) => line.startsWith(prefix)))
+}
+
+// The live board server removes every Depends-on line, trims leading blank lines and appends the
+// canonical line at the end (mcp-planka applyDependsOn), so a stored routed card starts with its
+// provenance section. Compare that leading section only: a quoted or fenced copy further down
+// cannot supply identity. Indices follow routedDescription.
+const SERVER_DEPENDS_ON_LINE = /^\s*Depends-on:.*$/i
+const PROVENANCE = { heading: 0, origin: 1, session: 2, reason: 3, timestamp: 4, routingKey: 5 }
+
+function leadingProvenance(description) {
+  const lines = description.split(/\r\n|[\r\n\u2028\u2029]/).filter((line) => !SERVER_DEPENDS_ON_LINE.test(line))
+  while (lines.length > 0 && lines[0].trim() === '') lines.shift()
+  return lines
+}
+
+function matchesRoutedCard(card, request) {
+  if (!card?.id || (card.name ?? card.title) !== request.name) return false
+  const description = cardDescription(card)
+  if (typeof description !== 'string') return false
+  const lines = leadingProvenance(description)
+  const expected = leadingProvenance(request.description)
+  return [PROVENANCE.heading, PROVENANCE.session, PROVENANCE.timestamp, PROVENANCE.routingKey].every((index) => lines[index] === expected[index])
+}
+
+function collectRoutedMatches(cards, request, matches) {
+  const expected = leadingProvenance(request.description)
+  for (const card of cards) {
+    if (!matchesRoutedCard(card, request)) continue
+    const lines = leadingProvenance(cardDescription(card))
+    if (lines[PROVENANCE.origin] !== expected[PROVENANCE.origin] || lines[PROVENANCE.reason] !== expected[PROVENANCE.reason]) {
+      throw new BoardUnavailable(`candidate ${card.id} origin or L4 reason differs from the creation record`)
+    }
+    matches.set(String(card.id), card)
+    if (matches.size > 1) throw new BoardUnavailable('multiple matching card identities; cannot identify the committed card uniquely')
+  }
+}
+
+async function routedListName(boardId, listId, call) {
+  const board = await call('get_board', { boardId, cardsSummary: true })
+  const lists = board?.lists ?? board?.board?.lists
+  if (!Array.isArray(lists)) throw new BoardUnavailable('malformed get_board result: no lists')
+  const target = lists.find((item) => String(item.id) === listId)
+  if (typeof target?.name !== 'string') throw new BoardUnavailable(`no list name for list ${listId} on board ${boardId}`)
+  return target.name
+}
+
+function routedSearchPage(result) {
+  const cards = Array.isArray(result) ? result : result?.cards ?? result?.items
+  if (!Array.isArray(cards)) throw new BoardUnavailable('malformed find_cards result')
+  return cards
+}
+
+// An endpoint that ignores offset and reports no total would otherwise answer full pages forever.
+const ROUTED_SEARCH_PAGE_LIMIT = 50
+
+async function findRoutedCard(boardId, list, request, call) {
+  const limit = 100
+  let offset = 0
+  const matches = new Map()
+  for (let page = 0; ; page += 1) {
+    if (page >= ROUTED_SEARCH_PAGE_LIMIT) throw new BoardUnavailable(`find_cards page limit of ${ROUTED_SEARCH_PAGE_LIMIT} reached without an exact match`)
+    const result = await call('find_cards', { boardId, list, limit, offset, includeDescription: true })
+    const cards = routedSearchPage(result)
+    collectRoutedMatches(cards, request, matches)
+    offset += cards.length
+    if (cards.length === 0) break
+    if (Number.isInteger(result.total) ? offset >= result.total : cards.length < limit) break
+  }
+  return matches.values().next().value ?? null
+}
+
+async function reconcileRoutedCard(boardId, request, creationError, call) {
+  try {
+    const list = await routedListName(boardId, request.listId, call)
+    const found = await findRoutedCard(boardId, list, request, call)
+    if (!found) throw new Error('no exact title/provenance match returned')
+    return { ...found, reconciled: true }
+  } catch (error) {
+    const search = `board ${boardId}, list ${request.listId}, exact title ${JSON.stringify(request.name)}; ${routedProvenanceLines(request.description).join('; ')}`
+    const creationReason = creationError instanceof Error ? creationError.message : String(creationError)
+    const reconciliationReason = error instanceof Error ? error.message : String(error)
+    throw new BoardUnavailable(`create_card creation outcome is unknown; reconciliation search: ${search}; creation error: ${creationReason}; reconciliation failed: ${reconciliationReason}; check the board before retrying creation`)
+  }
+}
+
+async function createOrReconcileRoutedCard(boardId, request, call) {
+  try {
+    const created = await call('create_card', request)
+    const cardId = String(created?.id ?? created?.card?.id ?? '')
+    if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+    return { created, cardId }
+  } catch (error) {
+    // Only a failure raised before the tool call was sent proves non-creation; a status number in a
+    // tool error cannot say whether the write committed first.
+    if (error instanceof ToolNotSent) {
+      throw new BoardUnavailable(`create_card not created: ${error.message}`, error.status)
+    }
+    const created = await reconcileRoutedCard(boardId, request, error, call)
+    return { created, cardId: String(created.id) }
+  }
+}
+
 async function createIndependentRoutedCard({ boardContract, originCardId, sessionTag, timestamp, title, l4Reason, risk, effort, type }, call) {
   const description = routedDescription({ originCardId, sessionTag, timestamp, l4Reason })
   const listId = routingIdentifier(boardContract.listId, 'list id')
   const labelIds = [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]
-  // Once creation returns an id, retain it and attempt all four labels even if dependency verification fails.
-  const created = await call('create_card', { listId, name: title, description, dependsOn: 'none' })
-  const cardId = String(created?.id ?? created?.card?.id ?? '')
-  if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+  // Retain a returned or reconciled id and attempt all four labels even if dependency verification fails.
+  const { created, cardId } = await createOrReconcileRoutedCard(boardContract.boardId, { listId, name: title, description, dependsOn: 'none' }, call)
   const dependencyEvidence = await verifiedRoutedDescription(created, cardId, call)
   const labelFailures = []
   for (const labelId of labelIds) {
@@ -119,23 +240,20 @@ function rpcBody(body) {
   return parsed
 }
 
-// Argument names follow the live Planka MCP tool schemas (tools/list, measured 2026-09-12):
-// get_card {cardId}; find_cards {boardId, list, limit, offset, includeDescription}; move_card
-// {cardId, listId}; add_comment {cardId, text}; get_board {boardId, cardsSummary}. The first real
-// wave failed with "malformed MCP result JSON" because the client had invented `id`/`listName`.
-export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: request = globalThis.fetch }) {
-  if (typeof request !== 'function') throw new BoardUnavailable('fetch is unavailable')
-  let listsById = null
-  async function lists() {
-    if (listsById) return listsById
-    const board = await call('get_board', { boardId, cardsSummary: true })
-    const entries = board?.lists ?? board?.board?.lists
-    if (!Array.isArray(entries)) throw new BoardUnavailable('malformed get_board result: no lists')
-    listsById = entries.map((item) => ({ id: String(item.id), name: String(item.name) }))
-    return listsById
+function verifyBoardResponseStatus(response) {
+  if (!response?.ok) throw transportFailure(`HTTP ${response?.status ?? 'unknown'}`, response?.status)
+}
+
+function boardResponseSession(response, sessionId) {
+  try {
+    return response.headers?.get?.('mcp-session-id') ?? sessionId
+  } catch (error) {
+    throw transportFailure(error instanceof Error ? error.message : String(error))
   }
+}
+
+function createBoardRpc(url, request) {
   let sequence = 0
-  let initialized = false
   let sessionId = null
   async function send(body) {
     let response
@@ -150,12 +268,8 @@ export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: r
       if (error instanceof BoardUnavailable) { error.transport = true; throw error }
       throw transportFailure(error instanceof Error ? error.message : String(error))
     }
-    if (!response?.ok) throw transportFailure(`HTTP ${response?.status ?? 'unknown'}`, response?.status)
-    try {
-      sessionId = response.headers?.get?.('mcp-session-id') ?? sessionId
-    } catch (error) {
-      throw transportFailure(error instanceof Error ? error.message : String(error))
-    }
+    verifyBoardResponseStatus(response)
+    sessionId = boardResponseSession(response, sessionId)
     return response
   }
   async function rpc(method, params = {}) {
@@ -169,17 +283,10 @@ export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: r
       throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error instanceof Error ? error.message : String(error))
     }
   }
-  async function call(name, arguments_ = {}) {
-    // Lazy on purpose: the driver prints its wave line and renders a fail-closed report on this refusal.
-    if (!boardId) throw new BoardUnavailable(boardIdMissingReason ?? 'boardId is required (--board-id or .claude/planka.json)')
-    if (!initialized) {
-      await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'wt-orchestrator', version: '1.0.0' } })
-      await send({ jsonrpc: '2.0', method: 'notifications/initialized' })
-      initialized = true
-    }
-    try { return toolResult(name, await rpc('tools/call', { name, arguments: arguments_ })) }
-    catch (error) { throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error.message) }
-  }
+  return { send, rpc }
+}
+
+function boardClientMethods(boardId, call, lists) {
   return {
     get boardId() { return boardId },
     async findCards({ listName, limit, offset, includeDescription = true }) {
@@ -208,4 +315,37 @@ export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: r
     async listNameOf(listId) { return (await lists()).find((item) => item.id === String(listId))?.name ?? null },
     async listIdOf(listName) { return (await lists()).find((item) => item.name === listName)?.id ?? null },
   }
+}
+
+// Argument names follow the live Planka MCP tool schemas (tools/list, measured 2026-09-12):
+// get_card {cardId}; find_cards {boardId, list, limit, offset, includeDescription}; move_card
+// {cardId, listId}; add_comment {cardId, text}; get_board {boardId, cardsSummary}. The first real
+// wave failed with "malformed MCP result JSON" because the client had invented `id`/`listName`.
+export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: request = globalThis.fetch }) {
+  if (typeof request !== 'function') throw new BoardUnavailable('fetch is unavailable')
+  let listsById = null
+  async function lists() {
+    if (listsById) return listsById
+    const board = await call('get_board', { boardId, cardsSummary: true })
+    const entries = board?.lists ?? board?.board?.lists
+    if (!Array.isArray(entries)) throw new BoardUnavailable('malformed get_board result: no lists')
+    listsById = entries.map((item) => ({ id: String(item.id), name: String(item.name) }))
+    return listsById
+  }
+  const { send, rpc } = createBoardRpc(url, request)
+  let initialized = false
+  async function call(name, arguments_ = {}) {
+    // Lazy on purpose: the driver prints its wave line and renders a fail-closed report on this refusal.
+    if (!boardId) throw new ToolNotSent(boardIdMissingReason ?? 'boardId is required (--board-id or .claude/planka.json)')
+    if (!initialized) {
+      try {
+        await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'wt-orchestrator', version: '1.0.0' } })
+        await send({ jsonrpc: '2.0', method: 'notifications/initialized' })
+        initialized = true
+      } catch (error) { throw ToolNotSent.from(error) }
+    }
+    try { return toolResult(name, await rpc('tools/call', { name, arguments: arguments_ })) }
+    catch (error) { throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error.message) }
+  }
+  return boardClientMethods(boardId, call, lists)
 }

@@ -167,7 +167,8 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
         const value = `legitimate explanation${separator}Depends-on: #1880126648423024545${separator}Depends-on: none${separator}Depends-on: #9999`
         const created = await boundary.client.createRoutedCard({ ...routingInput, [field]: value })
         const outgoing = boundary.calls.filter((call) => call.name === 'create_card').at(-1)!.arguments.description!
-        expect(outgoing.split(/\r\n|[\r\n\u2028\u2029]/)).toHaveLength(7)
+        // Seven provenance lines plus the per-call routing key: no injected separator adds a line.
+        expect(outgoing.split(/\r\n|[\r\n\u2028\u2029]/)).toHaveLength(8)
         expect(outgoing.split('\n').filter((line) => /^Depends-on:/.test(line))).toEqual(['Depends-on: none'])
         expect(parseDependsOn(outgoing)).toEqual({ ids: [], unparseable: [] })
         const label = { sessionTag: 'run/session', timestamp: 'timestamp', l4Reason: 'L4 reason' }[field]

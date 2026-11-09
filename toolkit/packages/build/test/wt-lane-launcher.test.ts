@@ -440,10 +440,12 @@ function nonLinuxIdleUnknownCase() {
   expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ idle: { status: 'unknown', reason: expect.stringMatching(/^process CPU time unavailable/) } })
 }
 
-function observeIdleCase() {
+async function observeIdleCase() {
   const f = deadlineFixture('exec sleep 30')
   const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5'])
-  spawnSync('sleep', ['1.8'])
+  waitForContent(log, /^LANE_IDLE_WARN /m, 15_000)
+  await expect.poll(() => JSON.parse(readFileSync(status, 'utf8')).idle?.maxSilentSeconds, { timeout: 15_000 }).toBeGreaterThan(1)
+  // Re-read after multiple idle windows so repeated warnings in this stretch still fail.
   const text = readFileSync(log, 'utf8')
   expect(text.match(/^LANE_IDLE_WARN /gm) ?? []).toHaveLength(1)
   expect(text).not.toMatch(/LANE_IDLE_STOP|^EXIT=/m)
@@ -493,7 +495,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane deadline visibility and i
   it.runIf(process.platform === 'linux')('stops a silent stdin-ignoring child and its process group with enforced idle timeout', idleStopCase, 30_000)
   it.runIf(process.platform === 'linux')('keeps a silent child with a live descendant running beyond three idle timeouts', liveDescendantCase)
   it.skipIf(process.platform === 'linux')('names idle evidence unknown and never stops where no CPU counters exist', nonLinuxIdleUnknownCase)
-  it('warns once per silent stretch in observe mode and measures silence without stopping', observeIdleCase)
+  it('warns once per silent stretch in observe mode and measures silence without stopping', observeIdleCase, 45_000)
   it('keeps an explicit owner extension available after an idle default abandon', idleOwnerExtensionCase)
   it('documents the unattended bound and writes the configured bound at launch', deadlineBoundCase)
   it('records an owner extension receipt through the normal control path', ownerReceiptCase)
