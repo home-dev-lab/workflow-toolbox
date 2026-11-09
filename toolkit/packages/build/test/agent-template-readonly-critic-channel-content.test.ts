@@ -90,6 +90,11 @@ describe.each(TEMPLATES)('%s report channel for a type without Write', (_n, rel,
     expect(para).not.toMatch(/final message (is not|isn't|is never)\b/i)
     expect(para).not.toMatch(/never[^.]{0,20}run_in_background: false/i)
   })
+})
+
+describe.each(TEMPLATES)('%s report channel: persistence and the Write contract', (_n, rel, heading) => {
+  const sectionRaw = extractSection(readRaw(rel), heading)
+  const section = collapseWhitespace(sectionRaw)
 
   it('keeps the persistence clause: the spawner saves the returned report under REPORT_DIR', () => {
     expect(section).toMatch(/save (it|the returned report) yourself under `REPORT_DIR`/i)
