@@ -64,7 +64,6 @@ const TEMPLATES: Array<[string, string, RegExp]> = [
 
 describe.each(TEMPLATES)('%s report channel for a type without Write', (_n, rel, heading) => {
   const sectionRaw = extractSection(readRaw(rel), heading)
-  const section = collapseWhitespace(sectionRaw)
 
   it('states no-Write, anonymous, foreground and final-message-is-the-report within one window', () => {
     const para = noWriteParagraph(sectionRaw)
