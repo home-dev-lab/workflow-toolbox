@@ -690,9 +690,10 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   arc completes. ⚠ ROUTING: a session has ONE implicit team — a named sub-agent replying to
   "main"/"team-lead" reaches the MAIN session, not you. For a type that has SendMessage (or
   declares no `tools:` line), every brief you write must say:
-  "address your reports to <your explicit agent name/id> via SendMessage"; a type without
-  SendMessage follows the anonymous-foreground rule in "Spawned critic/verifier reports"
-  instead. Treat a long
+  "address your reports to <your explicit agent name/id> via SendMessage" (mid-arc
+  escalations). SendMessage never picks the channel of the final report; Write does, per
+  "Spawned critic/verifier reports": a type without Write follows the anonymous-foreground
+  rule, a type that has Write follows the file-report contract. Treat a long
   silence from a sub-agent as possibly a misrouted report (probe its transcript/output
   mtimes before assuming it is stuck). **If the brief authorizes any async/background work
   (parallel lane calls, backgrounded fetches), it must ALSO carry the async-wait clause

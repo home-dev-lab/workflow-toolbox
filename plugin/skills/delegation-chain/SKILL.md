@@ -38,9 +38,9 @@ default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SD
 
 - **A delegate's plain text reaches nobody.** The harness's own tool description says so
   directly: a turn that ends in prose, however complete and correct, has communicated nothing.
-  Only `SendMessage` or a file write leaves the delegate's transcript. The exception is a
-  FOREGROUND `Agent` call (`run_in_background: false`; the default is background): it returns the delegate's final message to its spawner as the tool
-  result.
+  Only `SendMessage` or a file write leaves the delegate's transcript. The exception is an
+  ANONYMOUS (no `name`) FOREGROUND `Agent` call (`run_in_background: false`; the default is background): it returns the delegate's final message to its spawner as the tool
+  result. A NAMED call does not, foreground or not: its final message goes to the session root.
 - **A session holds ONE implicit team.** A named delegate's FINAL message is routed by that
   team, and it resolves to the session ROOT — not to whichever intermediate agent actually
   spawned it — unless the delegate was explicitly told the spawner's name or raw id and
@@ -51,8 +51,8 @@ default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SD
   a multi-hour arc; there is no size threshold under which addressing can be skipped.
 - **The remedy for a named delegate is the file-report contract, and it has two parts that must BOTH hold** (a type without `Write` spawned anonymously in the foreground needs none: its final message is the report):
   1. The delegate writes its full output to a file at a path the brief names.
-  2. Its FINAL message is exactly one line — the file path and a verdict — with **nothing
-     after it**. Not a summary, not "I already delivered my answer above", not a remark about
+  2. Its FINAL message is exactly one line — `REPORT WRITTEN: <verdict>`, the brief having named the
+     file path — with **nothing after it**. Not a summary, not "I already delivered my answer above", not a remark about
      lacking a tool. The harness delivers only the delegate's LAST message; any trailing
      commentary about the channel itself — even one accurate sentence explaining why the
      report is above — replaces the report as the thing that actually arrives.
