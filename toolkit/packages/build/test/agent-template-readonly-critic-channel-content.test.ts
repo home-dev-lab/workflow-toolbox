@@ -46,12 +46,19 @@ function noWriteParagraph(sectionRaw: string): string {
   return found.join(' ')
 }
 
+const PILOT_HEADING = /^## Spawned critic\/verifier reports/
+const ORCH_HEADING = /^## File-report contract/
+
+// Each template and its launch-agents twin: the twin carries the same contract, so a deletion or
+// inversion in one copy only is caught.
 const TEMPLATES: Array<[string, string, RegExp]> = [
-  ['pilot.md', 'plugin/agent-templates/pilot.md', /^## Spawned critic\/verifier reports/],
+  ['pilot.md', 'plugin/agent-templates/pilot.md', PILOT_HEADING],
+  ['pilot-orchestrator.md', 'plugin/agent-templates/pilot-orchestrator.md', ORCH_HEADING],
+  ['launch pilot.md', 'plugin/launch-agents/agents/pilot.md', PILOT_HEADING],
   [
-    'pilot-orchestrator.md',
-    'plugin/agent-templates/pilot-orchestrator.md',
-    /^## File-report contract/,
+    'launch pilot-orchestrator.md',
+    'plugin/launch-agents/agents/pilot-orchestrator.md',
+    ORCH_HEADING,
   ],
 ]
 
@@ -65,7 +72,7 @@ describe.each(TEMPLATES)('%s report channel for a type without Write', (_n, rel,
       /(without|no|lacks?) `?Write`?/i,
       /anonymous/i,
       /foreground/i,
-      /final message[^.]{0,40}\bis\b[^.]{0,20}the (full )?report/i,
+      /final message is the (full )?report/i,
     ]
     const positions = anchors.map((a) => {
       const m = a.exec(para)
@@ -73,6 +80,20 @@ describe.each(TEMPLATES)('%s report channel for a type without Write', (_n, rel,
       return m!.index
     })
     expect(Math.max(...positions) - Math.min(...positions)).toBeLessThan(900)
+  })
+
+  it('does not invert the central contract', () => {
+    const para = noWriteParagraph(sectionRaw)
+    expect(para).toMatch(/spawn it anonymously/i)
+    expect(para).toMatch(/final message is the (full )?report/i)
+    expect(para).not.toMatch(/never spawn[^.]{0,30}anonymously/i)
+    expect(para).not.toMatch(/final message (is not|isn't|is never)\b/i)
+    expect(para).not.toMatch(/never[^.]{0,20}run_in_background: false/i)
+  })
+
+  it('keeps the persistence clause: the spawner saves the returned report under REPORT_DIR', () => {
+    expect(section).toMatch(/save (it|the returned report) yourself under `REPORT_DIR`/i)
+    expect(section).toMatch(/\bbefore you act on it\b/i)
   })
 
   it('has no sentence that makes the file contract unconditional', () => {
@@ -97,7 +118,33 @@ describe.each(TEMPLATES)('%s report channel for a type without Write', (_n, rel,
   })
 })
 
+describe.each([
+  ['pilot.md', 'agent-templates/pilot.md', 'launch-agents/agents/pilot.md'],
+  [
+    'pilot-orchestrator.md',
+    'agent-templates/pilot-orchestrator.md',
+    'launch-agents/agents/pilot-orchestrator.md',
+  ],
+])('%s and its launch-agents twin', (_n, a, b) => {
+  it('are byte-identical', () => {
+    expect(readRaw(`plugin/${b}`)).toBe(readRaw(`plugin/${a}`))
+  })
+})
+
 describe('pilot.md Sub-agents SendMessage clause', () => {
+  const raw = collapseWhitespace(readRaw('plugin/agent-templates/pilot.md'))
+  const start = raw.indexOf('- **Sub-agents**')
+  const bullet = raw.slice(start, raw.indexOf('Treat a long silence', start))
+
+  it('keeps the fallback and chooses the channel by Write, never by SendMessage', () => {
+    expect(start).toBeGreaterThan(0)
+    expect(bullet).toMatch(/SendMessage never picks the channel[^.;]{0,40}; Write does/i)
+    expect(bullet).toMatch(/without `?Write`?[^.]{0,80}anonymous(ly)?[- ]foreground/i)
+    expect(bullet).toMatch(/has `?Write`?[^.]{0,80}file-report contract/i)
+    expect(bullet).not.toMatch(/without `?SendMessage`? follows/i)
+  })
+
+
   it('applies only to types that have SendMessage', () => {
     const raw = collapseWhitespace(readRaw('plugin/agent-templates/pilot.md'))
     const i = raw.indexOf('address your reports to')
@@ -126,5 +173,17 @@ describe('delegation-chain SKILL.md section 2', () => {
   it('names run_in_background: false on the foreground exception', () => {
     const b = bullets.filter((x) => /reaches nobody/i.test(x))
     expect(b[0]).toMatch(/run_in_background: false/)
+  })
+
+  it('restricts the foreground exception to an ANONYMOUS call', () => {
+    const b = bullets.filter((x) => /reaches nobody/i.test(x))
+    expect(b[0]).toMatch(/anonymous/i)
+    expect(b[0]).toMatch(/named[^.]{0,80}(does not|root)/i)
+  })
+
+  it('states the file-report completion line exactly as the templates do', () => {
+    const b = bullets.filter((x) => /remedy[^.]{0,30}is the file-report contract/i.test(x))
+    expect(b[0]).toMatch(/REPORT WRITTEN: <verdict>/)
+    expect(b[0]).not.toMatch(/file path and a verdict/i)
   })
 })
