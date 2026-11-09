@@ -110,7 +110,8 @@ test('project rollback resolves default stores and archives inside its temporary
   const verdicts = join(root, 'verdicts.jsonl');
   await writeFile(verdicts, '');
   const { env, ambientStore } = await qualityEnvironment(root, join(root, 'config'));
-  const fallback = cleanEnv({ HOME: env.HOME, USERPROFILE: env.USERPROFILE });
+  // No CLAUDE_CONFIG_DIR: this run exercises the $HOME/.claude fallback inside the temporary home.
+  const fallback = cleanEnv({ HOME: env.HOME, USERPROFILE: env.USERPROFILE, CLAUDE_CONFIG_DIR: undefined });
   const run = (env) => spawnSync(process.execPath, [rollback, '--project', project, '--dry-run', '--json', '--verdicts', verdicts], { encoding: 'utf8', env });
   const legacyOnly = run(fallback);
   assert.equal(legacyOnly.status, 0, legacyOnly.stderr);
