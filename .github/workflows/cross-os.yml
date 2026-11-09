@@ -32,8 +32,8 @@ jobs:
       fail-fast: false
       # Windows is three PARALLEL jobs (shards 1, 2 and 3): the full Windows suite measured 1217-1724 s in
       # one step over eight runs, which left the 35-minute job with no margin, and two shards stopped being
-      # enough as the suite grew (see the sharding history above the Windows test step). A job without
-      # `shard` has an empty `matrix.shard`, so the shard conditions below treat macOS as unsharded.
+      # enough as the suite grew (see the sharding history above the Windows test step). macOS also uses
+      # three parallel jobs so a timed-out shard cannot hold the suite lock needed by another shard.
       # Ubuntu also uses three parallel jobs. From 1782.44 s unsharded, allowing the full 300 s
       # coverage conversion on EACH shard projects (1782.44 - 300)/3 + 300 = 794.15 s before file-count growth,
       # leaving 47.06% headroom under a 25-minute step (below the old 30-minute limit).
@@ -47,6 +47,11 @@ jobs:
           - os: ubuntu-latest
             shard: 3
           - os: macos-latest
+            shard: 1
+          - os: macos-latest
+            shard: 2
+          - os: macos-latest
+            shard: 3
           - os: windows-latest
             shard: 1
             timeout: 75
@@ -102,8 +107,8 @@ jobs:
         timeout-minutes: 5
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
-      # The macOS probe runs the suite in two halves so that one half's log survives a frozen runner.
-      # Coverage is off here on purpose: thresholds judged on half a suite would be red by construction.
+      # Each macOS job captures its own third of the suite, preserving the other shards' logs if a runner freezes.
+      # macOS coverage is off: partial-suite coverage cannot judge whole-suite thresholds.
       # Coverage thresholds are judged on the Ubuntu union below: Windows shards run coverage WITHOUT thresholds
       # (toolkit/vitest.config.mts leaves them undefined on win32), macOS runs no coverage.
       # `test:shard` does not build, so every job builds here. Measured on Windows: ~17 s.
@@ -149,37 +154,20 @@ jobs:
           pnpm test:shard packages/build/test/host-adapter.contract.test.ts 2>&1 \
             | tee "ci-diagnostics/host-contract-${{ runner.os }}.log"
         timeout-minutes: 8
-      - name: Test (macOS shard 1/2)
+      # Sequential halves measured 770.67-779.89 s for shard 1 and 558.27-742.40 s for shard 2; later
+      # shard 1 hit the 900 s cap and its live lock holder starved shard 2 until that step also timed out.
+      # Separate runners remove that coupling. Vitest's measured 550-file three-way split projects its worst
+      # third at 1019.4 summed file seconds x 0.5315 wall ratio = about 542 s, leaving about 40% of the 15 min cap.
+      # The fast-run projection was 403-487 s; four shards were less balanced (the slowest projected about 619 s).
+      - name: Test (macOS shard ${{ matrix.shard }}/3)
         shell: bash
-        id: mac_shard_1
         if: ${{ !cancelled() && runner.os == 'macOS' }}
-        continue-on-error: true
         env:
           WT_VITEST_MAX_WORKERS: 2
         run: |
           mkdir -p ci-diagnostics
-          pnpm test:shard --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
+          pnpm test:shard --shard=${{ matrix.shard }}/3 2>&1 | tee ci-diagnostics/vitest-shard-${{ matrix.shard }}-of-3.log
         timeout-minutes: 15
-      - name: Test (macOS shard 2/2)
-        shell: bash
-        id: mac_shard_2
-        if: ${{ !cancelled() && runner.os == 'macOS' }}
-        continue-on-error: true
-        env:
-          WT_VITEST_MAX_WORKERS: 2
-        run: |
-          mkdir -p ci-diagnostics
-          pnpm test:shard --shard=2/2 2>&1 | tee ci-diagnostics/vitest-shard-2-of-2.log
-        timeout-minutes: 15
-      # The shards are continue-on-error so BOTH always run and both logs reach the artifact; this step is what
-      # makes the JOB red when either failed. Measured 2026-09-17: two lifecycle cases were red on every macOS
-      # shard from run 28 to run 34 while the job reported success, because nothing read the shard outcomes.
-      - name: macOS shard results
-        if: ${{ runner.os == 'macOS' }}
-        run: |
-          echo "shard 1/2: ${{ steps.mac_shard_1.outcome }} · shard 2/2: ${{ steps.mac_shard_2.outcome }}"
-          test "${{ steps.mac_shard_1.outcome }}" = "success" && test "${{ steps.mac_shard_2.outcome }}" = "success"
-        timeout-minutes: 1
       # Windows measured before sharding (eight runs, 2026-09): the full suite step took 1217-1724 s (coverage and
       # build included). First sharded run (cross-os run 36811210122): shard 1 test step 885 s (job 935 s), shard 2
       # test step 642 s (job 978 s). By 2026-10-12 shard 2 took 17m07s-17m38s and on 2026-10-13 (run 38398256468) it
@@ -208,7 +196,7 @@ jobs:
           exit $LASTEXITCODE
         timeout-minutes: 28
       # Dispatcher step contract: names beginning "Diagnose " are diagnostic and never gate the job;
-      # every other step, including the continue-on-error macOS shards, is gating. Keep diagnostic
+      # every other step is gating. Keep diagnostic
       # step names under that prefix so job logs can distinguish them from blocking failures.
       # Diagnostic, never a gate: the vitest fork carrying artifact-server.test.ts has died on the hosted
       # Windows runner without a result line since run 27 (`Worker exited unexpectedly` names no file).

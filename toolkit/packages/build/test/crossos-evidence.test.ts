@@ -20,7 +20,8 @@ function positive() {
 describe('cross-os verdict requires the complete dispatched roster', () => {
   it('matches the current GitHub default roster, including Windows timeout values', () => {
     expect(workflowJobNames(workflow)).toEqual([
-      'matrix (ubuntu-latest, 1)', 'matrix (ubuntu-latest, 2)', 'matrix (ubuntu-latest, 3)', 'matrix (macos-latest)',
+      'matrix (ubuntu-latest, 1)', 'matrix (ubuntu-latest, 2)', 'matrix (ubuntu-latest, 3)',
+      'matrix (macos-latest, 1)', 'matrix (macos-latest, 2)', 'matrix (macos-latest, 3)',
       'matrix (windows-latest, 1, 75)', 'matrix (windows-latest, 2, 75)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage',
     ])
   })
@@ -29,7 +30,7 @@ describe('cross-os verdict requires the complete dispatched roster', () => {
     expect(verdictFromEvidence(positive(), sha).verdict).toBe('green')
   })
 
-  it.each(['matrix (ubuntu-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage'])(
+  it.each(['matrix (ubuntu-latest, 2)', 'matrix (macos-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage'])(
     'marks missing expected job %s incomplete', (missing) => {
       const run = positive()
       expect(expectedJobs).toContain(missing)
