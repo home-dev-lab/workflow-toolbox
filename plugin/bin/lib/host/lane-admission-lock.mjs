@@ -8,6 +8,25 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { hostAdapter } from './adapter.mjs'
 
 const SELF_START_IDENTITY = `self:${performance.timeOrigin}`
+// Recheck matching foreign identities at the first poll after this interval.
+const IDENTITY_RECHECK_MS = 1000
+
+function ownerChecker(clock, ownIdentity) {
+  // An acquisition owns its cache: clocks and unrelated waits cannot share stale evidence.
+  const identities = new Map()
+  const identity = (pid, recorded) => {
+    if (pid === process.pid && recorded === ownIdentity) return ownIdentity
+    const now = clock()
+    const cached = identities.get(pid)
+    // Cached evidence can establish sameness only. Every mismatch, including the
+    // guarded recheck, needs a fresh observation before it can authorize deletion.
+    if (cached?.value === recorded && now >= cached.at && now - cached.at < IDENTITY_RECHECK_MS) return cached.value
+    const value = birthIdentity(pid)
+    identities.set(pid, { at: now, value })
+    return value
+  }
+  return (owner) => deadOwner(owner, identity)
+}
 
 function birthIdentity(pid) {
   const exact = hostAdapter.readProcessIdentity(pid)
@@ -23,14 +42,15 @@ function comparableBirth(identity) {
   return identity != null && !(typeof identity === 'string' && identity.startsWith('self:'))
 }
 
-function deadOwner(owner) {
+function deadOwner(owner, identity) {
   if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0 || typeof owner.token !== 'string') return false
   const execution = hostAdapter.readProcessExecutionState(owner.pid)
   const live = execution.status === 'unknown' ? hostAdapter.readProcessLiveness(owner.pid) : execution
   if (live.status === 'gone') return true
   if (live.status !== 'alive' || !comparableBirth(owner.startIdentity)) return false
-  const actual = birthIdentity(owner.pid)
-  return actual !== null && actual !== owner.startIdentity
+  const actual = identity(owner.pid, owner.startIdentity)
+  if (!comparableBirth(actual)) return false
+  return actual !== owner.startIdentity
 }
 
 function readOwner(file) {
@@ -42,13 +62,13 @@ function removeOwnFile(file, owner) {
   try { unlinkSync(file) } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 
-function reapGuard(directory) {
+function reapGuard(directory, isDead) {
   let names
   try { names = readdirSync(directory) } catch (error) {
     if (error.code === 'ENOENT') return
     throw error
   }
-  if (names.length === 1 && deadOwner(readOwner(join(directory, names[0])))) {
+  if (names.length === 1 && isDead(readOwner(join(directory, names[0])))) {
     try { unlinkSync(join(directory, names[0])) } catch (error) { if (error.code !== 'ENOENT') throw error }
   }
   // Publication always renames a NONEMPTY directory. Only a reaper can leave it empty;
@@ -58,9 +78,9 @@ function reapGuard(directory) {
   }
 }
 
-function takeGuard(file, owner) {
+function takeGuard(file, owner, isDead) {
   const guard = `${file}.reclaim`
-  reapGuard(guard)
+  reapGuard(guard, isDead)
   const stage = mkdtempSync(`${guard}.stage-`)
   try {
     writeFileSync(join(stage, owner.token), JSON.stringify(owner), { flag: 'wx', mode: 0o600 })
@@ -77,12 +97,12 @@ function takeGuard(file, owner) {
   } finally { rmSync(stage, { recursive: true, force: true }) }
 }
 
-function reclaim(file, owner) {
-  const release = takeGuard(file, owner)
+function reclaim(file, owner, isDead) {
+  const release = takeGuard(file, owner, isDead)
   if (!release) return
   try {
     const current = readOwner(file)
-    if (deadOwner(current)) removeOwnFile(file, current)
+    if (isDead(current)) removeOwnFile(file, current)
   } finally { release() }
 }
 
@@ -93,11 +113,11 @@ function guardExists(file) {
   }
 }
 
-function tryClaim(file, stage, owner) {
-  if (guardExists(file)) { reapGuard(`${file}.reclaim`); return false }
+function tryClaim(file, stage, owner, isDead) {
+  if (guardExists(file)) { reapGuard(`${file}.reclaim`, isDead); return false }
   try { linkSync(stage, file) } catch (error) {
     if (error.code !== 'EEXIST') throw error
-    if (deadOwner(readOwner(file))) reclaim(file, owner)
+    if (isDead(readOwner(file))) reclaim(file, owner, isDead)
     return false
   }
   // A reclaimer which arrived just before publication must finish before we count.
@@ -149,14 +169,14 @@ function removeStage(stage, warn) {
 
 const warnToStderr = (line) => process.stderr.write(`${line}\n`)
 
-function queuedClaims(file) {
+function queuedClaims(file, isDead) {
   const prefix = `${basename(file)}.`
   const entries = []
   for (const name of readdirSync(dirname(file))) {
     if (!name.startsWith(prefix) || !/\.claim(?:\.held)?$/.test(name)) continue
     const path = join(dirname(file), name)
     const owner = readOwner(path)
-    if (deadOwner(owner)) { removeOwnFile(path, owner); continue }
+    if (isDead(owner)) { removeOwnFile(path, owner); continue }
     if (name.endsWith('.claim') && Number.isSafeInteger(owner?.ticket)) entries.push(owner)
   }
   return entries.sort((a, b) => a.ticket - b.ticket || a.token.localeCompare(b.token))
@@ -174,28 +194,31 @@ function watchWaitingStage(stage, warn) {
   }
 }
 
-function tryQueuedClaim(file, stage, owner) {
-  return queuedClaims(file)[0]?.token === owner.token && tryClaim(file, stage, owner)
+function tryQueuedClaim(file, stage, owner, isDead) {
+  return queuedClaims(file, isDead)[0]?.token === owner.token && tryClaim(file, stage, owner, isDead)
 }
 
 // Visible predecessors are ordered by ticket, not polling luck. Waiting has no default
 // deadline: a burst of healthy bounded launches is not evidence of a saturated lane cap.
 export async function acquireLaneAdmissionLock(file, { clock = performance.now.bind(performance), waitMs = Infinity, pollMs = 25, warn = warnToStderr, ...notices } = {}) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  // Own runtime start is available without an external process reader. A live self-only
-  // identity is never judged reused from a later native identity in a different format.
-  const ticket = Math.max(0, ...queuedClaims(file).map((owner) => owner.ticket)) + 1
-  const owner = { pid: process.pid, startIdentity: birthIdentity(process.pid) ?? SELF_START_IDENTITY, token: randomUUID(), ticket }
+  const start = clock()
+  let now = start
+  // Retry unavailable evidence on the next acquisition. Normal own claims cost
+  // one native read here; differing own-PID records require fresh death evidence.
+  const ownIdentity = birthIdentity(process.pid) ?? SELF_START_IDENTITY
+  const isDead = ownerChecker(() => now, ownIdentity)
+  const ticket = Math.max(0, ...queuedClaims(file, isDead).map((owner) => owner.ticket)) + 1
+  const owner = { pid: process.pid, startIdentity: ownIdentity, token: randomUUID(), ticket }
   const stage = `${file}.${owner.token}.claim`
   writeFileSync(stage, JSON.stringify(owner), { flag: 'wx', mode: 0o600 })
   const detach = watchWaitingStage(stage, warn)
-  const start = clock()
   const deadline = start + waitMs
   const notice = waitNotice(file, start, notices, warn)
   try {
     for (;;) {
-      if (tryQueuedClaim(file, stage, owner)) return { file, owner }
-      const now = clock()
+      now = clock()
+      if (tryQueuedClaim(file, stage, owner, isDead)) return { file, owner }
       if (now >= deadline) throw new Error(busyMessage(file))
       notice(now)
       await delay(pollMs)
