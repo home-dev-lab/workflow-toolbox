@@ -4,6 +4,7 @@ import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, 
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commandIO } from './command-io.mjs';
+import { exceptionLocations } from './signature-exception-io.mjs';
 
 const bin = fileURLToPath(new URL('../../', import.meta.url));
 const template = join(bin, 'git-hooks', 'pre-push');
@@ -11,8 +12,13 @@ const files = [
   'bin/wt-push-scope-check.mjs', 'bin/wt-check-commit-signatures.mjs',
   'bin/lib/cli-help.mjs', 'bin/lib/commit-signature-core.mjs',
   'bin/lib/host/push-guard-identity.mjs', 'bin/lib/host/push-guard-runtime.mjs',
+  'bin/lib/signature-attestation.mjs', 'bin/lib/signature-check-result.mjs',
+  'bin/lib/signature-exception.mjs', 'bin/lib/remote-signature-policy.mjs',
+  'bin/lib/host/signature-exception-io.mjs', 'bin/lib/host/push-signatures.mjs',
+  'bin/wt-signature-exception.mjs', 'bin/lib/host/signature-exception-cli.mjs',
 ];
-const help = 'Usage: wt-push-guard-install.mjs (--install | --check) --repo <path> [--guard-remote <name>] [--guard-path <owner/repo>] [--replace-existing]';
+const help = 'Usage: wt-push-guard-install.mjs (--install | --check) --repo <path> [--guard-remote <name>] [--guard-path <owner/repo>] [--owner-keys <file>] [--exception-state <dir>] [--replace-existing]';
+const locationFlags = { '--owner-keys': 'ownerKeysFile', '--exception-state': 'exceptionStateDir' };
 function fail(code, message) { console.error(message); process.exit(code); }
 function git(repo, ...args) {
   const result = commandIO.run('git', ['-C', repo, ...args], { cwd: repo });
@@ -21,6 +27,15 @@ function git(repo, ...args) {
 }
 function hash(file) { return createHash('sha256').update(readFileSync(file)).digest('hex'); }
 function source(name) { return join(dirname(bin), name); }
+function parseValue(result, flag, value) {
+  if (!value) fail(2, `${flag} requires a value`);
+  if (locationFlags[flag]) result[locationFlags[flag]] = resolve(value);
+  else if (flag === '--repo') result.repo = value;
+  else result[flag === '--guard-remote' ? 'guardRemotes' : 'guardPaths'].push(value);
+}
+function validateMode(result) {
+  if (!result.mode || !result.repo || (result.mode === '--install' && !result.guardRemotes.length && !result.guardPaths.length)) fail(2, help);
+}
 function parse(args) {
   if (args.length === 1 && ['--help', '-h'].includes(args[0])) { console.log(help); process.exit(0); }
   const result = { mode: null, repo: null, guardRemotes: [], guardPaths: [], replace: false };
@@ -31,14 +46,11 @@ function parse(args) {
       result.mode = a;
     }
     else if (a === '--replace-existing') result.replace = true;
-    else if (['--repo', '--guard-remote', '--guard-path'].includes(a)) {
-      const value = args[++i];
-      if (!value) fail(2, `${a} requires a value`);
-      if (a === '--repo') result.repo = value;
-      else result[a === '--guard-remote' ? 'guardRemotes' : 'guardPaths'].push(value);
+    else if (['--repo', '--guard-remote', '--guard-path', ...Object.keys(locationFlags)].includes(a)) {
+      parseValue(result, a, args[++i]);
     } else fail(2, `unknown argument: ${a}`);
   }
-  if (!result.mode || !result.repo || (result.mode === '--install' && !result.guardRemotes.length && !result.guardPaths.length)) fail(2, help);
+  validateMode(result);
   return result;
 }
 function hooksPath(repo) {
@@ -55,6 +67,40 @@ function paths(repo) {
 }
 function marker() { return `${Date.now()}-${process.pid}`; }
 
+function stageInstallation(opts, stage, shimStage) {
+  mkdirSync(stage);
+  const digests = {};
+  for (const name of files) {
+    const dest = join(stage, name);
+    mkdirSync(dirname(dest), { recursive: true });
+    copyFileSync(source(name), dest);
+    digests[name] = hash(dest);
+  }
+  const config = join(stage, 'config.json');
+  writeFileSync(config, JSON.stringify({ guardRemotes: opts.guardRemotes, guardPaths: opts.guardPaths, ...exceptionLocations(opts) }) + '\n');
+  digests['config.json'] = hash(config);
+  let rev = null;
+  try { rev = git(bin, 'rev-parse', 'HEAD'); } catch { /* installed outside a source checkout */ }
+  writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ sourceDir: bin, sourceRev: rev, installedAt: new Date().toISOString(), shimHash: hash(template), files: digests }, null, 2) + '\n');
+  copyFileSync(template, shimStage);
+  chmodSync(shimStage, 0o755);
+}
+
+function rollbackInstallation(p, fsOps, state, stage, old, shimStage, backup) {
+  if (state.placed) rmSync(p.installed, { recursive: true, force: true });
+  if (state.moved) fsOps.renameSync(old, p.installed);
+  if (state.savedHook) { rmSync(p.shim, { force: true }); renameSync(backup, p.shim); }
+  rmSync(stage, { recursive: true, force: true });
+  rmSync(shimStage, { force: true });
+}
+
+function cleanupInstallation(p, fsOps, state, old, backup, previous) {
+  // The replacement is live. Discarding the old copy cannot roll back a committed installation.
+  if (state.moved) { try { fsOps.rmSync(old, { recursive: true }); } catch (err) { console.error(`warning: old push guard cleanup failed: ${err.message}`); } }
+  if (state.savedHook && previous.equals(readFileSync(template))) { try { rmSync(backup); } catch (err) { console.error(`warning: old pre-push cleanup failed: ${err.message}`); } }
+  console.log(`installed pinned push guard at ${p.shim}`);
+}
+
 function install(opts, p, fsOps) {
   if (hooksPath(opts.repo) !== null) fail(2, 'core.hooksPath is set; unset it before installing the guard');
   mkdirSync(p.hooks, { recursive: true });
@@ -64,43 +110,19 @@ function install(opts, p, fsOps) {
   const old = join(p.hooks, `wt-push-guard.old-${marker()}`);
   const shimStage = join(p.hooks, `pre-push.stage-${marker()}`);
   const backup = join(p.hooks, `pre-push.replaced-${marker()}`);
-  let moved = false;
-  let placed = false;
-  let savedHook = false;
+  const state = { moved: false, placed: false, savedHook: false };
   try {
-    mkdirSync(stage);
-    const digests = {};
-    for (const name of files) {
-      const dest = join(stage, name);
-      mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(source(name), dest);
-      digests[name] = hash(dest);
-    }
-    const config = join(stage, 'config.json');
-    writeFileSync(config, JSON.stringify({ guardRemotes: opts.guardRemotes, guardPaths: opts.guardPaths }) + '\n');
-    digests['config.json'] = hash(config);
-    let rev = null;
-    try { rev = git(bin, 'rev-parse', 'HEAD'); } catch { /* installed outside a source checkout */ }
-    writeFileSync(join(stage, 'manifest.json'), JSON.stringify({ sourceDir: bin, sourceRev: rev, installedAt: new Date().toISOString(), shimHash: hash(template), files: digests }, null, 2) + '\n');
-    copyFileSync(template, shimStage);
-    chmodSync(shimStage, 0o755);
-    if (existsSync(p.installed)) { fsOps.renameSync(p.installed, old); moved = true; }
+    stageInstallation(opts, stage, shimStage);
+    if (existsSync(p.installed)) { fsOps.renameSync(p.installed, old); state.moved = true; }
     fsOps.renameSync(stage, p.installed);
-    placed = true;
-    if (previous) { renameSync(p.shim, backup); savedHook = true; }
+    state.placed = true;
+    if (previous) { renameSync(p.shim, backup); state.savedHook = true; }
     renameSync(shimStage, p.shim);
   } catch (err) {
-    if (placed) rmSync(p.installed, { recursive: true, force: true });
-    if (moved) fsOps.renameSync(old, p.installed);
-    if (savedHook) { rmSync(p.shim, { force: true }); renameSync(backup, p.shim); }
-    rmSync(stage, { recursive: true, force: true });
-    rmSync(shimStage, { force: true });
+    rollbackInstallation(p, fsOps, state, stage, old, shimStage, backup);
     fail(2, `install failed: ${err.message}`);
   }
-  // The replacement is live. Discarding the old copy cannot roll back a committed installation.
-  if (moved) { try { fsOps.rmSync(old, { recursive: true }); } catch (err) { console.error(`warning: old push guard cleanup failed: ${err.message}`); } }
-  if (savedHook && previous.equals(readFileSync(template))) { try { rmSync(backup); } catch (err) { console.error(`warning: old pre-push cleanup failed: ${err.message}`); } }
-  console.log(`installed pinned push guard at ${p.shim}`);
+  cleanupInstallation(p, fsOps, state, old, backup, previous);
 }
 
 function check(opts, p) {

@@ -56,6 +56,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The internal merge/release operator runbook is maintained by the integrating session outside this worktree; CLI --help describes its interim invocation contract.',
   },
   {
+    script: 'plugin/bin/wt-signature-exception.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Only the plugin CHANGELOG and the CLI --help describe the owner-exception pin and attestation setup; known-issues covers the pre-push signature guard but not this setup command.',
+  },
+  {
     script: 'plugin/bin/wt-grounding-sources.mjs',
     status: 'mapped',
     reason: 'The deep-grounding source-registry reference documents list, init, layering, and missing dependency reporting.',
@@ -707,6 +712,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse git-commit-backtick warn-only guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-stray-tool-markup-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the warn-only file-write and stored-commit stray markup checks under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-guard-journal-scan.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this standalone read CLI, its exit codes, shared guard-journal.mjs write side, and plugin-data-dir.mjs state resolver under Shipped Hooks, Guards & Monitors.',
@@ -1227,7 +1237,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-main-guard-hook.mjs',
       'plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs',
       'plugin/bin/wt-find-newermt-format-guard-hook.mjs',
-      'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
+       'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
+       'plugin/bin/wt-stray-tool-markup-guard-hook.mjs',
       'plugin/bin/wt-guard-journal-scan.mjs',
       'plugin/bin/wt-isolated-spawn-report-path-hook.mjs',
       'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',

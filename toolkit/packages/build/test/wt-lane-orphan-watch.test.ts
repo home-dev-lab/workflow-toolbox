@@ -129,7 +129,16 @@ it('procfs availability: a false existence lookup still lists a root whose stat 
   const procfs = createProcfs({ platform: 'linux', exists: () => false, stat, readdir })
   expect(detectOrphanWatchers({ platform: 'linux', procfs })).toEqual({ status: 'known', orphans: [], reports: [] })
   expect(stat).toHaveBeenCalledExactlyOnceWith('/proc')
-  expect(readdir).toHaveBeenCalledExactlyOnceWith('/proc', { withFileTypes: true })
+  expect(readdir).toHaveBeenCalledExactlyOnceWith('/proc')
+})
+
+it('procfs availability: a pid that exits during the listing reads as gone, not as an unavailable table', () => {
+  const readdir = vi.fn((_dir: string, options?: { withFileTypes?: boolean }) => {
+    if (options?.withFileTypes) throw Object.assign(new Error("ENOENT: no such file or directory, lstat '/proc/77'"), { code: 'ENOENT' })
+    return ['1', '77', 'self', 'uptime']
+  })
+  const procfs = createProcfs({ platform: 'linux', exists: () => true, readdir })
+  expect(detectOrphanWatchers({ platform: 'linux', selfPid: process.pid, procRoot: '/nonexistent-proc-root', procfs })).toMatchObject({ status: 'known' })
 })
 
 it.each(['EACCES', 'EPERM', 'EIO'])('procfs availability: preserves root lookup error %s and sends no signal', (code) => {
@@ -154,7 +163,7 @@ it.each(['EACCES', 'EPERM', 'EIO', 'ENOENT', undefined])('procfs availability: r
     reason: `watcher orphan detection /proc read failed: ${code ?? 'Error: seeded read failure'}; will retry`,
     orphans: [], reports: [], killed: [],
   })
-  expect(readdir).toHaveBeenCalledExactlyOnceWith('/proc', { withFileTypes: true })
+  expect(readdir).toHaveBeenCalledExactlyOnceWith('/proc')
   expect(kill).not.toHaveBeenCalled()
 })
 

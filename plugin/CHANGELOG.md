@@ -7,6 +7,23 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
+  `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
+  hook previews it only through an active pinned install. Install-time `--owner-keys` and
+  `--exception-state` flags fix the pin and attestation inbox/claim locations independently
+  of push-time HOME; older installs must be reinstalled to support exceptions. Setup uses
+  `wt-signature-exception.mjs pin --repo <repo> --attestation <file>` and is trust-on-first-use
+  (TOFU), not an independently owner-confirmed key fingerprint; key rotation requires
+  deliberately deleting and repinning. Only relayed answers are visible. New remote refs
+  now undergo signature checks against advertised object ids, including when tracking refs
+  are stale. Refusals read GitHub's branch rules and classic signature protection, reporting
+  a requirement or named uncertainty without predicting bypass rights or push success.
+- Warn-only stray tool-call markup guard for Write, Edit and MultiEdit, plus stored
+  commit messages after Bash invokes git commit. Closed fenced examples are exempt;
+  warnings include line-specific cleanup instructions and content-free journal evidence.
+  The guard journal now keeps `toolUseId` evidence values up to 128 characters and `kinds` up
+  to 64 for every guard using those keys; `wt-suite-lock-bypass-guard-hook.mjs` already
+  recorded `toolUseId` and was truncating it at 24 characters, which broke its transcript lookup.
 - Suite-lock host clients can park and resume a ticket within a bounded window using
   `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
   shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.
@@ -28,6 +45,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 - Four Bash guards now catch cases they used to miss. The find -newermt guard checks a `find` inside `$(...)` or inside a `sh -c`/`bash -c`/`zsh -c` script, and warns on a fractional `@epoch`. The git-commit backtick guard warns on an `--allow-empty` commit whose message does not say it is a marker. The missing-package-script guard now shows its finding to the model as context; it was journal-only, and it never approves a call. The live-config-tree guard ignores an empty `-C` target, no longer slows down on long runs of spaces, and points to the Edit/Write tools when the git text is data.
 - The live-config-tree guard now refuses a tree-changing git command hidden behind global options (`-c`, `--no-pager`, `--git-dir`, `--work-tree`, a chain of `-C`), and `checkout --detach` and the other option-led checkouts that switch. It also follows the `cd`s inside a `bash -c` script, and reads a long command in linear time. The missing-package-script guard reads a literal private-use character, a word built from quoted and bare pieces, and escaped quotes inside a `-c` script correctly. The find -newermt guard keeps reading a substitution past a quoted `)`, and no longer warns on `echo bash -c '…'`. The empty-commit warning judges each `git commit` on its own, reads `-mmsg` and `--message=msg`, and no longer claims the commit is empty.
+- A process that exits while `/proc` is being listed no longer fails the whole listing. The lane-launch
+  count (`lane count NOT MEASURED: ENOENT`), the idle reader, the watcher-orphan check and the wake-floor
+  scan now list plain pid names and read a vanished pid as gone, while a listing that genuinely cannot be
+  read still reports unknown or unavailable.
+
 - The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
   ran in super-linear time (a 50 000-character line took over a second each) and now run
   in linear time, redacting exactly what they redacted before.

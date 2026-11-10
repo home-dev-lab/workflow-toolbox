@@ -1,6 +1,7 @@
 import * as posix from './posix.mjs'
 import { posix as posixPath } from 'node:path'
 import { readlinkSync } from 'node:fs'
+import { procPidNames } from './procfs.mjs'
 
 // /proc paths are POSIX on every host; a host separator would make injected readers miss them.
 const { join } = posixPath
@@ -25,10 +26,10 @@ function processCpuTicks(fields, indexes = [11, 12, 13, 14]) {
   return ticks.every(Number.isSafeInteger) && Number.isSafeInteger(total) ? total : null
 }
 
-function readLinuxProcProcess(entry, pid, readFile, observedAt, uptime) {
-  const firstStat = readFile(join('/proc', entry.name, 'stat'), 'utf8')
-  const commandLine = readFile(join('/proc', entry.name, 'cmdline'), 'utf8').split('\0').filter(Boolean).join(' ')
-  const secondStat = readFile(join('/proc', entry.name, 'stat'), 'utf8')
+function readLinuxProcProcess(name, pid, readFile, observedAt, uptime) {
+  const firstStat = readFile(join('/proc', name, 'stat'), 'utf8')
+  const commandLine = readFile(join('/proc', name, 'cmdline'), 'utf8').split('\0').filter(Boolean).join(' ')
+  const secondStat = readFile(join('/proc', name, 'stat'), 'utf8')
   const firstFields = firstStat.slice(firstStat.lastIndexOf(')') + 2).split(' ')
   const secondFields = secondStat.slice(secondStat.lastIndexOf(')') + 2).split(' ')
   const startTicks = Number(firstFields[19])
@@ -64,11 +65,10 @@ export function readLinuxIdleProcProcesses({ readFile, readDirectory, observedAt
   try { uptime = Number(readFile('/proc/uptime', 'utf8').split(/\s+/)[0]) } catch { return null }
   const processes = []
   const unknownPids = []
-  for (const entry of readDirectory('/proc', { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
-    const pid = Number(entry.name)
+  for (const name of procPidNames(readDirectory, '/proc')) {
+    const pid = Number(name)
     try {
-      const row = readLinuxProcProcess(entry, pid, readFile, observedAt, uptime)
+      const row = readLinuxProcProcess(name, pid, readFile, observedAt, uptime)
       if (row) processes.push(row)
       else unknownPids.push(pid)
     } catch (error) {
@@ -84,11 +84,10 @@ export function readLinuxProcProcesses({ readFile, readDirectory, observedAt }) 
   try { uptime = Number(readFile('/proc/uptime', 'utf8').split(/\s+/)[0]) } catch { return null }
   const processes = []
   const unknownPids = []
-  for (const entry of readDirectory('/proc', { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
-    const pid = Number(entry.name)
+  for (const name of procPidNames(readDirectory, '/proc')) {
+    const pid = Number(name)
     try {
-      const row = readBaseLinuxProcProcess(entry, pid, readFile, observedAt, uptime)
+      const row = readBaseLinuxProcProcess(name, pid, readFile, observedAt, uptime)
       if (row) processes.push(row)
       else unknownPids.push(pid)
     } catch (error) {
@@ -98,10 +97,10 @@ export function readLinuxProcProcesses({ readFile, readDirectory, observedAt }) 
   return { processes, unknownPids }
 }
 
-function readBaseLinuxProcProcess(entry, pid, readFile, observedAt, uptime) {
-  const firstStat = readFile(join('/proc', entry.name, 'stat'), 'utf8')
-  const commandLine = readFile(join('/proc', entry.name, 'cmdline'), 'utf8').split('\0').filter(Boolean).join(' ')
-  const secondStat = readFile(join('/proc', entry.name, 'stat'), 'utf8')
+function readBaseLinuxProcProcess(name, pid, readFile, observedAt, uptime) {
+  const firstStat = readFile(join('/proc', name, 'stat'), 'utf8')
+  const commandLine = readFile(join('/proc', name, 'cmdline'), 'utf8').split('\0').filter(Boolean).join(' ')
+  const secondStat = readFile(join('/proc', name, 'stat'), 'utf8')
   const firstFields = firstStat.slice(firstStat.lastIndexOf(')') + 2).split(' ')
   const secondFields = secondStat.slice(secondStat.lastIndexOf(')') + 2).split(' ')
   const startTicks = Number(firstFields[19])

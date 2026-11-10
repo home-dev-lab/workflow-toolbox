@@ -378,6 +378,58 @@ describe('cross-os workflow: one red never hides the suite', () => {
 
 const linux = entries.filter((entry) => runnerOs(entry) === 'Linux')
 const linuxSuites = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && isSuiteStep(step) && !isDiagnostic(step))
+const macos = entries.filter((entry) => runnerOs(entry) === 'macOS')
+const macosSuites = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && isSuiteStep(step) && !isDiagnostic(step))
+
+describe('cross-os workflow: macOS parallel shards and gates', () => {
+  it('numbers at least three macOS entries contiguously without overriding the job timeout', () => {
+    expect(macos.length).toBeGreaterThanOrEqual(3)
+    expect(macos.map(({ shard }) => shard)).toEqual(macos.map((_, index) => index + 1))
+    for (const entry of macos) expect(entry.timeout).toBeUndefined()
+  })
+
+  it('runs exactly one gating Bash suite per macOS entry with its own shard selector and log', () => {
+    for (const entry of macos) {
+      const suites = macosSuites(entry)
+      expect(suites).toHaveLength(1)
+      const suite = suites[0]!
+      expect(suite.run).toContain(`test:shard --shard=\${{ matrix.shard }}/${macos.length}`)
+      expect(suite.run).toContain(`tee ci-diagnostics/vitest-shard-\${{ matrix.shard }}-of-${macos.length}.log`)
+      expect(suite.run).not.toContain('--coverage')
+      expect(suite.shell).toBe('bash')
+      expect(suite['continue-on-error']).toBeUndefined()
+      expect(suite.if).toContain('!cancelled()')
+      expect(suite.env?.WT_VITEST_MAX_WORKERS).toBe(2)
+      expect(timeoutOf(suite, entry)).toBeLessThanOrEqual(15)
+      expect(jobTimeoutOf(entry)).toBe(45)
+    }
+    expect(steps.find((step) => step.name === 'macOS shard results')).toBeUndefined()
+  })
+
+  it('runs no unsharded pnpm test on any macOS entry', () => {
+    for (const entry of macos) {
+      for (const step of steps.filter((step) => runsOn(step, entry))) expect(step.run ?? '').not.toMatch(/pnpm test(?![:\w-])/)
+    }
+  })
+})
+
+describe('cross-os workflow: macOS shard budgets and gates', () => {
+  it('projects at least 30 percent headroom from the measured worst third', () => {
+    // projection-slow-run.txt: Vitest's 550-file split from cross-os run 42452956101, worst third 1019.4 summed seconds.
+    // projection-fast-run.txt / run 42436410538 and the slow run measured wall/summed ratios up to 0.5315.
+    const projectedSeconds = 1019.4 * 0.5315
+    expect(macos.length).toBeGreaterThanOrEqual(3)
+    for (const entry of macos) {
+      for (const suite of macosSuites(entry)) expect(1 - projectedSeconds / (timeoutOf(suite, entry) * 60)).toBeGreaterThanOrEqual(0.3)
+    }
+  })
+
+  it('puts typecheck, quality, lint, lifecycle smoke and the real host contract on macOS shard 1 only', () => {
+    const gates = steps.filter((step) => /pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke|host-adapter\.contract/.test(step.run ?? ''))
+    expect(gates).toHaveLength(5)
+    for (const gate of gates) expect(macos.filter((entry) => runsOn(gate, entry)).map(({ shard }) => shard)).toEqual([1])
+  })
+})
 
 describe('cross-os workflow: Ubuntu shard budgets and gates', () => {
   it('numbers at least three Ubuntu shards contiguously, with one covered suite each and no full-suite fallback', () => {
@@ -443,26 +495,38 @@ describe('cross-os workflow: coverage union wiring', () => {
   })
 })
 
-describe('Ubuntu suite command runs with the hosted Bash pipeline semantics', () => {
-  function runUbuntuCommand(body: string) {
-    const directory = mkdtempSync(join(tmpdir(), 'posix-shard-command-'))
-    historyRoots.push(directory)
-    const command = linuxSuites(linux[0]!)[0]!.run!.replaceAll('${{ matrix.shard }}', '1')
-    return spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `pnpm() { ${body}; }\n${command}`], { cwd: directory, encoding: 'utf8' })
-  }
+function runSuiteCommand(step: Step, body: string) {
+  const directory = mkdtempSync(join(tmpdir(), 'posix-shard-command-'))
+  historyRoots.push(directory)
+  const command = step.run!.replaceAll('${{ matrix.shard }}', '1')
+  return spawnSync('bash', ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', `pnpm() { ${body}; }\n${command}`], { cwd: directory, encoding: 'utf8' })
+}
 
+describe('Ubuntu suite command runs with the hosted Bash pipeline semantics', () => {
   it('propagates a failing suite through tee rather than returning the log writer exit code', () => {
-    expect(runUbuntuCommand('return 23').status).toBe(23)
+    expect(runSuiteCommand(linuxSuites(linux[0]!)[0]!, 'return 23').status).toBe(23)
   })
 
   it('passes one shard selector, coverage and all reporter outputs as distinct argv values', () => {
-    const result = runUbuntuCommand(`node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"`)
+    const result = runSuiteCommand(linuxSuites(linux[0]!)[0]!, `node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"`)
     expect(result.status, result.stderr).toBe(0)
     const args = JSON.parse(result.stdout) as string[]
     expect(args.filter((arg) => arg.startsWith('--shard='))).toEqual([`--shard=1/${linux.length}`])
     // A file filter, project or test-name selector would change which tests run. Permit only these reporting flags.
     expect(args).toEqual(['test:shard', `--shard=1/${linux.length}`, '--coverage',
       '--reporter=default', '--reporter=blob', '--reporter=json', '--outputFile.blob=ci-coverage/blob-1.json', '--outputFile.json=ci-diagnostics/ubuntu-shard-1.json'])
+  })
+})
+
+describe('macOS suite command runs with the hosted Bash pipeline semantics', () => {
+  it('propagates macOS exit 23 through tee rather than swallowing a suite failure', () => {
+    expect(runSuiteCommand(macosSuites(macos[0]!)[0]!, 'return 23').status).toBe(23)
+  })
+
+  it('passes exactly the macOS shard 1/3 arguments to pnpm', () => {
+    const result = runSuiteCommand(macosSuites(macos[0]!)[0]!, `node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"`)
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual(['test:shard', '--shard=1/3'])
   })
 })
 

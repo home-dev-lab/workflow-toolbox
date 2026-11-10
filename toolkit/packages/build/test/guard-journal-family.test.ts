@@ -94,6 +94,17 @@ describe('guard notice family invariant — warnings reach the triggering subage
 })
 
 describe('guard-journal family invariant — every guard-hook file is wired', () => {
+  it('stray markup warns with content-free evidence', () => {
+    const r = runHook('wt-stray-tool-markup-guard-hook.mjs', {
+      hook_event_name: 'PreToolUse', tool_name: 'Write',
+      tool_input: { file_path: 'note.md', content: 'body\n</content>\n' },
+    })
+    expect(r.stdout).toContain('stray tool-call markup')
+    expect(journalEntries()).toEqual([expect.objectContaining({
+      guard: 'wt-stray-tool-markup-guard-hook.mjs', decision: 'warned',
+      evidence: { tool: 'Write', kinds: 'content-close', lines: '1', tail: 'yes' },
+    })])
+  })
   it('every plugin/bin/*guard*.mjs file either imports the shared journal or has a named, justified exclusion', () => {
     const files = allGuardFiles()
     expect(files.length).toBeGreaterThan(0) // sanity: the glob itself must find real files

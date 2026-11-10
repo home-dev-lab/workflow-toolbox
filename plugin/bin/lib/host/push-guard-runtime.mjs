@@ -1,9 +1,10 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, renameSync } from 'node:fs';
 import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { matchesGuardPath, normalizePushPath, recognizedPushShape } from './push-guard-identity.mjs';
+import { inspectPushSignatures } from './push-signatures.mjs';
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const ZERO = /^0+$/;
@@ -11,6 +12,7 @@ const ENGINE = fileURLToPath(new URL('../../wt-push-scope-check.mjs', import.met
 
 function stop(code, message) { console.error(message); process.exit(code); }
 function git(args, options = {}) {
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- Git is the repository interface; the pinned guard does not choose a host-specific executable path.
   return execFileSync('git', ['--no-replace-objects', ...args], {
     encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, timeout: 60_000,
     stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, ...options,
@@ -22,7 +24,7 @@ export function isPinnedEngine(engine, canonicalInstallDir, platform = process.p
   return platform === 'win32' ? engine.toLowerCase() === expected.toLowerCase() : engine === expected;
 }
 
-function verifyInstall(dir) {
+export function verifyInstall(dir) {
   let manifest;
   try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); }
   catch { stop(2, `manifest.json missing or malformed; run wt-push-guard-install.mjs --check / --install`); }
@@ -41,7 +43,7 @@ function verifyInstall(dir) {
   catch { stop(2, 'config.json malformed; run wt-push-guard-install.mjs --check / --install'); }
 }
 
-function identity(config, remote, url, authorized) {
+export function identity(config, remote, url, authorized) {
   const baseDir = process.cwd();
   const names = config.guardRemotes;
   const paths = config.guardPaths;
@@ -92,7 +94,7 @@ function advertised(url) {
   return types.split('\n').filter((line) => / (commit|tag)$/.test(line)).map((line) => line.split(' ')[0]);
 }
 
-function outgoing(lines, url) {
+function outgoing(lines, url, advertisedIds = () => advertised(url)) {
   const shas = new Set();
   let known;
   for (const line of lines) {
@@ -102,7 +104,7 @@ function outgoing(lines, url) {
     catch { throw Error(`local ref ${line.localRef} is not a commit in this clone`); }
     let exclusions;
     if (ZERO.test(line.remote)) {
-      known ??= advertised(url);
+      known ??= advertisedIds();
       exclusions = known;
     } else {
       try { exclusions = [git(['rev-parse', '--verify', '--quiet', `${line.remote}^{commit}`])]; }
@@ -151,15 +153,9 @@ function judge(auth, shas) {
   if (offending.length) stop(1, `wt-push-scope-check: ${offending.length} commit(s) outside the authorized scope — scope check refused`);
 }
 
-function signatures(lines, dir) {
-  const checker = join(dir, 'bin/wt-check-commit-signatures.mjs');
-  for (const line of lines) {
-    if (ZERO.test(line.local)) continue;
-    if (ZERO.test(line.remote)) { console.log(`signature check NOT RUN for ${line.remoteRef} (new remote ref, no base to range against)`); continue; }
-    if (!existsSync(checker)) { console.log('signature check NOT RUN (checker absent)'); continue; }
-    const result = spawnSync(process.execPath, [checker, '--range', `${line.remote}..${line.local}`], { encoding: 'utf8', env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' } });
-    if (result.status !== 0) stop(1, `${result.stdout || ''}${result.stderr || ''}unsigned — the authorized SCOPE was fine; signature check refused`);
-  }
+function signatures(lines, dir, config, url, advertisedIds) {
+  const result = inspectPushSignatures({ lines, dir, config, url, advertisedIds });
+  if (result.failure) stop(1, `${result.failure}\nunsigned — the authorized SCOPE was fine; signature check refused`);
 }
 
 export function runPrePush({ installDir, remote, url, authorized, afterConsume = () => {} }) {
@@ -169,15 +165,17 @@ export function runPrePush({ installDir, remote, url, authorized, afterConsume =
     const lines = linesFromStdin();
     ancestryCheck();
     const auth = readScope(authorized);
+    let known;
+    const advertisedIds = () => known ??= advertised(url);
     let shas;
-    try { shas = outgoing(lines, url); }
+    try { shas = outgoing(lines, url, advertisedIds); }
     catch (err) {
       if (!auth) refusalHelp(authorized, [], `could not measure outgoing commits: ${err.message}`);
       stop(2, `could not measure outgoing commits: ${err.message}`);
     }
     if (!auth) refusalHelp(authorized, shas);
     judge(auth, shas);
-    signatures(lines, installDir);
+    signatures(lines, installDir, config, url, advertisedIds);
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
     const consumed = join(dirname(authorized), `wt-push-authorized.consumed-${stamp}-${process.pid}.json`);
     try { renameSync(authorized, consumed); afterConsume(consumed); if (!readFileSync(consumed).equals(auth.bytes)) throw Error('authorization changed after rename'); }

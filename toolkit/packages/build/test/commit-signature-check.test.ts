@@ -225,6 +225,21 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs op
 })
 
 describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [fake git is a script shim that bare spawnSync cannot execute on Windows]', () => {
+  it('returns one structured document with unchanged human findings and separate revision arguments', () => {
+    const trace = makeTraceFile('structured')
+    const { repo, env } = makeFakeGitEnv('structured', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true', FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tN\tunsigned\n',
+      FAKE_GIT_TRACE: trace,
+    })
+    const text = runCli(['--repo', repo, '--range', 'HEAD'], env)
+    const result = runCli(['--repo', repo, '--range', 'HEAD', '--range', '^' + 'b'.repeat(40), '--json'], env)
+    expect(result.status).toBe(1)
+    const parsed = JSON.parse(result.stdout)
+    expect(parsed.text).toBe(text.stdout)
+    expect(parsed.offenders).toEqual([{ sha: 'a'.repeat(40), status: 'N', subject: 'unsigned' }])
+    const calls = readFileSync(trace, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
+    expect(calls[1]?.slice(calls[1].indexOf('--end-of-options'))).toEqual(['--end-of-options', 'HEAD', '^' + 'b'.repeat(40), '--'])
+  })
   it('signing not configured + unsigned HEAD → exit 0 and empty output', () => {
     const { repo, env } = makeFakeGitEnv('cli-silent-unsigned', {
       FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tN\tunsigned head\n',
@@ -245,6 +260,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toBe('')
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs finding letters [fake git shim]', () => {
   it('signing configured + one N among several G → exit 1 and exactly that finding, with one cause hint', () => {
     const { repo, env } = makeFakeGitEnv('cli-one-n', {
       FAKE_GIT_COMMIT_GPGSIGN: 'true',
@@ -279,6 +297,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toContain('ccccccc: R (revoked signing key)')
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs unverifiable signatures [fake git shim]', () => {
   // ⚠ `E` is NOT `N`. `E` means git could not VERIFY the signature — commonly a signature made
   // with a key absent from this keyring, which is what a forge's web-flow key on a squash-merge
   // produces. Diagnosing it as "your signing key was unavailable or locked" sends the reader to
@@ -312,6 +333,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toMatch(/already published|rewriting published history/i)
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs unsigned causes [fake git shim]', () => {
   // ⚠ The population that must NOT change. One repo on this machine is deliberately unsigned —
   // 40 of its last 60 commits are `N` — so the existing wording describes a real majority
   // somewhere. Softening it globally would break a correct guard for people not in the room.
@@ -343,6 +367,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toMatch(/could not be VERIFIED|unknown to this keyring/i)
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs configuration and errors [fake git shim]', () => {
   it('user.signingkey set but commit.gpgsign absent still enforces the check', () => {
     const { repo, env } = makeFakeGitEnv('cli-signingkey', {
       FAKE_GIT_SIGNINGKEY: 'ssh-ed25519 AAAA',

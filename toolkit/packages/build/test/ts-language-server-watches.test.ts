@@ -379,3 +379,21 @@ linuxTest.each([
       expect((reply.body as Array<{ code: number }>).some((diagnostic) => diagnostic.code === 2322), 'closed source disk edit must refresh diagnostics without reopening').toBe(true)
     } finally { await server.dispose(); fixture.dispose() }
   }, 40_000)
+
+function alive(pid: number) {
+  try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' }
+}
+
+it.skipIf(!tsserver)('disposes through the LSP exit so no backend still holds the fixture root when it is removed', async () => {
+  const fixture = watchFixture(false), server = startFixture(fixture, tsserver!)
+  let pid = 0
+  try {
+    await server.wait((message) => message.id === 1)
+    pid = (await server.wait((message) => message.method === '$/tsserverPid')).params!.pid!
+  } finally { await server.dispose() }
+  try {
+    expect({ code: server.child.exitCode, signal: server.child.signalCode }, 'wt-tsls must close by its own exit: a signal is TerminateProcess on Windows and orphans the backend').toEqual({ code: 0, signal: null })
+    expect(alive(pid), 'tsserver must be gone before the fixture root is removed').toBe(false)
+  } finally { fixture.dispose() }
+  expect(fs.existsSync(fixture.root)).toBe(false)
+}, 40_000)
