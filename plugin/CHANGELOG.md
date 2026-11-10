@@ -26,6 +26,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- A process that exits while `/proc` is being listed no longer fails the whole listing. The lane-launch
+  count (`lane count NOT MEASURED: ENOENT`), the idle reader, the watcher-orphan check and the wake-floor
+  scan now list plain pid names and read a vanished pid as gone, while a listing that genuinely cannot be
+  read still reports unknown or unavailable.
+
 - The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
   ran in super-linear time (a 50 000-character line took over a second each) and now run
   in linear time, redacting exactly what they redacted before.
