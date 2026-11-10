@@ -8,6 +8,7 @@ import os from 'node:os'
 import { posix as path, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseJsonc } from './jsonc.mjs'
+import { classifyConfigReferences, planCredentialReferences, resolveConfigModel } from './opencode-config-credentials.mjs'
 import { processStartTime } from './pid-namespace.mjs'
 import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
@@ -56,7 +57,6 @@ const SYSTEM_READ_ONLY = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '
 const ETC_LINK_TARGETS = ['/etc/resolv.conf', '/etc/hosts', '/etc/ssl/certs/ca-certificates.crt']
 // In OpenCode's own load order (measured, OpenCode 1.18.32 debug log): a later file overrides an earlier one.
 const OPENCODE_GLOBAL_CONFIGS = ['config.json', 'opencode.json', 'opencode.jsonc']
-const FILE_REFERENCE = /\{file:([^}]+)\}/g
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 const CODEX_PATH_DIR = '/run/wt-lane/bin'
 const probeCache = new Map()
@@ -105,6 +105,7 @@ export const realFs = {
   ensureFile: (file) => { try { mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); if (!existsSync(file)) writeFileSync(file, '', { mode: 0o600 }) } catch { /* overlay is skipped if the source is absent */ } },
   copy: (from, to) => { try { mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 }); copyFileSync(from, to) } catch { /* a missing source leaves no copy; the ro overlay is then skipped */ } },
   writeText: (file, text) => { try { writeFileSync(file, text, { mode: 0o600 }) } catch { /* best effort writeback */ } },
+  writePrivateText: (file, text) => writeFileSync(file, text, { mode: 0o600, flag: 'wx' }),
 }
 
 function probeBwrap(bwrap) {
@@ -200,20 +201,50 @@ function hostStateRootOf(env, fs, view = (value) => fs.realpath(value) ?? path.r
   } catch { return null }
 }
 
-// The global OpenCode config names the files it substitutes with {file:...} (API keys among them).
-// Only the GLOBAL config is followed: it is read-only inside the sandbox, so a lane cannot append a
-// reference that the next launch would honour. Project configs live in the writable worktree.
-function opencodeConfigReferences(configDir, env, fs, trustedRead) {
-  const references = []
-  for (const name of OPENCODE_GLOBAL_CONFIGS) {
-    const text = trustedRead(path.join(configDir, name))
-    for (const match of text?.matchAll(FILE_REFERENCE) ?? []) {
-      const raw = match[1].trim()
-      const expanded = raw.startsWith('~/') ? path.join(home(env), raw.slice(2)) : path.resolve(configDir, raw)
-      if (trustedRead(expanded) !== null) references.push(expanded)
+// Inventory targets without reading their bytes, even when the target is lane-writable.
+// Only trusted config snapshots can request content binds or sanitized overlays.
+function configReferenceIdentity(file, fs) {
+  try { return fs.identity?.(file) ?? null } catch { return null }
+}
+
+function configReferenceInventory(config, env, fs, configEnv) {
+  return classifyConfigReferences(config.text, configEnv, config.file).map((reference) => {
+    const expanded = reference.raw.startsWith('~/') ? path.join(home(env), reference.raw.slice(2)) : path.resolve(path.dirname(config.file), reference.raw)
+    const exists = fs.isFile(expanded)
+    return { ...reference, expanded, target: canonicalPath(expanded, fs), exists, identity: exists ? configReferenceIdentity(expanded, fs) : null }
+  })
+}
+
+function opencodeConfigReferences(configDir, env, fs, trustedRead, model, configEnv) {
+  const configs = OPENCODE_GLOBAL_CONFIGS.map((name) => {
+    const file = path.join(configDir, name)
+    return { file, text: trustedRead(file) }
+  }).filter((config) => config.text !== null)
+  try {
+    const extra = absolute(env.OPENCODE_CONFIG).filter((file) => !configs.some((config) => config.file === file)).map((file) => ({ file, text: trustedRead(file) })).filter((config) => config.text !== null)
+    const inventory = [...configs, ...extra].map((config) => ({ ...config, references: configReferenceInventory(config, env, fs, configEnv) }))
+    return planCredentialReferences(inventory, model, configEnv)
+  } catch (error) { throw new LaneSandboxRefusal(`global OpenCode config ${configDir}: ${error.message}`) }
+}
+
+function opencodeCredentialOverlay({ configDir, env, configEnv, fs, trustedRead, model, runtimeDir }) {
+  const plan = { withheld: [], missing: [], copies: [], overlays: [] }
+  const read = () => {
+    const references = opencodeConfigReferences(configDir, env, fs, trustedRead, model, configEnv)
+    plan.withheld = references.withheld
+    plan.missing = references.missing
+    plan.copies = references.copies.map((copy, index) => ({ ...copy, outside: path.join(runtimeDir, 'oc-config', `${index ? `${index}-` : ''}${path.basename(copy.inside)}`) }))
+    plan.overlays.push(...plan.copies.map(({ inside, outside }) => ({ inside, outside })))
+    return references.readable
+  }
+  const prepare = () => {
+    for (const copy of plan.copies) {
+      fs.ensureDir(path.dirname(copy.outside))
+      try { fs.writePrivateText(copy.outside, copy.text) }
+      catch (error) { throw new LaneSandboxRefusal(`cannot create sanitized config ${copy.outside}: ${error.message}`) }
     }
   }
-  return references
+  return Object.assign(plan, { read, prepare })
 }
 
 // The provider hosts a credential kind needs; an unknown provider gets none (stated in the line).
@@ -249,19 +280,24 @@ function endpointsFromBaseURL(provider, baseURL) {
 // channels; only the fence's constant OPENCODE_CONFIG_CONTENT reaches a lane. It restores project
 // CLAUDE.md instructions and names no provider or host, so it cannot widen egress. A file that exists
 // but does not parse is named in the launch line: it can only make the allow-list SMALLER, never larger.
-function opencodeModelNetwork({ configDir, model, authFile, configFile, trustedRead }) {
+function opencodeModelNetwork({ configDir, model, authFile, configFile, trustedRead, env }) {
   const files = [...OPENCODE_GLOBAL_CONFIGS.map((name) => path.join(configDir, name)), ...(configFile ? [configFile] : [])]
   const unreadable = files.filter((file) => trustedRead(file) !== null && parseJsonc(trustedRead(file)) === null)
   const configs = files.map((file) => parseJsonc(trustedRead(file))).filter(Boolean)
-  const chosen = model || lastDefined(configs, (config) => config.model)
+  const chosen = resolveConfigModel(model || lastDefined(configs, (config) => config.model), env)
   const provider = typeof chosen === 'string' && chosen.includes('/') ? chosen.slice(0, chosen.indexOf('/')) : null
   if (!provider) return { provider: null, endpoints: [], hosts: [], unreadable }
   const baseURL = lastDefined(configs, (config) => config?.provider?.[provider]?.options?.baseURL)
   if (baseURL) return { ...endpointsFromBaseURL(provider, baseURL), unreadable }
+  const hosts = opencodeAuthHosts(authFile, provider, trustedRead)
+  return { provider, endpoints: [], hosts, unreadable }
+}
+
+function opencodeAuthHosts(authFile, provider, trustedRead) {
   const auth = trustedRead(authFile)
   let kind = null
   if (auth !== null) kind = parseJsonc(auth)?.[provider]?.type === 'oauth' ? 'oauth' : 'api'
-  return { provider, endpoints: [], hosts: kind ? builtInProviderHosts(provider, [kind]) : [], unreadable }
+  return kind ? builtInProviderHosts(provider, [kind]) : []
 }
 
 // Codex always talks to OpenAI: ChatGPT sign-in (tokens) and/or an API key in the auth store of the
@@ -287,7 +323,7 @@ const modelArgument = (args) => {
 
 // A per-run OpenCode home: auth.json and the provider packages/bin are copied or bound read-only, so
 // a lane cannot alter the shared cache (775 packages every run loads) or swap the shared auth (M1).
-function opencodePrivateHome({ env, fs, runtimeDir, model, trustedRead, trustedAuthRead }) {
+function opencodePrivateHome({ env, configEnv, fs, runtimeDir, model, trustedRead, trustedAuthRead }) {
   const shareDir = path.join(xdg(env, 'XDG_DATA_HOME', '.local/share'), 'opencode')
   const cacheDir = path.join(xdg(env, 'XDG_CACHE_HOME', '.cache'), 'opencode')
   const stateDir = path.join(xdg(env, 'XDG_STATE_HOME', '.local/state'), 'opencode')
@@ -307,24 +343,28 @@ function opencodePrivateHome({ env, fs, runtimeDir, model, trustedRead, trustedA
     fs.copy(path.join(cacheDir, 'models.json'), path.join(privCache, 'models.json'))
   }
   const configDir = path.join(xdg(env, 'XDG_CONFIG_HOME', '.config'), 'opencode')
-   const network = () => opencodeModelNetwork({ configDir, model, authFile: path.join(shareDir, 'auth.json'), configFile: absolute(env.OPENCODE_CONFIG)[0], trustedRead: (file) => file === path.join(shareDir, 'auth.json') ? trustedAuthRead(file) : trustedRead(file) })
+  const network = () => opencodeModelNetwork({ configDir, model, env: configEnv, authFile: path.join(shareDir, 'auth.json'), configFile: absolute(env.OPENCODE_CONFIG)[0], trustedRead: (file) => file === path.join(shareDir, 'auth.json') ? trustedAuthRead(file) : trustedRead(file) })
   return { writable, readOnlyOverlays, network, prepare, opencodeDataDir: privShare }
 }
 
 const PROFILES = {
-   opencode({ env, args, fs, runtimeDir, readonlyCwd, base, trustedRead, trustedAuthRead }) {
+  opencode({ env, optionEnv, args, fs, runtimeDir, readonlyCwd, base, trustedRead, trustedAuthRead }) {
     const configDir = path.join(xdg(env, 'XDG_CONFIG_HOME', '.config'), 'opencode')
     const configFile = absolute(env.OPENCODE_CONFIG).map((file) => path.dirname(file))
-     const priv = opencodePrivateHome({ env, fs, runtimeDir, model: modelArgument(args), trustedRead, trustedAuthRead })
+    const configEnv = { ...optionEnv, ...env }
+    const priv = opencodePrivateHome({ env, configEnv, fs, runtimeDir, model: modelArgument(args), trustedRead, trustedAuthRead })
+    const credentialFiles = opencodeCredentialOverlay({ configDir, env, configEnv, fs, trustedRead, model: modelArgument(args), runtimeDir })
+    credentialFiles.overlays.push(...priv.readOnlyOverlays.filter((entry) => typeof entry === 'object'))
     const dirArgs = argumentValues(args, ['--dir'], base)
     const opencodeHome = OPENCODE_HOME_READ_ONLY.map((name) => path.join(home(env), '.opencode', name))
     return {
-      readable: () => [configDir, ...opencodeConfigReferences(configDir, env, fs, trustedRead), ...configFile.filter((dir) => trustedRead(path.join(dir, path.basename(env.OPENCODE_CONFIG))) !== null), ...opencodeHome, ...argumentValues(args, ['-f', '--file'], base), ...(readonlyCwd ? dirArgs : [])],
-      prepare: priv.prepare,
+      readable: () => [configDir, ...credentialFiles.read(), ...configFile.filter((dir) => trustedRead(path.join(dir, path.basename(env.OPENCODE_CONFIG))) !== null), ...opencodeHome, ...argumentValues(args, ['-f', '--file'], base), ...(readonlyCwd ? dirArgs : [])],
+      prepare: () => { priv.prepare(); credentialFiles.prepare() },
+      credentialFiles,
       opencodeDataDir: priv.opencodeDataDir,
       writableRemap: priv.writable,
       writable: [...(readonlyCwd ? [] : dirArgs)],
-      readOnlyOverlaysRemap: priv.readOnlyOverlays.filter((entry) => typeof entry === 'object'),
+      readOnlyOverlaysRemap: credentialFiles.overlays,
       readOnlyOverlays: priv.readOnlyOverlays.filter((entry) => typeof entry === 'string'),
       network: priv.network,
       // Read-only binds land BEFORE writable ones, so a writable bind over these would win. They
@@ -1055,7 +1095,7 @@ function initializeSandboxTree(state) {
   const rejectedConfigs = new Set()
   const trustedRead = (file) => checkedConfigRead(file, fs, state.laneWritable, registry.roots, rejectedConfigs)
   const trustedAuthRead = (file) => checkedConfigRead(file, fs, state.sourceWritable, registry.roots, rejectedConfigs)
-  const selected = PROFILES[profile]({ env, args, fs, runtimeDir, readonlyCwd, base, trustedRead, trustedAuthRead })
+  const selected = PROFILES[profile]({ env, optionEnv, args, fs, runtimeDir, readonlyCwd, base, trustedRead, trustedAuthRead })
   const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
   for (const overlay of git.overlaysRo) fs.ensureFile(overlay)
 
@@ -1125,10 +1165,32 @@ function verifyCodexOverlayCollision({ codexReal, guarded, keptReadable, otherOv
   }
 }
 
+const BIND_FLAGS = new Set(['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'])
+
+// Check the complete ordered plan, including system binds, remap sources/destinations and
+// late executable overlays. A sanitized config cannot hide a key exposed by another mount.
+function refuseCredentialMounts(prefix, selected, fs) {
+  const credentials = selected.credentialFiles
+  if (!credentials) return
+  const mounts = prefix.flatMap((flag, index) => BIND_FLAGS.has(flag) ? [{ flag, source: prefix[index + 1], destination: prefix[index + 2] }] : [])
+  for (const target of credentials.withheld) {
+    for (const mount of mounts) {
+      const covering = [mount.source, mount.destination].find((root) => withinOnDisk(target, canonicalPath(root, fs)))
+      if (covering) throw new LaneSandboxRefusal(`credential ${target} is covered by mount ${covering}; a lane never gets an API key file; WT_LANE_SANDBOX=off is the only bypass`)
+    }
+  }
+  const writableRoots = mounts.filter(({ flag }) => flag === '--bind' || flag === '--bind-try').flatMap(({ source, destination }) => [source, destination])
+  const writable = laneWritablePredicate(writableRoots, fs)
+  for (const copy of credentials.copies) {
+    if (writable(copy.outside)) throw new LaneSandboxRefusal(`sanitized config ${copy.outside} is lane-writable; choose a runtime parent outside every writable root`)
+  }
+}
+
 function buildSandboxPrefix(state) {
   prepareSandboxBridges(state)
   const { codexReal, fs, selected } = state
   const prefix = sandboxArguments(sandboxPrefixOptions(state))
+  refuseCredentialMounts(prefix, selected, fs)
   prefix.push('--setenv', 'WT_SUITE_LOCK_LANE_TOKEN', state.bridgeState.laneToken)
   if (codexReal) refuseCoveredCodex(prefix, codexReal, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
@@ -1175,12 +1237,14 @@ function finishSandboxPlan(state) {
   return sandboxPlanResult(state, authSnapshot, line)
 }
 
-function sandboxPlanLine({ extras, droppedBinds, relativeBinds, network, rejectedConfigs, bridges, socatPath, registry, profile, writable, readable, masks, toolchain }) {
+function sandboxPlanLine({ extras, droppedBinds, relativeBinds, network, rejectedConfigs, bridges, socatPath, registry, profile, writable, readable, masks, toolchain, selected }) {
   const refusedNote = extras.refused.length ? `; refused ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV} entries ${extras.refused.join(', ')}` : ''
   const callerNote = callerBindMessages(droppedBinds, relativeBinds).map((note) => `; ${note}`).join('')
   const netNote = networkNote({ network: { ...network, unreadable: [...(network.unreadable ?? []), ...rejectedConfigs] }, bridges, socat: socatPath })
   const registryNote = registry.present ? '' : '; registered lane worktree index absent (registered-root clause skipped)'
-  return `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets${toolchain.skipNote}; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${callerNote})`
+  const withheldNote = selected.credentialFiles?.withheld.length ? `; withheld credential file references ${selected.credentialFiles.withheld.join(', ')}` : ''
+  const missingNote = selected.credentialFiles?.missing.length ? `; removed missing credential file references ${selected.credentialFiles.missing.join(', ')}` : ''
+  return `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets${toolchain.skipNote}; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${callerNote}${withheldNote}${missingNote})`
 }
 
 function sandboxPlanResult(state, authSnapshot, line) {

@@ -26,6 +26,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- OpenCode lane sandboxes withhold global and OPENCODE_CONFIG credential-file references and hard-link aliases, sanitize missing references, and refuse unsafe environment substitutions, mount exposure or selected-provider credentials.
 - The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
   ran in super-linear time (a 50 000-character line took over a second each) and now run
   in linear time, redacting exactly what they redacted before.
