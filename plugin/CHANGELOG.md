@@ -7,6 +7,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Warn-only stray tool-call markup guard for Write, Edit and MultiEdit, plus stored
+  commit messages after Bash invokes git commit. Closed fenced examples are exempt;
+  warnings include line-specific cleanup instructions and content-free journal evidence.
+  The guard journal now keeps `toolUseId` evidence values up to 128 characters and `kinds` up
+  to 64 for every guard using those keys; `wt-suite-lock-bypass-guard-hook.mjs` already
+  recorded `toolUseId` and was truncating it at 24 characters, which broke its transcript lookup.
 - Suite-lock host clients can park and resume a ticket within a bounded window using
   `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
   shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.
