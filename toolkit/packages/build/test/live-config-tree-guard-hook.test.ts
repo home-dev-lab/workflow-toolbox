@@ -478,10 +478,25 @@ checkRows('shell script cwd', [
   ['cd inside sh -c with a semicolon', `sh -c 'cd ${live}; git switch x'`],
   ['relative cd inside the script from the outer cwd', `cd ${home} && bash -c 'cd .claude/rules && git reset --hard'`],
   ['warn-class subcommand inside the script', `bash -c 'cd ${live} && git merge x'`, 'warn'],
-  ['a cd inside the script does not move the outer chain', `bash -c 'cd ${live}'; git reset --hard`, 'silent'],
   ['a shell word that is only an argument', `echo bash -c 'cd ${live} && git reset --hard'`, 'silent'],
   ['three nested scripts', nestShell(`cd ${live} && git reset --hard`, 3)],
   ['a fourth level is past the depth bound', nestShell(`cd ${live} && git reset --hard`, 4), 'silent'],
+], '/')
+
+// The path length bound applies to the RESOLVED directory, never to the spelled chain: a long
+// run of `cd .` or `-C .` resolves back to a short directory and must still reach the live tree.
+checkRows('overlong spelled chains', [
+  ['2100 cd . before the live cd', `cd ${home} && ${'cd . && '.repeat(2100)}cd .claude/rules && git reset --hard`],
+  ['2100 -C . after the live -C', `git -C ${live} ${'-C . '.repeat(2100)}reset --hard`],
+  ['2100 -C . leaving the live tree', `git -C ${live} ${'-C . '.repeat(2100)}-C .. reset --hard`, 'silent'],
+], '/')
+
+// Option values are quote-aware shell words: attached `-C<dir>`, `--name="dir"`, inner spaces.
+checkRows('quote-aware option values', [
+  ['attached -C<dir>', `git -C${live} reset --hard`],
+  ['quoted --work-tree= beside a foreign --git-dir', `git --git-dir=${home}/repo/.git --work-tree="${live}" reset --hard`],
+  ['quoted -C with two inner spaces', `git -C "${home}/a  b/../.claude/rules" reset --hard`],
+  ['quoted -C with inner spaces outside the live tree', `git -C "${home}/a  b" reset --hard`, 'silent'],
 ], '/')
 
 for (const target of [live, '~/.claude/rules', `'${live}'`, `"${live}"`]) {
@@ -502,6 +517,15 @@ describe('wt-live-config-tree-guard-hook — verdict parity with the retired pri
       expect(r.verdict).toBe(row.expected)
     })
   }
+})
+
+// The `cd` inside a script must not move the outer chain, and the script's own `cd` must still
+// reach its own git command: both halves in one test, so removing `-c` traversal turns it red.
+describe('wt-live-config-tree-guard-hook — a shell script keeps its own cwd', () => {
+  it('a cd inside the script does not move the outer chain, but moves the script', () => {
+    expect(parityVerdict(`bash -c 'cd ${live}'; git reset --hard`, '/').verdict).toBe('silent')
+    expect(parityVerdict(`bash -c 'cd ${live} && git reset --hard'`, '/').verdict).toBe('deny')
+  })
 })
 
 const repeatedGit = (count: number) => `printf '%s' '${'git '.repeat(count)}switch main'`

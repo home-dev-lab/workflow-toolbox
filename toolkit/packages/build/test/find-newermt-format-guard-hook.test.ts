@@ -419,6 +419,7 @@ describe('find inside sh, bash and zsh -c scripts', () => {
     "bash -o 'find . -newermt yesterday' -c true",
     "echo bash -c 'find . -newermt yesterday'",
     "printf '%s' bash -c 'find . -newermt yesterday'",
+    "echo then bash -c 'find . -newermt yesterday'",
   ])('SILENT: %s', (command) => {
     const r = run(command)
     expect(r.stdout).toBe('')
@@ -436,6 +437,14 @@ describe('the shell word of a -c script is in command position', () => {
     "timeout -s KILL 30 bash -c 'find . -newermt yesterday'",
     "env A=1 nice -n 5 bash -c 'find . -newermt yesterday'",
     "setsid nohup bash -c 'find . -newermt yesterday'",
+    "if true; then bash -c 'find . -newermt yesterday'; fi",
+    "for f in x; do bash -c 'find . -newermt yesterday'; done",
+    "while false; do :; done; until true; do sh -c 'find . -newermt yesterday'; done",
+    "if false; then :; else bash -c 'find . -newermt yesterday'; fi",
+    "if false; then :; elif bash -c 'find . -newermt yesterday'; then :; fi",
+    "! bash -c 'find . -newermt yesterday'",
+    "{ bash -c 'find . -newermt yesterday'; }",
+    "(bash -c 'find . -newermt yesterday')",
   ])('WARN: %s', (command) => {
     const r = run(command)
     expect(r.warned).toBe(true)

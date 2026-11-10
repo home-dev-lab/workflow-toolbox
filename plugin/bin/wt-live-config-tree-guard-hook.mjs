@@ -99,9 +99,7 @@ const UNRESOLVABLE = /[$*?`]/
 // git's global options that take the NEXT word as their value (`git -c k=v switch` must not read
 // `k=v` as the subcommand). Every other leading `-…` word is a flag without a value.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source'])
-// A quoted option value (`-C "a b"`) may span words; past this many it is read as one bare word.
-const MAX_VALUE_WORDS = 16
-// PATH_MAX on Linux; no live rules directory is spelled longer than this.
+// PATH_MAX on Linux: a RESOLVED directory longer than this cannot be opened, so it is no target.
 const MAX_PATH_CHARS = 4096
 const CHECKOUT_SWITCHES = /^(?:-[bB]|--orphan|--detach|-t$|--track)/
 const CHECKOUT_PATHS_ONLY = /^(?:-p$|--patch$|--pathspec-from-file)/
@@ -113,39 +111,81 @@ function wordsOf(seg) {
   return Array.from(seg.matchAll(/\S+/g), (m) => ({ text: m[0], at: m.index }))
 }
 
-/** The value of an option at `list[i]`: a quoted value may span a few words. */
-function optionValue(list, i) {
-  const first = list[i]?.text
-  if (first === undefined) return { value: null, next: i }
-  const quote = first[0]
-  if (quote !== '"' && quote !== "'") return { value: first, next: i + 1 }
-  let last = i
-  const closes = (k) => list[k].text.length > (k === i ? 1 : 0) && list[k].text.endsWith(quote)
-  while (!closes(last) && last + 1 < list.length && last - i < MAX_VALUE_WORDS) last += 1
-  if (!closes(last)) return { value: first, next: i + 1 }
-  const text = list.slice(i, last + 1).map((word) => word.text).join(' ')
-  return { value: text.slice(1, -1), next: last + 1 }
+/** One quoted piece at `text[i]`: its unquoted text and the offset after it. An unclosed quote
+ *  runs to the end of the text. */
+function quotedPiece(text, i) {
+  if (text[i] === "'") {
+    const close = text.indexOf("'", i + 1)
+    const end = close === -1 ? text.length : close
+    return { piece: text.slice(i + 1, end), next: end + 1 }
+  }
+  const end = doubleQuoteEnd(text, i)
+  return { piece: text.slice(i + 1, end).replace(/\\([\\"$`\n])/g, '$1'), next: end + 1 }
 }
 
-/** Record one global option of `git` and return the index after it. */
-function globalOption(list, i, inv) {
-  const word = list[i].text
+/** One shell WORD read from `text` at offset `at`, as the shell hands it to git: quotes removed,
+ *  adjacent quoted and bare pieces joined, whitespace inside quotes kept. */
+function lexWord(text, at) {
+  let word = ''
+  let i = at
+  while (i < text.length && !BLANK.test(text[i])) {
+    if (text[i] === "'" || text[i] === '"') {
+      const { piece, next } = quotedPiece(text, i)
+      word += piece
+      i = next
+    } else if (text[i] === '\\') {
+      // A backslash-newline is a line continuation; any other escaped character is literal.
+      if (text[i + 1] !== '\n') word += text[i + 1] ?? ''
+      i += 2
+    } else word += text[i++]
+  }
+  return { value: word, end: Math.min(i, text.length) }
+}
+
+/** The index of the first word that starts at or after `offset` (words are in offset order). */
+function wordIndexAt(list, offset) {
+  let low = 0
+  let high = list.length
+  while (low < high) {
+    const mid = (low + high) >> 1
+    if (list[mid].at < offset) low = mid + 1
+    else high = mid
+  }
+  return low
+}
+
+/** A global option's name and the offset (inside the word) of an attached value, or -1:
+ *  `--work-tree=<v>`, `-C<v>`, or a bare name whose value is the next word. */
+function optionSpelling(word) {
   const eq = word.startsWith('--') ? word.indexOf('=') : -1
-  const name = eq === -1 ? word : word.slice(0, eq)
-  if (!GIT_VALUE_OPTIONS.has(name)) return i + 1
-  const { value, next } = eq === -1 ? optionValue(list, i + 1) : { value: word.slice(eq + 1), next: i + 1 }
-  if (value === null) return next
+  if (eq !== -1) return { name: word.slice(0, eq), attached: eq + 1 }
+  if (word.startsWith('-C') && word.length > 2) return { name: '-C', attached: 2 }
+  return { name: word, attached: -1 }
+}
+
+function recordOption(inv, name, value) {
   if (name === '-C') inv.dirs.push(value)
   if (name === '--work-tree') inv.workTree = value
   if (name === '--git-dir') inv.gitDir = value
-  return next
+}
+
+/** Record one global option of `git` and return the index of the word after it. A value is read
+ *  from the segment text as a shell word, so `-C "a  b"` and `--work-tree="x"` reach git's spelling. */
+function globalOption(list, i, inv, seg) {
+  const { name, attached } = optionSpelling(list[i].text)
+  if (!GIT_VALUE_OPTIONS.has(name)) return i + 1
+  if (attached === -1 && i + 1 >= list.length) return i + 1
+  const start = attached === -1 ? list[i + 1].at : list[i].at + attached
+  const { value, end } = lexWord(seg, start)
+  recordOption(inv, name, value)
+  return Math.max(i + 1, wordIndexAt(list, end))
 }
 
 /** `git [global options] <subcommand>` starting at the git word `list[at]`. */
-function gitInvocation(list, at) {
+function gitInvocation(list, at, seg) {
   const inv = { dirs: [], workTree: null, gitDir: null, subIndex: at + 1 }
   let i = at + 1
-  while (i < list.length && list[i].text.startsWith('-')) i = globalOption(list, i, inv)
+  while (i < list.length && list[i].text.startsWith('-')) i = globalOption(list, i, inv, seg)
   inv.subIndex = i
   return inv
 }
@@ -203,42 +243,75 @@ function spelledDir(raw, cwd) {
   return resolveTarget(raw, cwd)
 }
 
-// The cwd a chain of `cd`s has reached, resolved only when a git invocation needs it: resolving
-// after every `cd` re-reads an ever longer path, and a long `cd a && cd a …` chain turns quadratic.
-// A `cd` that cannot be resolved leaves the cwd where it was, as does one that would spell a path
-// longer than any directory that can be opened.
+/** `resolve(dir, ...chunk)`, or null when the RESOLVED directory is longer than any that can be
+ *  opened. The bound is on resolve's output, never on the spelling: `cd .` repeated stays short. */
+function resolveChunk(dir, chunk) {
+  try {
+    const next = resolve(dir || '/', ...chunk)
+    return next.length > MAX_PATH_CHARS ? null : next
+  } catch {
+    return null
+  }
+}
+
+/** Resolve `values` one after another from `base`, as git's `-C` chain does, in chunks of at most
+ *  about MAX_PATH_CHARS of spelling, so each `resolve` reads a bounded directory plus a bounded
+ *  chunk: linear in the input. null when a step's directory grows past the bound. */
+function resolveChain(base, values) {
+  let dir = base
+  let chunk = []
+  let size = 0
+  for (const value of values) {
+    chunk.push(value)
+    size += value.length + 1
+    if (size < MAX_PATH_CHARS) continue
+    dir = resolveChunk(dir, chunk)
+    if (dir === null) return null
+    chunk = []
+    size = 0
+  }
+  return chunk.length > 0 ? resolveChunk(dir, chunk) : dir
+}
+
+// The cwd a chain of `cd`s has reached. Relative `cd`s are collected and resolved a chunk at a
+// time (resolving after every `cd` re-reads an ever longer path, and a long `cd a && cd a …` chain
+// turns quadratic). A `cd` that cannot be resolved leaves the cwd where it was; so does a chunk
+// whose resolved directory would be longer than any that can be opened.
 function cwdTrail(cwd) {
-  return { base: cwd, pending: [], length: cwd?.length ?? 0 }
+  return { base: cwd, pending: [], size: 0 }
+}
+
+function flushTrail(trail) {
+  if (trail.pending.length > 0) trail.base = resolveChunk(trail.base, trail.pending) ?? trail.base
+  trail.pending = []
+  trail.size = 0
 }
 
 function trailCd(trail, raw) {
   if (typeof raw !== 'string' || raw.length === 0 || UNRESOLVABLE.test(raw)) return
   const expanded = raw.startsWith('~') ? homedir() + raw.slice(1) : raw
-  if (expanded.startsWith('/')) Object.assign(trail, cwdTrail(expanded))
-  else if (trail.length + expanded.length < MAX_PATH_CHARS) {
-    trail.pending.push(expanded)
-    trail.length += expanded.length + 1
+  if (expanded.startsWith('/')) {
+    const absolute = resolveChunk('/', [expanded])
+    if (absolute !== null) Object.assign(trail, cwdTrail(absolute))
+    return
   }
+  trail.pending.push(expanded)
+  trail.size += expanded.length + 1
+  if (trail.size >= MAX_PATH_CHARS) flushTrail(trail)
 }
 
 function trailDir(trail) {
-  if (trail.pending.length > 0) trail.base = resolveTarget(trail.pending.join('/'), trail.base) ?? trail.base
-  trail.pending = []
+  flushTrail(trail)
   return trail.base
 }
 
 /** `git -C a -C b` acts on `a/b`, as git resolves it: each `-C` is relative to the one before, and
- *  an empty `-C ''` is a no-op. One `resolve` call over the whole chain keeps this linear. */
+ *  an empty `-C ''` is a no-op. */
 function chainedDir(values, cwd) {
   const spelled = values.filter((value) => value.length > 0)
   if (spelled.some((value) => UNRESOLVABLE.test(value))) return null
-  if (spelled.reduce((total, value) => total + value.length + 1, cwd?.length ?? 0) > MAX_PATH_CHARS) return null
   const expanded = spelled.map((value) => (value.startsWith('~') ? homedir() + value.slice(1) : value))
-  try {
-    return resolve(cwd || '/', ...expanded)
-  } catch {
-    return null
-  }
+  return resolveChain(cwd || '/', expanded)
 }
 
 /** The raw target of a `cd <path>` that opens the segment, or null. */
@@ -280,7 +353,7 @@ function segmentHit(seg, trail) {
       i += 1
       continue
     }
-    const inv = gitInvocation(list, i)
+    const inv = gitInvocation(list, i, seg)
     const verdict = subcommandVerdict(list, inv, shape)
     const dir = verdict ? invocationDirs(inv, seg, trailDir(trail)).find(isGuardedDir) : undefined
     if (dir) best = worse(best, { verdict, dir })
@@ -352,12 +425,9 @@ function doubleQuoteEnd(script, i) {
 }
 
 function quotedSpan(script, i, state) {
-  const quote = script[i]
-  const close = quote === "'" ? script.indexOf("'", i + 1) : doubleQuoteEnd(script, i)
-  const end = close === -1 ? script.length : close
-  const body = script.slice(i + 1, end)
-  appendWord(state, quote === '"' ? body.replace(/\\([\\"$`\n])/g, '$1') : body)
-  return end + 1
+  const { piece, next } = quotedPiece(script, i)
+  appendWord(state, piece)
+  return next
 }
 
 /** One step of the quote-aware scan; returns the next index. */

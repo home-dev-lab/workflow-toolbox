@@ -175,11 +175,16 @@ function skipLauncher(words, at) {
   return index + positional
 }
 
-// The index of the word in command position: after assignments and launchers with their arguments.
+// Reserved words after which the next word is again in command position (`(` is a separator).
+const RESERVED_WORDS = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{'])
+
+// The index of the word in command position: after reserved words, assignments, and launchers
+// with their arguments.
 function commandStart(words) {
   let index = 0
   while (index < words.length) {
-    if (ASSIGNMENT.test(shellValue(words[index]))) index++
+    const value = shellValue(words[index])
+    if (RESERVED_WORDS.has(value) || ASSIGNMENT.test(value)) index++
     else if (LAUNCHERS.has(launcherName(words[index]))) index = skipLauncher(words, index)
     else break
   }

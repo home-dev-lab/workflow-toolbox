@@ -120,10 +120,70 @@ function simpleCommands(cmd) {
   return commands
 }
 
+// Words that run the NEXT word as a command, each with the options that take a value and the
+// count of positional arguments (timeout's duration) before that command. Kept in step with the
+// find guard's map: the hooks ship standalone, so they share no library.
+const LAUNCHERS = new Map([
+  ['sudo', { valued: /^-[ugCDhpRrtTU]$|^--(?:user|group|chdir|prompt|host)$/, positional: 0 }],
+  ['timeout', { valued: /^-[sk]$|^--(?:signal|kill-after)$/, positional: 1 }],
+  ['nice', { valued: /^-n$|^--adjustment$/, positional: 0 }],
+  ['env', { valued: /^-[uCS]$|^--(?:unset|chdir|split-string)$/, positional: 0 }],
+  ['stdbuf', { valued: /^-[ioe]$/, positional: 0 }],
+  ['exec', { valued: /^-a$/, positional: 0 }],
+  ...['nohup', 'setsid', 'time', 'command'].map((name) => [name, { valued: /^$/, positional: 0 }]),
+])
+const ASSIGNMENT = /^[A-Za-z_]\w*=/
+// Reserved words after which the next word is again in command position.
+const RESERVED_WORDS = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '('])
+const SHELL_COMMAND = /^(?:sh|bash|zsh)$/
+const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$|^--(?:rcfile|init-file)$/
+const SHELL_FLAG_CLUSTER = /^-[A-Za-z]+$/
+const MAX_SCRIPT_DEPTH = 3
+
+const baseName = (word) => word.slice(word.lastIndexOf('/') + 1)
+
+// The index after a launcher word, its options (with their values) and its positional arguments.
+function skipLauncher(words, at) {
+  const { valued, positional } = LAUNCHERS.get(baseName(words[at]))
+  let index = at + 1
+  while (index < words.length && words[index].startsWith('-')) {
+    const option = words[index]
+    index += valued.test(option) ? 2 : 1
+    if (option === '--') break
+  }
+  return index + positional
+}
+
+// The index of the word in command position: after reserved words, assignments, and launchers
+// with their arguments. Words are already quote-removed.
+function commandStart(words) {
+  let index = 0
+  while (index < words.length) {
+    if (RESERVED_WORDS.has(words[index]) || ASSIGNMENT.test(words[index])) index++
+    else if (LAUNCHERS.has(baseName(words[index]))) index = skipLauncher(words, index)
+    else break
+  }
+  return index
+}
+
+// The script of `[launchers] sh|bash|zsh [options] -c <script>`, or null when the shell runs a
+// file instead, or when the shell word is only an argument (`echo bash -c '…'`).
+function shellScript(words) {
+  const head = commandStart(words)
+  if (head >= words.length || !SHELL_COMMAND.test(baseName(words[head]))) return null
+  let runsScript = false
+  for (let index = head + 1; index < words.length; index++) {
+    const word = words[index]
+    if (SHELL_OPTION_WITH_VALUE.test(word)) index++
+    else if (/^[-+]/.test(word)) runsScript ||= SHELL_FLAG_CLUSTER.test(word) && word.includes('c')
+    else return runsScript ? word : null
+  }
+  return null
+}
+
 // The arguments of a `git [global options] commit …` command in command position, or null.
 function commitArguments(words) {
-  let i = 0
-  while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i])) i++
+  let i = commandStart(words)
   if (words[i]?.split('/').pop() !== 'git') return null
   i++
   while (i < words.length && words[i].startsWith('-')) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1
@@ -172,12 +232,15 @@ const EMPTY_NOTICE =
   'change, --allow-empty is not needed. Warning only; proceed if the subject is honest.'
 
 // Warn text when one `git commit` command passes --allow-empty and its readable messages name no
-// marker, else null. Each commit is judged alone: another commit's marker never excuses it.
-function emptyCommitNotice(scanned) {
+// marker, else null. Each commit is judged alone: another commit's marker never excuses it. A
+// shell `-c` script is walked as a command line of its own, at most MAX_SCRIPT_DEPTH levels deep.
+function emptyCommitNotice(scanned, depth = 0) {
   if (!scanned.includes('--allow-empty')) return null
   for (const words of simpleCommands(scanned)) {
     const args = commitArguments(words)
     if (args && commitNotice(args)) return EMPTY_NOTICE
+    const script = depth < MAX_SCRIPT_DEPTH ? shellScript(words) : null
+    if (script !== null && emptyCommitNotice(script, depth + 1)) return EMPTY_NOTICE
   }
   return null
 }

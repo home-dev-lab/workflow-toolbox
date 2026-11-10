@@ -222,6 +222,49 @@ describe('wt-git-commit-backtick-guard-hook: each git commit is judged alone', (
   })
 })
 
+// Each level is a real shell nesting: single quotes, an inner quote spelled '\''.
+function nestShell(script: string, levels: number): string {
+  let command = script
+  for (let i = 0; i < levels; i += 1) command = `bash -c '${command.replaceAll("'", "'\\''")}'`
+  return command
+}
+
+describe('wt-git-commit-backtick-guard-hook: launchers, reserved words and -c scripts', () => {
+  const SHIP = `git commit --allow-empty -m 'ship it'`
+  it.each([
+    `env ${SHIP}`,
+    `env A=1 ${SHIP}`,
+    `sudo -u root timeout 5 nice -n 1 ${SHIP}`,
+    `setsid nohup ${SHIP}`,
+    `if true; then ${SHIP}; fi`,
+    `bash -c 'git commit --allow-empty -m "ship it"'`,
+    `env A=1 bash -lc 'cd x && git commit --allow-empty -m "ship it"'`,
+    nestShell(SHIP, 3),
+  ])('WARN: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.entries.map((e) => e.class)).toEqual([EMPTY_CLASS])
+    expect(r.denied).toBe(false)
+  })
+
+  it.each([
+    `echo bash -c 'git commit --allow-empty -m "ship it"'`,
+    `bash -c 'git commit --allow-empty -m "marker: no code"'`,
+    `echo env ${SHIP}`,
+  ])('SILENT: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+
+  it('walks three nested scripts and stops at the fourth', () => {
+    // The pair is the lock: removing the walk (both silent) or the bound (both warn) fails here.
+    expect(runJournaled(nestShell(SHIP, 3)).warned).toBe(true)
+    const r = runJournaled(nestShell(SHIP, 4))
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+})
+
 describe('wt-git-commit-backtick-guard-hook: empty commit and backtick notices', () => {
   it('ONE notice carries BOTH warnings when the command has both hazards', () => {
     const r = runJournaled('git commit --allow-empty -m "ship the `thing` now"')
