@@ -250,6 +250,9 @@ describe('wt-git-commit-backtick-guard-hook: launchers, reserved words and -c sc
     `echo bash -c 'git commit --allow-empty -m "ship it"'`,
     `bash -c 'git commit --allow-empty -m "marker: no code"'`,
     `echo env ${SHIP}`,
+    // `command -v` / `-V` looks a name up; it runs nothing.
+    `command -v ${SHIP}`,
+    `command -V ${SHIP}`,
   ])('SILENT: %s', (command) => {
     const r = runJournaled(command)
     expect(r.stdout).toBe('')

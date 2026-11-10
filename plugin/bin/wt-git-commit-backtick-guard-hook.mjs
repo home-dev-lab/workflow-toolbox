@@ -141,6 +141,8 @@ const SHELL_FLAG_CLUSTER = /^-[A-Za-z]+$/
 const MAX_SCRIPT_DEPTH = 3
 
 const baseName = (word) => word.slice(word.lastIndexOf('/') + 1)
+// `command -v` / `-V` (alone or in a cluster) looks a name up and runs nothing.
+const isLookup = (words, at) => baseName(words[at]) === 'command' && /^-[a-zA-Z]*[vV]/.test(words[at + 1] ?? '')
 
 // The index after a launcher word, its options (with their values) and its positional arguments.
 function skipLauncher(words, at) {
@@ -160,6 +162,7 @@ function commandStart(words) {
   let index = 0
   while (index < words.length) {
     if (RESERVED_WORDS.has(words[index]) || ASSIGNMENT.test(words[index])) index++
+    else if (isLookup(words, index)) return words.length
     else if (LAUNCHERS.has(baseName(words[index]))) index = skipLauncher(words, index)
     else break
   }

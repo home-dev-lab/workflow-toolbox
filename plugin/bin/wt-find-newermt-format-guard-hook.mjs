@@ -163,6 +163,11 @@ function launcherName(word) {
   return value.slice(value.lastIndexOf('/') + 1)
 }
 
+// `command -v` / `-V` (alone or in a cluster) looks a name up and runs nothing.
+function isLookup(words, at) {
+  return launcherName(words[at]) === 'command' && /^-[a-zA-Z]*[vV]/.test(shellValue(words[at + 1] ?? ''))
+}
+
 // The index after a launcher word, its options (with their values) and its positional arguments.
 function skipLauncher(words, at) {
   const { valued, positional } = LAUNCHERS.get(launcherName(words[at]))
@@ -185,6 +190,7 @@ function commandStart(words) {
   while (index < words.length) {
     const value = shellValue(words[index])
     if (RESERVED_WORDS.has(value) || ASSIGNMENT.test(value)) index++
+    else if (isLookup(words, index)) return words.length
     else if (LAUNCHERS.has(launcherName(words[index]))) index = skipLauncher(words, index)
     else break
   }

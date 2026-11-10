@@ -229,6 +229,8 @@ const PARITY_HOME = mkdtempSync(join(tmpdir(), 'wt-live-tree-parity-'))
 const home = PARITY_HOME
 const live = join(home, '.claude', 'rules')
 mkdirSync(join(live, '.git'), { recursive: true })
+// A live tree whose path holds two adjacent spaces: collapsing them names a directory with no `.git`.
+mkdirSync(join(home, 'a  b', '.claude', 'rules', '.git'), { recursive: true })
 afterAll(() => rmSync(PARITY_HOME, { recursive: true, force: true }))
 
 const PARITY_ROWS: { name: string; command: string; expected: Verdict; cwd: string }[] = []
@@ -495,7 +497,7 @@ checkRows('overlong spelled chains', [
 checkRows('quote-aware option values', [
   ['attached -C<dir>', `git -C${live} reset --hard`],
   ['quoted --work-tree= beside a foreign --git-dir', `git --git-dir=${home}/repo/.git --work-tree="${live}" reset --hard`],
-  ['quoted -C with two inner spaces', `git -C "${home}/a  b/../.claude/rules" reset --hard`],
+  ['quoted -C with two inner spaces', `git -C "${home}/a  b/.claude/rules" reset --hard`],
   ['quoted -C with inner spaces outside the live tree', `git -C "${home}/a  b" reset --hard`, 'silent'],
 ], '/')
 

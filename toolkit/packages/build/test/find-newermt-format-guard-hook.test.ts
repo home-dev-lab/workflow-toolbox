@@ -255,6 +255,8 @@ describe('simple-command scope', () => {
     'find . -name "-newermt yesterday"',
     'find . -name safe; echo -newermt yesterday',
     'bfs . -newermt 2026-10-25T01:10:59Z',
+    // `command -v` looks a name up; the shell after it never runs.
+    "command -v bash -c 'find . -newermt yesterday'",
   ])('SILENT: %s', (command) => {
     const r = run(command)
     expect(r.stdout).toBe('')
