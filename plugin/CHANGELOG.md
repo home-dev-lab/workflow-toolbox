@@ -7,6 +7,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Warn-only stray tool-call markup guard for Write, Edit and MultiEdit, plus stored
+  commit messages after Bash invokes git commit. Closed fenced examples are exempt;
+  warnings include line-specific cleanup instructions and content-free journal evidence.
+  The guard journal now keeps `toolUseId` evidence values up to 128 characters and `kinds` up
+  to 64 for every guard using those keys; `wt-suite-lock-bypass-guard-hook.mjs` already
+  recorded `toolUseId` and was truncating it at 24 characters, which broke its transcript lookup.
 - Suite-lock host clients can park and resume a ticket within a bounded window using
   `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
   shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.
@@ -27,6 +33,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - OpenCode lane sandboxes withhold global and OPENCODE_CONFIG credential-file references and hard-link aliases, sanitize missing references, and refuse unsafe environment substitutions, mount exposure or selected-provider credentials.
+- A process that exits while `/proc` is being listed no longer fails the whole listing. The lane-launch
+  count (`lane count NOT MEASURED: ENOENT`), the idle reader, the watcher-orphan check and the wake-floor
+  scan now list plain pid names and read a vanished pid as gone, while a listing that genuinely cannot be
+  read still reports unknown or unavailable.
+
 - The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
   ran in super-linear time (a 50 000-character line took over a second each) and now run
   in linear time, redacting exactly what they redacted before.

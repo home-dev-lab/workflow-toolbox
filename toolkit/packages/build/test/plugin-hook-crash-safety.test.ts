@@ -538,6 +538,11 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
 
 function syntheticPayloadFor(hookPath: string, sandbox: Sandbox): unknown {
   switch (basename(hookPath)) {
+    case 'wt-stray-tool-markup-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse', tool_name: 'Write',
+        tool_input: { file_path: 'note.md', content: 'body\n</content>\n</invoke>\n' },
+      }
     case 'wt-worktree-sweep-hook.mjs':
       return {
         hook_event_name: 'SessionStart',

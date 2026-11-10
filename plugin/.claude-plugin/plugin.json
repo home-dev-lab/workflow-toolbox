@@ -356,6 +356,16 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-stray-tool-markup-guard-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "mcp__.*|Bash",
         "hooks": [
           {
@@ -679,6 +689,16 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-stray-tool-markup-guard-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Agent|Task",
         "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-model-fallback-hook.mjs\"", "timeout": 15 }]

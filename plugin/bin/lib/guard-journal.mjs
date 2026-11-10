@@ -66,13 +66,21 @@ const MAX_SECRET_CANDIDATE_LEN = 400
 // mangled a separator into `?` and made the record harder to read.
 const SAFE_FIELD = /^[A-Za-z0-9._/-]+$/
 const SAFE_VALUE_STRIP = /[^A-Za-z0-9._/,-]+/g
+// toolUseId (128) and kinds (64) are wider than the 24-character default for EVERY guard that uses these exact
+// keys: suite-lock-bypass already records toolUseId and was truncating it at 24 characters, which defeats the
+// transcript lookup the identifier exists for.
+const EVIDENCE_VALUE_LIMITS = new Map([['toolUseId', 128], ['kinds', 64]])
 
-function sanitiseValue(value, mask = (text) => text) {
+function sanitiseValue(value, mask = (text) => text, maxLength = MAX_SAFE_FIELD_LEN) {
   if (typeof value !== 'string' && typeof value !== 'number') return null
   const sanitised = mask(String(value))
-    .slice(0, MAX_SAFE_FIELD_LEN)
+    .slice(0, maxLength)
     .replace(SAFE_VALUE_STRIP, '?')
   return sanitised || null
+}
+
+function validEvidenceKey(key) {
+  return key && key.length <= MAX_SAFE_FIELD_LEN && SAFE_FIELD.test(key)
 }
 
 function sanitiseEvidence(evidence, mask) {
@@ -81,8 +89,9 @@ function sanitiseEvidence(evidence, mask) {
     const out = {}
     let count = 0
     for (const [key, value] of Object.entries(evidence)) {
-      if (!key || key.length > MAX_SAFE_FIELD_LEN || !SAFE_FIELD.test(key)) continue
-      const sanitised = sanitiseValue(value, mask)
+      if (!validEvidenceKey(key)) continue
+      // Bounded metadata lists and transcript lookup IDs must survive without truncation.
+      const sanitised = sanitiseValue(value, mask, EVIDENCE_VALUE_LIMITS.get(key))
       if (sanitised === null) continue
       out[key] = sanitised
       count++

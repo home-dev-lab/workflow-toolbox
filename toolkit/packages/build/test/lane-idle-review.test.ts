@@ -17,7 +17,7 @@ const idleScan = scanner.scanIdleWorktree ?? scanner.scanWorktree
 function procSnapshot(childUser = '0', childSystem = '0', parent = '4', { readLink = () => String(process.pid), state = 'S' } = {}) {
   return readLinuxProcProcesses({
     readLink,
-    readDirectory: () => ['4', '5'].map((name) => ({ name, isDirectory: () => true })),
+    readDirectory: () => ['4', '5'],
     observedAt: 20_000,
     readFile: (file: string) => {
       if (file === '/proc/uptime') return '10 1\n'
@@ -349,7 +349,7 @@ describe('kernel threads in idle ancestry', () => {
     const rows: Record<string, { ppid: string; flags: string }> = { 1: { ppid: '0', flags: '4194560' }, 2: { ppid: '0', flags: '2129984' }, 4: { ppid: '1', flags: '4194304' } }
     const snapshot = readLinuxProcProcesses({
       readLink: () => String(process.pid),
-      readDirectory: () => Object.keys(rows).map((name) => ({ name, isDirectory: () => true })),
+      readDirectory: () => Object.keys(rows),
       observedAt: 20_000,
       readFile: (file: string) => {
         if (file === '/proc/uptime') return '10 1\n'

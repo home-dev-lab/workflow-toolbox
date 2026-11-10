@@ -181,6 +181,11 @@ const cases: Array<{
   contains?: string
 }> = [
   {
+    hook: 'wt-stray-tool-markup-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'note.md', content: 'body\n</content>\n' } } }),
+    contains: 'stray tool-call markup',
+  },
+  {
     hook: 'wt-merge-chain-guard-hook.mjs',
     make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git merge branch && pnpm test' } } }),
     contains: '',
