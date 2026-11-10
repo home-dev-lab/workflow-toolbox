@@ -50,6 +50,7 @@
 // (additionalContext), never denies.
 
 import { readFileSync } from 'node:fs'
+import { posix } from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
@@ -160,7 +161,8 @@ function* substitutionBodies(word) {
 
 function launcherName(word) {
   const value = shellValue(word)
-  return value.slice(value.lastIndexOf('/') + 1)
+  // A shell command path is `/`-separated on every host.
+  return posix.basename(value)
 }
 
 // `command -v` / `-V` (alone or in a cluster) looks a name up and runs nothing.

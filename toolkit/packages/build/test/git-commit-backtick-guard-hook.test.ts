@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,10 +28,24 @@ function run(command: string) {
   }
 }
 
+function readJournal(journalDir: string): Record<string, unknown>[] {
+  return readdirSync(journalDir)
+    .filter((file) => file.endsWith('.ndjson'))
+    .flatMap((file) =>
+      readFileSync(join(journalDir, file), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+    )
+}
+
 // Same hook, with the guard journal redirected to a scratch directory so a warning's journal
-// rows can be read back; `extraEnv` and `agentId` drive observe mode and subagent payloads.
+// rows can be read back; `extraEnv` and `agentId` drive observe mode and subagent payloads. HOME
+// and the config dir are sealed to the same scratch root, so no run reads or writes the account's.
 function runJournaled(command: string, extraEnv: Record<string, string> = {}, agentId?: string) {
-  const journalDir = mkdtempSync(join(tmpdir(), 'wt-commit-backtick-journal-'))
+  const scratch = mkdtempSync(join(tmpdir(), 'wt-commit-backtick-journal-'))
+  const journalDir = join(scratch, 'journal')
+  mkdirSync(journalDir)
   try {
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify({
@@ -41,16 +55,16 @@ function runJournaled(command: string, extraEnv: Record<string, string> = {}, ag
         ...(agentId ? { agent_id: agentId } : {}),
       }),
       encoding: 'utf8',
-      env: { ...process.env, ...extraEnv, WT_GUARD_JOURNAL_DIR: journalDir },
+      env: {
+        ...process.env,
+        HOME: join(scratch, 'home'),
+        USERPROFILE: join(scratch, 'home'),
+        CLAUDE_CONFIG_DIR: join(scratch, 'claude-config'),
+        ...extraEnv,
+        WT_GUARD_JOURNAL_DIR: journalDir,
+      },
     })
-    const entries = readdirSync(journalDir)
-      .filter((file) => file.endsWith('.ndjson'))
-      .flatMap((file) =>
-        readFileSync(join(journalDir, file), 'utf8')
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as Record<string, unknown>),
-      )
+    const entries = readJournal(journalDir)
     const parsed = res.stdout ? (JSON.parse(res.stdout) as { hookSpecificOutput?: { additionalContext?: string } }) : null
     return {
       warned: res.stdout.includes('hookSpecificOutput'),
@@ -61,7 +75,7 @@ function runJournaled(command: string, extraEnv: Record<string, string> = {}, ag
       entries,
     }
   } finally {
-    rmSync(journalDir, { recursive: true, force: true })
+    rmSync(scratch, { recursive: true, force: true })
   }
 }
 

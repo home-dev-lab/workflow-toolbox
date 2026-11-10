@@ -45,9 +45,9 @@
 //     no-op that looks identical to "installed and protecting".
 
 import { existsSync, readFileSync, writeSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { resolve, sep } from 'node:path'
+import { isAbsolute, posix, resolve, sep } from 'node:path'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
+import { homeDirectory } from './lib/host/home-directory.mjs'
 
 const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
 
@@ -101,6 +101,10 @@ const UNRESOLVABLE = /[$*?`]/
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source'])
 // PATH_MAX on Linux: a RESOLVED directory longer than this cannot be opened, so it is no target.
 const MAX_PATH_CHARS = 4096
+// The filesystem root a relative path falls back to when no cwd is known.
+const FS_ROOT = resolve(sep)
+// The shell's escape character (shell syntax, not a path separator).
+const SHELL_ESCAPE = '\\'
 const CHECKOUT_SWITCHES = /^(?:-[bB]|--orphan|--detach|-t$|--track)/
 const CHECKOUT_PATHS_ONLY = /^(?:-p$|--patch$|--pathspec-from-file)/
 const SHORT_FLAGS = /^-[a-zA-Z]+$/
@@ -133,7 +137,7 @@ function lexWord(text, at) {
       const { piece, next } = quotedPiece(text, i)
       word += piece
       i = next
-    } else if (text[i] === '\\') {
+    } else if (text[i] === SHELL_ESCAPE) {
       // A backslash-newline is a line continuation; any other escaped character is literal.
       if (text[i + 1] !== '\n') word += text[i + 1] ?? ''
       i += 2
@@ -247,7 +251,7 @@ function spelledDir(raw, cwd) {
  *  opened. The bound is on resolve's output, never on the spelling: `cd .` repeated stays short. */
 function resolveChunk(dir, chunk) {
   try {
-    const next = resolve(dir || '/', ...chunk)
+    const next = resolve(dir || FS_ROOT, ...chunk)
     return next.length > MAX_PATH_CHARS ? null : next
   } catch {
     return null
@@ -289,9 +293,9 @@ function flushTrail(trail) {
 
 function trailCd(trail, raw) {
   if (typeof raw !== 'string' || raw.length === 0 || UNRESOLVABLE.test(raw)) return
-  const expanded = raw.startsWith('~') ? homedir() + raw.slice(1) : raw
-  if (expanded.startsWith('/')) {
-    const absolute = resolveChunk('/', [expanded])
+  const expanded = expandTilde(raw)
+  if (isAbsolute(expanded)) {
+    const absolute = resolveChunk(FS_ROOT, [expanded])
     if (absolute !== null) Object.assign(trail, cwdTrail(absolute))
     return
   }
@@ -310,8 +314,7 @@ function trailDir(trail) {
 function chainedDir(values, cwd) {
   const spelled = values.filter((value) => value.length > 0)
   if (spelled.some((value) => UNRESOLVABLE.test(value))) return null
-  const expanded = spelled.map((value) => (value.startsWith('~') ? homedir() + value.slice(1) : value))
-  return resolveChain(cwd || '/', expanded)
+  return resolveChain(cwd || FS_ROOT, spelled.map(expandTilde))
 }
 
 /** The raw target of a `cd <path>` that opens the segment, or null. */
@@ -320,10 +323,16 @@ function segmentCd(seg) {
   return cd ? (cd[2] ?? cd[3] ?? cd[4]) : null
 }
 
+/** `~` and `~/x` spelled against the account's home directory; anything else unchanged. */
+function expandTilde(raw) {
+  return raw.startsWith('~') ? homeDirectory() + raw.slice(1) : raw
+}
+
 function resolveTarget(raw, cwd) {
-  const expanded = raw.startsWith('~') ? homedir() + raw.slice(1) : raw
+  const expanded = expandTilde(raw)
   try {
-    return resolve(cwd && !expanded.startsWith('/') ? cwd : '/', expanded)
+    // An absolute `expanded` ignores the base, as the shell does.
+    return resolve(cwd || FS_ROOT, expanded)
   } catch {
     return null
   }
@@ -364,14 +373,14 @@ function segmentHit(seg, trail) {
 
 function diagnose() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || null
-  const rulesDir = configDir ? resolve(configDir, 'rules') : resolve(homedir(), '.claude', 'rules')
+  const rulesDir = configDir ? resolve(configDir, 'rules') : resolve(homeDirectory(), '.claude', 'rules')
   const mode = resolveMode()
   const active = isGuardedDir(rulesDir)
   writeSync(
     1,
     JSON.stringify(
       {
-        configDir: configDir ?? `${homedir()} (via .claude*-named ancestor heuristic, no CLAUDE_CONFIG_DIR set)`,
+        configDir: configDir ?? `${homeDirectory()} (via .claude*-named ancestor heuristic, no CLAUDE_CONFIG_DIR set)`,
         rulesDir,
         isGitRepo: existsSync(resolve(rulesDir, '.git')),
         mode,
@@ -420,7 +429,7 @@ function endWord(state) {
 
 function doubleQuoteEnd(script, i) {
   let j = i + 1
-  while (j < script.length && script[j] !== '"') j += script[j] === '\\' ? 2 : 1
+  while (j < script.length && script[j] !== '"') j += script[j] === SHELL_ESCAPE ? 2 : 1
   return Math.min(j, script.length)
 }
 
@@ -435,7 +444,7 @@ function shellStep(script, i, state) {
   const ch = script[i]
   if (ch === "'" || ch === '"') return quotedSpan(script, i, state)
   if (ch === '$' && script[i + 1] === "'") return i + 1 // ANSI-C quoting: the body is kept raw
-  if (ch === '\\') {
+  if (ch === SHELL_ESCAPE) {
     // A backslash-newline is a line continuation; any other escaped character is literal.
     if (script[i + 1] !== '\n') appendWord(state, script[i + 1] ?? '')
     return i + 2
@@ -462,7 +471,7 @@ function shellCommands(script) {
 }
 
 function isShellWord(word) {
-  return SHELLS.has(word.slice(word.lastIndexOf('/') + 1))
+  return SHELLS.has(posix.basename(word))
 }
 
 /** The script of `[launchers] sh|bash|zsh [options] -c <script>`, or null. */

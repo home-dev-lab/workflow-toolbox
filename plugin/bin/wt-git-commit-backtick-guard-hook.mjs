@@ -42,6 +42,7 @@
 //     to this hook).
 
 import { readFileSync } from 'node:fs'
+import { posix } from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
@@ -69,9 +70,12 @@ function stripHeredocBodies(cmd) {
 // next unescaped closing quote.
 const DQUOTE_MESSAGE_ARG = /(?:-m|--message)(?:\s+|=)"((?:[^"\\]|\\.)*)"/g
 
+// The shell's escape character (shell syntax, not a path separator).
+const SHELL_ESCAPE = '\\'
+
 function hasUnescapedBacktick(content) {
   for (let i = 0; i < content.length; i++) {
-    if (content[i] === '`' && content[i - 1] !== '\\') return true
+    if (content[i] === '`' && content[i - 1] !== SHELL_ESCAPE) return true
   }
   return false
 }
@@ -98,7 +102,7 @@ function pieceText(piece) {
     const body = piece.slice(1, CLOSED_DOUBLE.test(piece) ? -1 : undefined)
     return body.replace(/\\([\\"$`\n])/g, '$1')
   }
-  return piece.startsWith('\\') ? piece.slice(1) : piece
+  return piece.startsWith(SHELL_ESCAPE) ? piece.slice(1) : piece
 }
 
 // The simple commands of a command line, quote-aware, as lists of words with quotes removed.
@@ -140,7 +144,8 @@ const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$|^--(?:rcfile|init-file)$/
 const SHELL_FLAG_CLUSTER = /^-[A-Za-z]+$/
 const MAX_SCRIPT_DEPTH = 3
 
-const baseName = (word) => word.slice(word.lastIndexOf('/') + 1)
+// A command word's name: a shell command path is `/`-separated on every host.
+const baseName = (word) => posix.basename(word)
 // `command -v` / `-V` (alone or in a cluster) looks a name up and runs nothing.
 const isLookup = (words, at) => baseName(words[at]) === 'command' && /^-[a-zA-Z]*[vV]/.test(words[at + 1] ?? '')
 
@@ -187,7 +192,7 @@ function shellScript(words) {
 // The arguments of a `git [global options] commit …` command in command position, or null.
 function commitArguments(words) {
   let i = commandStart(words)
-  if (words[i]?.split('/').pop() !== 'git') return null
+  if (i >= words.length || baseName(words[i]) !== 'git') return null
   i++
   while (i < words.length && words[i].startsWith('-')) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1
   return words[i] === 'commit' ? words.slice(i + 1) : null
