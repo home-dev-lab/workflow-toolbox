@@ -42,7 +42,8 @@ function fileTokens(text) {
 
 function stringRanges(text) {
   const ranges = []
-  for (let cursor = 0; cursor < text.length; cursor += 1) {
+  let cursor = 0
+  while (cursor < text.length) {
     if (text.startsWith('//', cursor)) {
       const end = text.indexOf('\n', cursor + 2)
       cursor = end < 0 ? text.length : end
@@ -54,6 +55,7 @@ function stringRanges(text) {
       while (cursor < text.length && text[cursor] !== '"') cursor += text[cursor] === '\\' ? 2 : 1
       ranges.push([start, cursor])
     }
+    cursor += 1
   }
   return ranges
 }

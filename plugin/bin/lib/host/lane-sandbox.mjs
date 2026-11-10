@@ -233,7 +233,7 @@ function opencodeCredentialOverlay({ configDir, env, configEnv, fs, trustedRead,
     const references = opencodeConfigReferences(configDir, env, fs, trustedRead, model, configEnv)
     plan.withheld = references.withheld
     plan.missing = references.missing
-    plan.copies = references.copies.map((copy, index) => ({ ...copy, outside: path.join(runtimeDir, 'oc-config', `${index ? `${index}-` : ''}${path.basename(copy.inside)}`) }))
+    plan.copies = references.copies.map((copy, index) => ({ ...copy, outside: path.join(runtimeDir, 'oc-config', `${index ? index + '-' : ''}${path.basename(copy.inside)}`) }))
     plan.overlays.push(...plan.copies.map(({ inside, outside }) => ({ inside, outside })))
     return references.readable
   }

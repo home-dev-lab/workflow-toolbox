@@ -35,12 +35,31 @@ const sandboxResolverTests = new Set([
   'preserves the selected provider credential through effective discovery',
   'terminates a timed-out child and cleans up its task copy',
   'retries one 429 with the fallback model and preserves the variant',
+  'refuses a bare model with a credential file reference before spawning',
 ])
 const configRoots: string[] = []
+function credentialConfig(config: string) {
+  const opencode = path.join(config, 'opencode')
+  mkdirSync(opencode, { recursive: true })
+  writeFileSync(path.join(opencode, 'opencode.json'), JSON.stringify({
+    provider: { relay: { options: { apiKey: '{file:./fixture.key}' } } },
+  }))
+  writeFileSync(path.join(opencode, 'fixture.key'), 'fake-fixture-key')
+}
+
 beforeEach((ctx) => {
   const config = mkdtempSync(path.join(os.tmpdir(), 'verifier-config-')); configRoots.push(config)
   vi.stubEnv('CLAUDE_CONFIG_DIR', config)
   vi.stubEnv('WT_OPENCODE_VERIFY_ADMISSION', undefined)
+  const home = path.join(config, 'home')
+  mkdirSync(home)
+  vi.stubEnv('HOME', home)
+  vi.stubEnv('USERPROFILE', home)
+  vi.stubEnv('XDG_CONFIG_HOME', path.join(home, '.config'))
+  vi.stubEnv('XDG_DATA_HOME', path.join(home, '.local', 'share'))
+  vi.stubEnv('XDG_CACHE_HOME', path.join(home, '.cache'))
+  vi.stubEnv('XDG_STATE_HOME', path.join(home, '.local', 'state'))
+  vi.stubEnv('OPENCODE_CONFIG', undefined)
   if (sandboxResolverTests.has(ctx.task.name)) skipInsideLaneSandbox(ctx, bwrapRefusal, laneContext)
 })
 afterEach(() => {
@@ -280,6 +299,20 @@ async function verifiesFallbackVariant() {
   }
 }
 
+async function refusesBareModelCredential() {
+  credentialConfig(process.env.XDG_CONFIG_HOME!)
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-'))
+  const spawnFn = vi.fn()
+  try {
+    await expect(runVerifier({ dir, id: 'bare-model', stdin: true, taskFile: null, model: 'primary', fallbackModel: null, variant: null }, {
+      binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }), skillDiscoveryVerifier: () => ({ ok: true }), readStdin: () => 'review', spawnFn,
+    })).rejects.toThrow('effective model is unresolvable with credential file references')
+    expect(spawnFn).not.toHaveBeenCalled()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 describe('wt-opencode-verify', () => {
   it('parses stable command arguments and builds the exact read-only opencode argv', verifiesReadOnlyArguments)
   it('refuses a successful run that denied an external-directory read', refusesExternalDirectoryDenial)
@@ -291,4 +324,5 @@ describe('wt-opencode-verify', () => {
   it('preserves the selected provider credential through effective discovery', verifiesDiscoveryProviderCredential)
   it('terminates a timed-out child and cleans up its task copy', verifiesTimeoutCleanup)
   it('retries one 429 with the fallback model and preserves the variant', verifiesFallbackVariant)
+  it('refuses a bare model with a credential file reference before spawning', refusesBareModelCredential)
 })
