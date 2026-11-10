@@ -185,18 +185,55 @@ describe('wt-git-commit-backtick-guard-hook: empty commit that claims delivery',
   })
 })
 
+describe('wt-git-commit-backtick-guard-hook: each git commit is judged alone', () => {
+  it.each([
+    'git commit --allow-empty -m "ship it"; git commit -m "marker"',
+    'git commit -m "marker"\ngit commit --allow-empty -m "ship it"',
+    'git commit -m "marker" && git commit --allow-empty -m "ship it"',
+    'git commit --allow-empty -mship-it',
+    'git commit --allow-empty -am "ship it"',
+    'git commit --allow-empty --message "ship it"',
+  ])('WARN: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.entries.map((e) => e.class)).toEqual([EMPTY_CLASS])
+    expect(r.denied).toBe(false)
+  })
+
+  it.each([
+    `echo 'git commit --allow-empty -m "ship it"'`,
+    'printf "%s" "git commit --allow-empty -m ship"',
+    'git commit --allow-empty -mmarker',
+  ])('SILENT: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+
+  it('the notice says the commit MAY record no change, never that it is empty', () => {
+    const r = runJournaled('git commit --allow-empty -m "feat: ship it"')
+    expect(r.context).toContain('may record NO change')
+    expect(r.context).not.toMatch(/commit is EMPTY/i)
+    expect(r.context).toContain('delivery')
+  })
+
+  it('WARN: --message="..." with a backtick raises the backtick hazard', () => {
+    const r = runJournaled('git commit --message="the `thing`"')
+    expect(r.entries.map((e) => e.class)).toEqual(['unescaped-backtick'])
+  })
+})
+
 describe('wt-git-commit-backtick-guard-hook: empty commit and backtick notices', () => {
   it('ONE notice carries BOTH warnings when the command has both hazards', () => {
     const r = runJournaled('git commit --allow-empty -m "ship the `thing` now"')
     expect(r.stdout.match(/hookSpecificOutput/g)).toHaveLength(1)
-    expect(r.context).toContain('This commit is EMPTY')
+    expect(r.context).toContain('may record NO change')
     expect(r.context).toContain('contains an unescaped backtick')
     expect(r.entries.map((e) => e.class).sort()).toEqual([EMPTY_CLASS, 'unescaped-backtick'])
   })
 
   it('a backtick-only command still gets just the backtick warning', () => {
     const r = runJournaled('git commit -m "the default `stretch` applied"')
-    expect(r.context).not.toContain('This commit is EMPTY')
+    expect(r.context).not.toContain('may record NO change')
     expect(r.entries.map((e) => e.class)).toEqual(['unescaped-backtick'])
   })
 

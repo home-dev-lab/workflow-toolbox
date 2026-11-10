@@ -122,20 +122,41 @@ function findAncestorDefining(fromDir, scriptName) {
 // A command line carries CODE and DATA in the same string. Strip data spans before splitting on
 // shell separators, or a quoted/heredoc/commented mention of `pnpm <script>` reads as a real
 // chained invocation. Same discipline as wt-merge-chain-guard-hook.mjs's stripDataSpans().
-// A private-use character: it cannot occur in a shell command's own syntax.
+// Each quoted span's place holds a numbered marker made of a private-use character. That
+// character is legal in a shell word, so every literal occurrence of the two private-use characters
+// used here is ESCAPED first (MARK -> ESC m, ESC -> ESC e): a marker can then only be one this code
+// wrote, and restoring a token un-escapes it back to the command's own text.
 const SPAN_MARK = '\uE000'
+const SPAN_ESC = '\uE001'
 const SPAN_MARKER = new RegExp(`${SPAN_MARK}(\\d+)${SPAN_MARK}`, 'g')
+const ESCAPED = new RegExp(`${SPAN_ESC}([me])`, 'g')
+
+function escapeMarks(text) {
+  return text.replace(/[\uE000\uE001]/g, (ch) => SPAN_ESC + (ch === SPAN_MARK ? 'm' : 'e'))
+}
+
+function unescapeMarks(text) {
+  return text.replace(ESCAPED, (_, kind) => (kind === 'm' ? SPAN_MARK : SPAN_ESC))
+}
+
+// Inside double quotes the shell removes the backslash before `\ " $ \``: `bash -c "pnpm \"test\""`
+// hands the child shell `pnpm "test"`. An unclosed quote runs to the end of the command.
+const QUOTED_SPAN = /'([^']*)'?|"((?:[^"\\]|\\[\s\S])*)"?/g
+
+function quotedText(single, double) {
+  return single ?? double.replace(/\\([\\"$`\n])/g, '$1')
+}
 
 function stripDataSpans(cmd) {
-  let out = cmd
+  let out = escapeMarks(cmd)
   out = out.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\2$/gm, '<<HEREDOC')
   out = out.replace(/<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1[\s\S]*$/, '<<HEREDOC')
   out = out.replace(/`[^`]*`/g, '`CODESPAN`')
   // One pass, so a quote inside the other kind stays inside its span. Each span's text is kept
   // in `spans` and its place holds a numbered marker, so a `-c` script can be read back.
   const spans = []
-  out = out.replace(/'[^']*'|"[^"]*"/g, (span) => {
-    spans.push(span.slice(1, -1))
+  out = out.replace(QUOTED_SPAN, (span, single, double) => {
+    spans.push(quotedText(single, double))
     return `${span[0]}${SPAN_MARK}${spans.length - 1}${SPAN_MARK}${span[0]}`
   })
   out = out.replace(/(^|\s)#.*$/gm, '$1')
@@ -143,19 +164,17 @@ function stripDataSpans(cmd) {
 }
 
 // Tokenize a single simple command (already split on shell operators) into words, stripping
-// simple quoting. Not a real shell parser — good enough for `pnpm <script>` / `cd <dir>` shapes.
+// simple quoting. Adjacent quoted and bare pieces form ONE word, as in the shell: `pnpm 'test'nope`
+// names the script `testnope`. Not a real shell parser — good enough for `pnpm <script>` /
+// `cd <dir>` shapes.
 function tokenize(segment, spans) {
-  const tokens = []
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
-  let m
-  while ((m = re.exec(segment))) {
-    tokens.push(restoreSpans(m[1] ?? m[2] ?? m[3], spans))
-  }
-  return tokens
+  return Array.from(segment.matchAll(/(?:"[^"]*"|'[^']*'|\S)+/g), (m) =>
+    restoreSpans(m[0].replace(/"([^"]*)"|'([^']*)'/g, '$1$2'), spans))
 }
 
+// A marker index this code never wrote stays literal text rather than naming `undefined`.
 function restoreSpans(token, spans) {
-  return token.replace(SPAN_MARKER, (_, index) => spans[Number(index)])
+  return unescapeMarks(token.replace(SPAN_MARKER, (marker, index) => spans[Number(index)] ?? marker))
 }
 
 // Split a full command string on shell command separators (&&, ||, ;, |, newline) into
@@ -291,7 +310,7 @@ function checkSegment(segment, cwd, spans) {
 // `env A=1 bash -c …`); anything else before it means the shell word is an argument.
 const LAUNCHER_WORD = /^(?:setsid|nohup|env|sudo|time|exec|command|nice|timeout|stdbuf)$|^[A-Za-z_]\w*=|^-|^\d+$/
 const SHELL_WORD = /^(?:.*\/)?(?:sh|bash|zsh)$/
-const SHELL_OPTION_WITH_VALUE = /^[-+]o$|^--(?:rcfile|init-file)$/
+const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$|^--(?:rcfile|init-file)$/
 const MAX_SCRIPT_DEPTH = 3
 
 // The script of `sh|bash|zsh [options] -c <script>`, or null when the shell runs a file, reads

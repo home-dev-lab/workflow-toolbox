@@ -310,6 +310,7 @@ describe('wt-missing-package-script-guard-hook', () => {
   registerCases5()
   registerManifestCase()
   registerShellScriptCases()
+  registerWordCases()
 })
 
 function registerShellScriptCases(): void {
@@ -347,9 +348,59 @@ function registerShellScriptCases(): void {
       expect(r.stdout, command).toBe('')
     }
   })
+  registerScriptScopeCase()
+  registerShellOptionCases()
+}
+
+function registerScriptScopeCase(): void {
   it('a cd inside the script does not move the outer chain', () => {
     const r = run("bash -c 'cd packages/smoke' && pnpm lint", root)
     expect(r.warned).toBe(false)
+    // Only the walk into the script can find this one: the outer chain stays at the root, where
+    // lint exists. Without the walk both rows are silent, so the pair proves the walk ran.
+    const walked = run("bash -c 'cd packages/smoke && pnpm lint' && pnpm lint", root)
+    expect(walked.warned).toBe(true)
+  })
+}
+
+function registerShellOptionCases(): void {
+  it('an option that takes a value (-O, --rcfile, --init-file) is consumed before -c', () => {
+    for (const command of [
+      "zsh -O shwordsplit -c 'pnpm nope-script'",
+      "bash -O extglob -c 'pnpm nope-script'",
+      "bash --rcfile /dev/null -c 'pnpm nope-script'",
+      "bash --init-file /dev/null -c 'pnpm nope-script'",
+    ]) expect(run(command, root).warned, command).toBe(true)
+  })
+}
+
+function noticeText(stdout: string): string {
+  return String(parseNotice(stdout).hookSpecificOutput['additionalContext'])
+}
+
+const MARK = '\uE000'
+
+function registerWordCases(): void {
+  it('a literal private-use character in the command is text, never a span marker', () => {
+    const literal = `${MARK}0${MARK}`
+    const named = run(`: "test"; pnpm ${literal}`, root)
+    expect(named.warned).toBe(true)
+    expect(noticeText(named.stdout)).toContain(`Script \`${literal}\``)
+    const outOfRange = run(`pnpm ${MARK}9${MARK}`, root)
+    expect(noticeText(outOfRange.stdout)).toContain(`Script \`${MARK}9${MARK}\``)
+    expect(outOfRange.stdout).not.toContain('undefined')
+    // The cd target is the literal text, which names no directory: the chain is unresolved.
+    expect(run(`: "packages/smoke"; cd ${literal}; pnpm lint`, root).warned).toBe(false)
+  })
+  it('adjacent quoted and bare pieces form one word', () => {
+    const r = run("pnpm 'test'nope", root)
+    expect(r.warned).toBe(true)
+    expect(noticeText(r.stdout)).toContain('Script `testnope`')
+  })
+  it('escaped double quotes inside a double-quoted -c script are unescaped first', () => {
+    expect(run('bash -c "pnpm \\"test\\""', root).warned).toBe(false)
+    const r = run('bash -c "pnpm \\"nope-script\\""', root)
+    expect(noticeText(r.stdout)).toContain('Script `nope-script`')
   })
 }
 

@@ -35,8 +35,9 @@
 //   · Only GIT commands are seen. A direct Edit/Write/rm/mv inside the live rules directory
 //     is INVISIBLE to this guard — that is the LARGER half of the hazard surface, and it is
 //     not mechanised here.
-//   · A target reached through a shell variable, a glob, a symlink, or a script that `cd`s
-//     inside itself is unresolvable and is never guessed at — no verdict follows.
+//   · A target reached through a shell variable, a glob, a symlink, or a script FILE that `cd`s
+//     inside itself is unresolvable and is never guessed at — no verdict follows. A
+//     `sh|bash|zsh -c '<script>'` is walked with its own `cd`s, three levels deep.
 //   · INERT (no denial, no warning, ever) when the resolved rules directory is not itself a
 //     git working tree (no `.git`) — nothing to switch means nothing to protect. Run this
 //     file directly with `--diagnose` to see, for the CURRENT environment, whether the
@@ -93,31 +94,157 @@ function readInput() {
   }
 }
 
-/** The directory a git invocation acts on: an explicit `-C <path>`, else a leading `cd <path>`,
- *  else the shell's cwd. Returns an absolute path, or null when it cannot be resolved — an
- *  unresolvable target is NOT treated as a hit, because guessing produces false denials. */
-function targetDir(cmd, cwd) {
-  const raw = rawTarget(cmd, cwd)
-  if (typeof raw !== 'string' || raw.length === 0) return null
-  if (/[$*?`]/.test(raw)) return null // a variable or a glob: unresolvable, do not guess
+const GIT_WORD = /(?:^|\W)git$/
+const UNRESOLVABLE = /[$*?`]/
+// git's global options that take the NEXT word as their value (`git -c k=v switch` must not read
+// `k=v` as the subcommand). Every other leading `-…` word is a flag without a value.
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source'])
+// A quoted option value (`-C "a b"`) may span words; past this many it is read as one bare word.
+const MAX_VALUE_WORDS = 16
+// PATH_MAX on Linux; no live rules directory is spelled longer than this.
+const MAX_PATH_CHARS = 4096
+const CHECKOUT_SWITCHES = /^(?:-[bB]|--orphan|--detach|-t$|--track)/
+const CHECKOUT_PATHS_ONLY = /^(?:-p$|--patch$|--pathspec-from-file)/
+const SHORT_FLAGS = /^-[a-zA-Z]+$/
+const isCheckoutForce = (arg) => arg === '--force' || (SHORT_FLAGS.test(arg) && arg.includes('f'))
+
+/** The whitespace words of one segment with their offsets, in one linear pass. */
+function wordsOf(seg) {
+  return Array.from(seg.matchAll(/\S+/g), (m) => ({ text: m[0], at: m.index }))
+}
+
+/** The value of an option at `list[i]`: a quoted value may span a few words. */
+function optionValue(list, i) {
+  const first = list[i]?.text
+  if (first === undefined) return { value: null, next: i }
+  const quote = first[0]
+  if (quote !== '"' && quote !== "'") return { value: first, next: i + 1 }
+  let last = i
+  const closes = (k) => list[k].text.length > (k === i ? 1 : 0) && list[k].text.endsWith(quote)
+  while (!closes(last) && last + 1 < list.length && last - i < MAX_VALUE_WORDS) last += 1
+  if (!closes(last)) return { value: first, next: i + 1 }
+  const text = list.slice(i, last + 1).map((word) => word.text).join(' ')
+  return { value: text.slice(1, -1), next: last + 1 }
+}
+
+/** Record one global option of `git` and return the index after it. */
+function globalOption(list, i, inv) {
+  const word = list[i].text
+  const eq = word.startsWith('--') ? word.indexOf('=') : -1
+  const name = eq === -1 ? word : word.slice(0, eq)
+  if (!GIT_VALUE_OPTIONS.has(name)) return i + 1
+  const { value, next } = eq === -1 ? optionValue(list, i + 1) : { value: word.slice(eq + 1), next: i + 1 }
+  if (value === null) return next
+  if (name === '-C') inv.dirs.push(value)
+  if (name === '--work-tree') inv.workTree = value
+  if (name === '--git-dir') inv.gitDir = value
+  return next
+}
+
+/** `git [global options] <subcommand>` starting at the git word `list[at]`. */
+function gitInvocation(list, at) {
+  const inv = { dirs: [], workTree: null, gitDir: null, subIndex: at + 1 }
+  let i = at + 1
+  while (i < list.length && list[i].text.startsWith('-')) i = globalOption(list, i, inv)
+  inv.subIndex = i
+  return inv
+}
+
+/** A checkout moves HEAD unless it only restores paths (`--`, `-p`, a pathspec file). An option-led
+ *  form (`--detach <ref>`, `-f <ref>`, `-q <ref>`) switches as surely as a bare `checkout <ref>`. */
+function checkoutVerdict(list, from, shape) {
+  if (shape.pathspec) return null
+  let force = false
+  for (let j = from; j < list.length; j++) {
+    const arg = list[j].text
+    if (arg === '--' || CHECKOUT_PATHS_ONLY.test(arg)) return null
+    if (CHECKOUT_SWITCHES.test(arg) || !arg.startsWith('-')) return 'deny'
+    force ||= isCheckoutForce(arg)
+  }
+  return force ? 'deny' : null
+}
+
+/** 'deny' | 'warn' | null for the subcommand of one git invocation. `shape` holds what is read
+ *  from the whole segment (the offset of its last `--hard`, whether it has a ` -- ` pathspec
+ *  separator), computed once so a long segment is scanned once, not once per git word. */
+function subcommandVerdict(list, inv, shape) {
+  const sub = list[inv.subIndex]
+  if (!sub) return null
+  if (/^checkout\b/.test(sub.text)) return checkoutVerdict(list, inv.subIndex + 1, shape)
+  if (/^switch\b/.test(sub.text)) return 'deny'
+  if (/^reset\b/.test(sub.text)) return shape.hardAt >= sub.at + 5 ? 'deny' : null
+  // Ambiguous: these can be legitimate maintenance on the live tree. Never escalated past warn.
+  return /^(?:merge|rebase|stash|cherry-pick)\b/.test(sub.text) ? 'warn' : null
+}
+
+function lastHardAt(seg) {
+  let at = -1
+  for (const m of seg.matchAll(/--hard\b/g)) at = m.index
+  return at
+}
+
+/** The directories a git invocation acts on: its cumulative `-C` chain (else a `cd <path>` that
+ *  opens the segment, else the shell's cwd), plus any `--work-tree` or `.git` `--git-dir` it names.
+ *  An unresolvable spelling yields no directory: guessing produces false denials. */
+function invocationDirs(inv, seg, cwd) {
+  const base = inv.dirs.length > 0 ? chainedDir(inv.dirs, cwd) : spelledDir(segmentCd(seg) ?? cwd, cwd)
+  if (!base) return []
+  const dirs = [base]
+  if (inv.workTree !== null) dirs.push(spelledDir(inv.workTree, base))
+  if (inv.gitDir !== null && /(?:^|\/)\.git\/?$/.test(inv.gitDir)) {
+    dirs.push(spelledDir(inv.gitDir.replace(/\/?\.git\/?$/, '') || '.', base))
+  }
+  return dirs.filter(Boolean)
+}
+
+/** One spelled path resolved against `cwd`; null for a variable, a glob or a substitution. */
+function spelledDir(raw, cwd) {
+  if (typeof raw !== 'string' || raw.length === 0 || UNRESOLVABLE.test(raw)) return null
   return resolveTarget(raw, cwd)
 }
 
-/** The first captured spelling of a `-C <path>` / `cd <path>` match: double-quoted, single-quoted
- *  or bare. The `-C` token needs a NON-EMPTY word before it (`+`, never `*`): with `*` the
- *  optional word and the whitespace after it overlap, and a long run of spaces backtracks
- *  quadratically. */
-function matchedPath(m) {
-  return m[2] ?? m[3] ?? m[4]
+// The cwd a chain of `cd`s has reached, resolved only when a git invocation needs it: resolving
+// after every `cd` re-reads an ever longer path, and a long `cd a && cd a …` chain turns quadratic.
+// A `cd` that cannot be resolved leaves the cwd where it was, as does one that would spell a path
+// longer than any directory that can be opened.
+function cwdTrail(cwd) {
+  return { base: cwd, pending: [], length: cwd?.length ?? 0 }
 }
 
-/** The raw path text: an explicit `-C`, else a `cd`, else the shell's cwd. */
-function rawTarget(cmd, cwd) {
-  const dashC = cmd.match(/\bgit\s+(?:[^\s|;&]+\s+)*?-C\s+("([^"]+)"|'([^']+)'|(\S+))/)
-  const cd = cmd.match(/(?:^|[;&|]\s*)cd\s+("([^"]+)"|'([^']+)'|(\S+))/)
-  if (dashC) return matchedPath(dashC)
-  if (cd) return matchedPath(cd)
-  return cwd
+function trailCd(trail, raw) {
+  if (typeof raw !== 'string' || raw.length === 0 || UNRESOLVABLE.test(raw)) return
+  const expanded = raw.startsWith('~') ? homedir() + raw.slice(1) : raw
+  if (expanded.startsWith('/')) Object.assign(trail, cwdTrail(expanded))
+  else if (trail.length + expanded.length < MAX_PATH_CHARS) {
+    trail.pending.push(expanded)
+    trail.length += expanded.length + 1
+  }
+}
+
+function trailDir(trail) {
+  if (trail.pending.length > 0) trail.base = resolveTarget(trail.pending.join('/'), trail.base) ?? trail.base
+  trail.pending = []
+  return trail.base
+}
+
+/** `git -C a -C b` acts on `a/b`, as git resolves it: each `-C` is relative to the one before, and
+ *  an empty `-C ''` is a no-op. One `resolve` call over the whole chain keeps this linear. */
+function chainedDir(values, cwd) {
+  const spelled = values.filter((value) => value.length > 0)
+  if (spelled.some((value) => UNRESOLVABLE.test(value))) return null
+  if (spelled.reduce((total, value) => total + value.length + 1, cwd?.length ?? 0) > MAX_PATH_CHARS) return null
+  const expanded = spelled.map((value) => (value.startsWith('~') ? homedir() + value.slice(1) : value))
+  try {
+    return resolve(cwd || '/', ...expanded)
+  } catch {
+    return null
+  }
+}
+
+/** The raw target of a `cd <path>` that opens the segment, or null. */
+function segmentCd(seg) {
+  const cd = seg.match(/^cd\s+("([^"]+)"|'([^']+)'|(\S+))/)
+  return cd ? (cd[2] ?? cd[3] ?? cd[4]) : null
 }
 
 function resolveTarget(raw, cwd) {
@@ -134,23 +261,32 @@ function segments(cmd) {
   return cmd.split(/(?:\|\||&&|[;|&\n])/g).map((s) => s.trim()).filter(Boolean)
 }
 
-/** Returns 'deny' | 'warn' | null for ONE segment, ignoring which directory it targets. */
-function verdictFor(seg) {
-  if (!/^git\b|[;&|]\s*git\b|\bgit\s/.test(seg)) return null
+const RANK = { deny: 2, warn: 1 }
+function worse(a, b) {
+  return (RANK[b?.verdict] ?? 0) > (RANK[a?.verdict] ?? 0) ? b : a
+}
 
-  // `git checkout -- <path>` / `git checkout <path>` restores files; it does not move HEAD.
-  // Only a branch-shaped checkout does. `--` marks the pathspec form explicitly.
-  if (/\bgit\s+(?:-C\s+\S+\s+)*checkout\b/.test(seg) && !/\s--\s/.test(seg)) {
-    // `-b`/`-B` creates AND switches; a bare `checkout <ref>` switches.
-    if (/\bcheckout\s+(-b|-B)\b/.test(seg)) return 'deny'
-    if (/\bcheckout\s+(?!-)\S/.test(seg)) return 'deny'
+/** The worst guarded git invocation in ONE segment, as { verdict, dir }, or null. Every git word
+ *  is read once; the scan resumes after an invocation's global options, so the segment is walked
+ *  in linear time whatever it repeats. */
+function segmentHit(seg, trail) {
+  if (!seg.includes('git')) return null
+  const list = wordsOf(seg)
+  const shape = { hardAt: lastHardAt(seg), pathspec: /\s--\s/.test(seg) }
+  let best = null
+  let i = 0
+  while (i < list.length - 1 && best?.verdict !== 'deny') {
+    if (!GIT_WORD.test(list[i].text)) {
+      i += 1
+      continue
+    }
+    const inv = gitInvocation(list, i)
+    const verdict = subcommandVerdict(list, inv, shape)
+    const dir = verdict ? invocationDirs(inv, seg, trailDir(trail)).find(isGuardedDir) : undefined
+    if (dir) best = worse(best, { verdict, dir })
+    i = Math.max(i + 1, inv.subIndex)
   }
-  if (/\bgit\s+(?:-C\s+\S+\s+)*switch\b/.test(seg)) return 'deny'
-  if (/\bgit\s+(?:-C\s+\S+\s+)*reset\b[^|;&]*--hard\b/.test(seg)) return 'deny'
-
-  // Ambiguous: these can be legitimate maintenance on the live tree. Never escalated past warn.
-  if (/\bgit\s+(?:-C\s+\S+\s+)*(merge|rebase|stash|cherry-pick)\b/.test(seg)) return 'warn'
-  return null
+  return best
 }
 
 function diagnose() {
@@ -188,40 +324,140 @@ function effectiveVerdict(mode, verdict) {
   return mode === 'warn' && verdict === 'deny' ? 'warn' : verdict
 }
 
-function findLiveChange(cmd, cwd, mode) {
-  let worst = null
-  let hitSeg = ''
-  let hitDir = ''
-  // The shell's cwd CARRIES ACROSS segments: `cd <dir> && git switch x` splits into two
-  // segments, and the git one alone looks harmless. Tracking the cd is what makes the split
-  // safe — measured on the originating machine: without it, `cd <live-dir> && git reset
-  // --hard` passed silently.
-  let effectiveCwd = cwd
-  for (const seg of segments(cmd)) {
-    const cdOnly = seg.match(/^cd\s+("([^"]+)"|'([^']+)'|(\S+))\s*$/)
-    if (cdOnly) {
-      const d = targetDir(seg, effectiveCwd)
-      if (d) effectiveCwd = d
+// ---- `sh|bash|zsh -c '<script>'`: the script runs in a child shell with its own `cd`s ------------
+// The segment pass above splits on separators without reading quotes, so the `cd` inside
+// `bash -c 'cd <dir> && git reset --hard'` lands in the shell's segment and the git one keeps the
+// outer cwd. This pass reads quotes, finds each shell `-c` script at command position, and walks the
+// script as a command of its own, from the cwd in force at that point, to a bounded depth.
+const SEPARATOR = /[;&|\n]/
+const BLANK = /\s/
+const SHELLS = new Set(['sh', 'bash', 'zsh'])
+const LAUNCHER_WORD = /^(?:setsid|nohup|env|sudo|time|exec|command|nice|timeout|stdbuf)$|^[A-Za-z_]\w*=|^-|^\d+$/
+const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$|^--(?:rcfile|init-file)$/
+const MAX_SCRIPT_DEPTH = 3
+
+function appendWord(state, text) {
+  state.word = (state.word ?? '') + text
+}
+
+function endWord(state) {
+  if (state.word !== null) state.commands[state.commands.length - 1].push(state.word)
+  state.word = null
+}
+
+function doubleQuoteEnd(script, i) {
+  let j = i + 1
+  while (j < script.length && script[j] !== '"') j += script[j] === '\\' ? 2 : 1
+  return Math.min(j, script.length)
+}
+
+function quotedSpan(script, i, state) {
+  const quote = script[i]
+  const close = quote === "'" ? script.indexOf("'", i + 1) : doubleQuoteEnd(script, i)
+  const end = close === -1 ? script.length : close
+  const body = script.slice(i + 1, end)
+  appendWord(state, quote === '"' ? body.replace(/\\([\\"$`\n])/g, '$1') : body)
+  return end + 1
+}
+
+/** One step of the quote-aware scan; returns the next index. */
+function shellStep(script, i, state) {
+  const ch = script[i]
+  if (ch === "'" || ch === '"') return quotedSpan(script, i, state)
+  if (ch === '$' && script[i + 1] === "'") return i + 1 // ANSI-C quoting: the body is kept raw
+  if (ch === '\\') {
+    // A backslash-newline is a line continuation; any other escaped character is literal.
+    if (script[i + 1] !== '\n') appendWord(state, script[i + 1] ?? '')
+    return i + 2
+  }
+  plainChar(ch, state)
+  return i + 1
+}
+
+function plainChar(ch, state) {
+  const separator = SEPARATOR.test(ch)
+  const blank = !separator && BLANK.test(ch)
+  if (separator || blank) endWord(state)
+  if (separator) state.commands.push([])
+  else if (!blank) appendWord(state, ch)
+}
+
+/** The simple commands of a script, quote-aware, quotes removed. One linear pass; `$( … )`,
+ *  subshells and heredocs are not modelled here (the segment pass still reads their text). */
+function shellCommands(script) {
+  const state = { commands: [[]], word: null }
+  for (let i = 0; i < script.length; ) i = shellStep(script, i, state)
+  endWord(state)
+  return state.commands.filter((words) => words.length > 0)
+}
+
+function isShellWord(word) {
+  return SHELLS.has(word.slice(word.lastIndexOf('/') + 1))
+}
+
+/** The script of `[launchers] sh|bash|zsh [options] -c <script>`, or null. */
+function shellScript(words) {
+  const head = words.findIndex(isShellWord)
+  if (head === -1 || !words.slice(0, head).every((word) => LAUNCHER_WORD.test(word))) return null
+  let runsScript = false
+  for (let i = head + 1; i < words.length; i++) {
+    const word = words[i]
+    if (SHELL_OPTION_WITH_VALUE.test(word)) i++
+    else if (/^[-+]/.test(word)) runsScript ||= /^-[A-Za-z]+$/.test(word) && word.includes('c')
+    else return runsScript ? word : null
+  }
+  return null
+}
+
+/** The worst finding among the shell `-c` scripts of `cmd`, each walked from the cwd its outer
+ *  chain has reached; a `cd` inside a script never moves the outer chain. */
+function scriptChange(cmd, cwd, mode, depth) {
+  if (depth >= MAX_SCRIPT_DEPTH) return null
+  if (!/sh\b/.test(cmd)) return null // no shell word: nothing to walk
+  const trail = cwdTrail(cwd)
+  let found = null
+  for (const words of shellCommands(cmd)) {
+    if (words[0] === 'cd' && words.length === 2) {
+      trailCd(trail, words[1])
       continue
     }
-    const v = verdictFor(seg)
-    if (!v) continue
-    const dir = targetDir(seg, effectiveCwd)
-    if (!dir || !isGuardedDir(dir)) continue
-    const effective = effectiveVerdict(mode, v)
-    if (effective === 'deny') {
-      worst = 'deny'
-      hitSeg = seg
-      hitDir = dir
-      break
-    }
-    if (!worst) {
-      worst = 'warn'
-      hitSeg = seg
-      hitDir = dir
-    }
+    const script = shellScript(words)
+    if (script === null) continue
+    const inner = findLiveChange(script, trailDir(trail), mode, depth + 1)
+    if (inner.worst === 'deny') return inner
+    found ??= inner.worst ? inner : null
   }
-  return { worst, hitSeg, hitDir }
+  return found
+}
+
+/** The segment pass: every separator-split segment, with the cwd carried across `cd`s. */
+function segmentChange(cmd, cwd, mode) {
+  let found = { worst: null, hitSeg: '', hitDir: '' }
+  // The shell's cwd CARRIES ACROSS segments: `cd <dir> && git switch x` splits into two
+  // segments, and the git one alone looks harmless. Tracking the cd is what makes the split
+  // safe — without it, `cd <live-dir> && git reset --hard` passed silently.
+  const trail = cwdTrail(cwd)
+  for (const seg of segments(cmd)) {
+    if (/^cd\s+("([^"]+)"|'([^']+)'|(\S+))\s*$/.test(seg)) {
+      trailCd(trail, segmentCd(seg))
+      continue
+    }
+    const hit = segmentHit(seg, trail)
+    if (!hit) continue
+    const worst = effectiveVerdict(mode, hit.verdict)
+    if (worst === 'deny') return { worst, hitSeg: seg, hitDir: hit.dir }
+    if (!found.worst) found = { worst, hitSeg: seg, hitDir: hit.dir }
+  }
+  return found
+}
+
+/** The segment pass first; a deny inside a shell `-c` script outranks a warn from it. */
+function findLiveChange(cmd, cwd, mode, depth = 0) {
+  const found = segmentChange(cmd, cwd, mode)
+  if (found.worst === 'deny') return found
+  const inner = scriptChange(cmd, cwd, mode, depth)
+  if (inner?.worst === 'deny' || !found.worst) return inner ?? found
+  return found
 }
 
 function liveChangeReason(hitDir) {

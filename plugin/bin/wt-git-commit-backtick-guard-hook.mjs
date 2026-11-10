@@ -11,9 +11,11 @@
 // the stored message afterwards revealed the hole.
 //
 // A second hazard is covered by the same warn-only posture: `git commit --allow-empty` whose
-// -m/--message texts name no marker word. An empty commit whose subject announces a delivery
-// leaves a false "done" for whatever cites it. When a command has both hazards, ONE notice
-// carries both warnings.
+// -m/--message texts name no marker word. `--allow-empty` permits a commit that records no change;
+// one whose subject announces a delivery leaves a false "done" for whatever cites it. Each
+// `git commit` command is judged on its OWN flags and messages, and a `git commit` that is only
+// the text of another command's quoted argument is not a commit. When a command has both
+// hazards, ONE notice carries both warnings.
 //
 // ⚠ WARNS, NEVER DENIES — a new guard's precision is measured on material it did not choose
 // before it is allowed to block (mechanise-on-sight.md). This one reasons about a shell string
@@ -63,9 +65,9 @@ function stripHeredocBodies(cmd) {
   return out
 }
 
-// Matches -m "..."  or --message "..." with a DOUBLE-quoted argument, non-greedy up to the next
-// unescaped closing quote.
-const DQUOTE_MESSAGE_ARG = /(?:-m|--message)\s+"((?:[^"\\]|\\.)*)"/g
+// Matches -m "...", --message "..." or --message="..." with a DOUBLE-quoted argument, up to the
+// next unescaped closing quote.
+const DQUOTE_MESSAGE_ARG = /(?:-m|--message)(?:\s+|=)"((?:[^"\\]|\\.)*)"/g
 
 function hasUnescapedBacktick(content) {
   for (let i = 0; i < content.length; i++) {
@@ -81,8 +83,74 @@ const MARKER_SINGLE = /\b(?:marker|empty|placeholder|no-?op|wip|checkpoint|trigg
 const MARKER_PHRASES = /\bno\s+(?:code|change|diff)\b|\bnothing\s+to\s+(?:commit|write)\b/i
 const namesMarker = (text) => MARKER_SINGLE.test(text) || MARKER_PHRASES.test(text)
 
-// Every -m/--message argument, double- or single-quoted, with `-m "x"`, `-m="x"` or `--message=x`.
-const ANY_MESSAGE_ARG = /(?:-m|--message)[= ]\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/g
+// One shell token: a quoted piece (an unclosed quote runs to the end), an escape, a separator,
+// a blank run, or a run of plain characters. The alternatives start on disjoint characters.
+const QUOTED_PIECE = /'[^']*'?|"(?:\\[\s\S]|[^"\\])*"?/
+const SHELL_PIECE = new RegExp(String.raw`${QUOTED_PIECE.source}|\\[\s\S]|[;&|\n]|[^\S\n]+|[^\s'"\\;&|]+`, 'g')
+const CLOSED_DOUBLE = /^"(?:\\[\s\S]|[^"\\])*"$/
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'])
+// `-m <msg>`, `-m<msg>`, or a cluster of value-less flags ending in m (`-am <msg>`, `-amship`).
+const SHORT_MESSAGE = /^-[aqvsne]*m(.*)$/s
+
+function pieceText(piece) {
+  if (piece.startsWith("'")) return piece.slice(1, piece.endsWith("'") && piece.length > 1 ? -1 : undefined)
+  if (piece.startsWith('"')) {
+    const body = piece.slice(1, CLOSED_DOUBLE.test(piece) ? -1 : undefined)
+    return body.replace(/\\([\\"$`\n])/g, '$1')
+  }
+  return piece.startsWith('\\') ? piece.slice(1) : piece
+}
+
+// The simple commands of a command line, quote-aware, as lists of words with quotes removed.
+function simpleCommands(cmd) {
+  const commands = [[]]
+  let word = null
+  const end = () => {
+    if (word !== null) commands[commands.length - 1].push(word)
+    word = null
+  }
+  for (const [piece] of cmd.matchAll(SHELL_PIECE)) {
+    const separator = /^[;&|\n]$/.test(piece)
+    const blank = !separator && /^\s/.test(piece)
+    if (separator || blank) end()
+    if (separator) commands.push([])
+    else if (!blank) word = (word ?? '') + pieceText(piece)
+  }
+  end()
+  return commands
+}
+
+// The arguments of a `git [global options] commit …` command in command position, or null.
+function commitArguments(words) {
+  let i = 0
+  while (i < words.length && /^[A-Za-z_]\w*=/.test(words[i])) i++
+  if (words[i]?.split('/').pop() !== 'git') return null
+  i++
+  while (i < words.length && words[i].startsWith('-')) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1
+  return words[i] === 'commit' ? words.slice(i + 1) : null
+}
+
+// Every -m/--message text of one commit's arguments, in every spelling git accepts.
+function commitMessages(args) {
+  const messages = []
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+    const arg = args[i]
+    const short = arg.startsWith('--') ? null : arg.match(SHORT_MESSAGE)
+    if (arg.startsWith('--message=')) messages.push(arg.slice('--message='.length))
+    else if (arg === '--message' || (short && short[1] === '')) messages.push(args[++i] ?? '')
+    else if (short) messages.push(short[1])
+  }
+  return messages
+}
+
+// Warn text for ONE commit, else null. No readable message (a -F file) means the subject cannot be
+// judged: fail open, silently.
+function commitNotice(args) {
+  if (!args.includes('--allow-empty')) return null
+  const messages = commitMessages(args)
+  if (!messages.length || messages.some(namesMarker)) return null
+  return EMPTY_NOTICE
+}
 
 const CLASS_BACKTICK = 'unescaped-backtick'
 const CLASS_EMPTY = 'empty-commit-claims-delivery'
@@ -96,19 +164,22 @@ const BACKTICK_NOTICE =
   'MSG`), single quotes, or an escaped backtick (`\\``).'
 
 const EMPTY_NOTICE =
-  '⚠ [workflow-toolbox git-commit backtick guard] This commit is EMPTY (--allow-empty) and ' +
-  'its message does not say so. An empty commit is fine as a marker, and a defect when its ' +
-  'subject announces work it did not do: whatever cites it then carries a false "done", and ' +
-  'the next session briefs work from it. Say what the marker IS ("marker: no code written, ' +
-  'reason X"), or make the commit carry the change. Warning only; proceed if the subject is honest.'
+  '⚠ [workflow-toolbox git-commit backtick guard] This commit passes --allow-empty, so it may ' +
+  'record NO change, and its message does not say it is a marker. A commit that records nothing ' +
+  'is fine as a marker, and a defect when its subject announces work it did not do: whatever ' +
+  'cites it as a delivery then carries a false "done", and the next session briefs work from it. ' +
+  'If it is a marker, say what it IS ("marker: no code written, reason X"); if it carries the ' +
+  'change, --allow-empty is not needed. Warning only; proceed if the subject is honest.'
 
-// Warn text for an empty commit whose readable messages name no marker, else null. No readable
-// message (a -F file, a heredoc) means the subject cannot be judged: fail open, silently.
+// Warn text when one `git commit` command passes --allow-empty and its readable messages name no
+// marker, else null. Each commit is judged alone: another commit's marker never excuses it.
 function emptyCommitNotice(scanned) {
-  if (!/--allow-empty(?!-message)\b/.test(scanned)) return null
-  const messages = [...scanned.matchAll(ANY_MESSAGE_ARG)].map((m) => m[1] ?? m[2] ?? '')
-  if (!messages.length || messages.some(namesMarker)) return null
-  return EMPTY_NOTICE
+  if (!scanned.includes('--allow-empty')) return null
+  for (const words of simpleCommands(scanned)) {
+    const args = commitArguments(words)
+    if (args && commitNotice(args)) return EMPTY_NOTICE
+  }
+  return null
 }
 
 function backtickNotice(scanned) {

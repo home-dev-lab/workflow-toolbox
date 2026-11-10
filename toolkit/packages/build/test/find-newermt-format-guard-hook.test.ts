@@ -365,6 +365,9 @@ describe('find inside command substitutions', () => {
     { command: 'echo $(echo $(find . -newermt yesterday))', flagged: 'yesterday' },
     { command: 'echo $(a $(b $(find . -newermt yesterday)))', flagged: 'yesterday' },
     { command: 'x=$(cd /tmp && find . -newermt @1793460687.3)', flagged: '@1793460687.3' },
+    { command: `echo "$(printf ')'; find . -newermt yesterday)"`, flagged: 'yesterday' },
+    { command: `echo "$(printf ")"; find . -newermt yesterday)"`, flagged: 'yesterday' },
+    { command: `x=$(printf ')'; find . -newermt yesterday)`, flagged: 'yesterday' },
   ])('WARN: $command', ({ command, flagged }) => {
     const r = run(command)
     expect(r.warned).toBe(true)
@@ -414,11 +417,29 @@ describe('find inside sh, bash and zsh -c scripts', () => {
     'bash review.sh -c "find . -newermt yesterday"',
     "bash -c 'echo \"find . -newermt yesterday\"'",
     "bash -o 'find . -newermt yesterday' -c true",
+    "echo bash -c 'find . -newermt yesterday'",
+    "printf '%s' bash -c 'find . -newermt yesterday'",
   ])('SILENT: %s', (command) => {
     const r = run(command)
     expect(r.stdout).toBe('')
     expect(r.denied).toBe(false)
     expect(r.status).toBe(0)
+  })
+})
+
+describe('the shell word of a -c script is in command position', () => {
+  it.each([
+    "bash --rcfile /dev/null -c 'find . -newermt yesterday'",
+    "bash --init-file /dev/null -c 'find . -newermt yesterday'",
+    "sudo -u root bash -c 'find . -newermt yesterday'",
+    "timeout 1s bash -c 'find . -newermt yesterday'",
+    "timeout -s KILL 30 bash -c 'find . -newermt yesterday'",
+    "env A=1 nice -n 5 bash -c 'find . -newermt yesterday'",
+    "setsid nohup bash -c 'find . -newermt yesterday'",
+  ])('WARN: %s', (command) => {
+    const r = run(command)
+    expect(r.warned).toBe(true)
+    expect(r.denied).toBe(false)
   })
 })
 
@@ -436,6 +457,9 @@ describe('nesting depth bound', () => {
   })
 
   it('stops descending past the depth bound', () => {
+    // The pair is the lock: eight levels warn and nine stay silent in one test, so removing the
+    // descent (both silent) or the bound (both warn) fails here.
+    expect(run(bashChain(8)).warned).toBe(true)
     const r = run(bashChain(9))
     expect(r.stdout).toBe('')
     expect(r.status).toBe(0)

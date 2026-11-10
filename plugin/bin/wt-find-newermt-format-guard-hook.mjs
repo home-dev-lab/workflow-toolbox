@@ -63,7 +63,9 @@ function readInput() {
 
 // Keep adjacent quoted/bare segments in one word and operators outside quotes separate.
 // This matcher does not evaluate shell code or variable values.
-const COMMAND_SUBSTITUTION = /\$\((?:[^()]|\([^()]*\))*\)/
+// A quoted `)` inside the body does not close it: `"$(printf ')'; find …)"` runs the find.
+const SUBSTITUTION_QUOTE = /'[^']*'|"(?:\\[\s\S]|[^"\\])*"/
+const COMMAND_SUBSTITUTION = new RegExp(String.raw`\$\((?:${SUBSTITUTION_QUOTE.source}|[^()'"]|\([^()]*\))*\)`)
 // Inside double quotes `$(` only opens a substitution, so its body may carry its own quotes. The
 // alternatives start on disjoint characters: a malformed input cannot backtrack exponentially.
 const DOUBLE_QUOTED = new RegExp(String.raw`"(?:\\[\s\S]|${COMMAND_SUBSTITUTION.source}|\$(?!\()|[^"\\$])*"`)
@@ -81,7 +83,19 @@ const WORD_SEGMENT = new RegExp(String.raw`'[^']*'|\\[\s\S]|${DOUBLE_QUOTED.sour
 const QUOTED_SUBSTITUTION = new RegExp(String.raw`\\[\s\S]|${COMMAND_SUBSTITUTION.source}`, 'g')
 const SHELL_COMMAND = /(?:^|\/)(?:sh|bash|zsh)$/
 const SHELL_FLAG_CLUSTER = /^-[A-Za-z]+$/
-const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$/
+const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$|^--(?:rcfile|init-file)$/
+// Words that run the NEXT word as a command, each with the options that take a value and the
+// count of positional arguments (timeout's duration) before that command.
+const LAUNCHERS = new Map([
+  ['sudo', { valued: /^-[ugCDhpRrtTU]$|^--(?:user|group|chdir|prompt|host)$/, positional: 0 }],
+  ['timeout', { valued: /^-[sk]$|^--(?:signal|kill-after)$/, positional: 1 }],
+  ['nice', { valued: /^-n$|^--adjustment$/, positional: 0 }],
+  ['env', { valued: /^-[uCS]$|^--(?:unset|chdir|split-string)$/, positional: 0 }],
+  ['stdbuf', { valued: /^-[ioe]$/, positional: 0 }],
+  ['exec', { valued: /^-a$/, positional: 0 }],
+  ...['nohup', 'setsid', 'time', 'command'].map((name) => [name, { valued: /^$/, positional: 0 }]),
+])
+const ASSIGNMENT = /^[A-Za-z_]\w*=/
 
 // A bare ISO date stays accepted; a time component needs an explicit UTC offset.
 const ISO_DATE = /\d{4}-\d{2}-\d{2}/
@@ -144,10 +158,39 @@ function* substitutionBodies(word) {
   }
 }
 
-// The script of `sh|bash|zsh [options] -c <script>`, or null when the shell runs a file instead.
+function launcherName(word) {
+  const value = shellValue(word)
+  return value.slice(value.lastIndexOf('/') + 1)
+}
+
+// The index after a launcher word, its options (with their values) and its positional arguments.
+function skipLauncher(words, at) {
+  const { valued, positional } = LAUNCHERS.get(launcherName(words[at]))
+  let index = at + 1
+  while (index < words.length && shellValue(words[index]).startsWith('-')) {
+    const option = shellValue(words[index])
+    index += valued.test(option) ? 2 : 1
+    if (option === '--') break
+  }
+  return index + positional
+}
+
+// The index of the word in command position: after assignments and launchers with their arguments.
+function commandStart(words) {
+  let index = 0
+  while (index < words.length) {
+    if (ASSIGNMENT.test(shellValue(words[index]))) index++
+    else if (LAUNCHERS.has(launcherName(words[index]))) index = skipLauncher(words, index)
+    else break
+  }
+  return index
+}
+
+// The script of `[launchers] sh|bash|zsh [options] -c <script>`, or null when the shell runs a
+// file instead, or when the shell word is only an argument (`echo bash -c '…'`).
 function shellScript(words) {
-  const head = words.findIndex((word) => SHELL_COMMAND.test(shellValue(word)))
-  if (head === -1) return null
+  const head = commandStart(words)
+  if (head >= words.length || !SHELL_COMMAND.test(shellValue(words[head]))) return null
   let runsScript = false
   for (let index = head + 1; index < words.length; index++) {
     const word = shellValue(words[index])

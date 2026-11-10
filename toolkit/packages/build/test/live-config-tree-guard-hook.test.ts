@@ -345,8 +345,8 @@ checkRows('differential', [
   ['substitution-suffixed subcommand retains base', `git reset$(printf '') --hard`],
   ['base cwd inside subshell retained', `cd ${live}; (cd /elsewhere; git reset --hard); git status`],
   ['base cwd inside data-command substitution retained', `echo $(cd /elsewhere; git reset --hard)`],
-  ['global config option base also silent', 'git -c color.ui=false reset --hard', 'silent'],
-  ['repeated directory base also silent', `git -C /elsewhere -C ${live} reset --hard`, 'silent'],
+  ['global config option before reset', 'git -c color.ui=false reset --hard'],
+  ['repeated directory resolves to the last absolute one', `git -C /elsewhere -C ${live} reset --hard`],
 ], live)
 
 checkRows('round 4', [
@@ -448,6 +448,42 @@ checkRows('executable command', [
   ['double-quoted hard flag', `${git} reset "--hard"`],
 ])
 
+// git's global options never hide the subcommand, `-C` chains resolve as git resolves them, and
+// an option-led checkout that moves HEAD is a checkout.
+checkRows('global options', [
+  ['-c then -C then switch', `git -c core.quotePath=false -C ${live} switch main`],
+  ['--no-pager before reset', `git --no-pager -C ${live} reset --hard`],
+  ['-C chain relative to the one before', `git -C ${home} -C .claude/rules reset --hard`],
+  ['-C chain leaving the live tree', `git -C ${live} -C ../../other reset --hard`, 'silent'],
+  ['--git-dir and --work-tree name the live tree', `git --git-dir=${live}/.git --work-tree=${live} checkout main`],
+  ['separate-word --work-tree and --git-dir', `git --work-tree ${live} --git-dir ${live}/.git reset --hard`],
+  ['--git-dir with a read-only subcommand', `git --git-dir ${live}/.git status`, 'silent'],
+  ['checkout --detach', `git -C ${live} checkout --detach main`],
+  ['checkout -f with a ref', `git -C ${live} checkout -f main`],
+  ['checkout -q with a ref', `git -C ${live} checkout -q main`],
+  ['checkout -f alone discards the tree', `git -C ${live} checkout -f`],
+  ['checkout -p restores paths only', `git -C ${live} checkout -p`, 'silent'],
+], '/')
+
+function nestShell(script: string, levels: number): string {
+  let command = script
+  for (let i = 0; i < levels; i += 1) command = `bash -c ${JSON.stringify(command)}`
+  return command
+}
+
+// A shell `-c` script is walked as a command of its own, with its own `cd`s, from the cwd its
+// outer chain reached, three levels deep. A `cd` inside the script never moves the outer chain.
+checkRows('shell script cwd', [
+  ['cd inside bash -c', `bash -c 'cd ${live} && git reset --hard'`],
+  ['cd inside sh -c with a semicolon', `sh -c 'cd ${live}; git switch x'`],
+  ['relative cd inside the script from the outer cwd', `cd ${home} && bash -c 'cd .claude/rules && git reset --hard'`],
+  ['warn-class subcommand inside the script', `bash -c 'cd ${live} && git merge x'`, 'warn'],
+  ['a cd inside the script does not move the outer chain', `bash -c 'cd ${live}'; git reset --hard`, 'silent'],
+  ['a shell word that is only an argument', `echo bash -c 'cd ${live} && git reset --hard'`, 'silent'],
+  ['three nested scripts', nestShell(`cd ${live} && git reset --hard`, 3)],
+  ['a fourth level is past the depth bound', nestShell(`cd ${live} && git reset --hard`, 4), 'silent'],
+], '/')
+
 for (const target of [live, '~/.claude/rules', `'${live}'`, `"${live}"`]) {
   checkRows(`target ${target}`, ['switch x', 'checkout x', 'checkout -b x', 'reset --hard']
     .map((operation): Row => [operation, `git -C ${target} ${operation}`]))
@@ -468,17 +504,24 @@ describe('wt-live-config-tree-guard-hook — verdict parity with the retired pri
   }
 })
 
-const TIMING_ROWS: [string, string, Verdict][] = [
-  ['git, 50000 spaces and reset --hard', `git${' '.repeat(50_000)}reset --hard`, 'deny'],
-  ['a 30-space redirect target after reset --hard', `git reset --hard > '${' '.repeat(30)}'`, 'deny'],
-  ['a 100000-space redirect target after reset --hard', `git reset --hard > '${' '.repeat(100_000)}'`, 'deny'],
-  ['git, 50000 spaces and a bare word', `git${' '.repeat(50_000)}x`, 'silent'],
+const repeatedGit = (count: number) => `printf '%s' '${'git '.repeat(count)}switch main'`
+const TIMING_ROWS: [string, string, Verdict, string][] = [
+  ['git, 50000 spaces and reset --hard', `git${' '.repeat(50_000)}reset --hard`, 'deny', live],
+  ['a 30-space redirect target after reset --hard', `git reset --hard > '${' '.repeat(30)}'`, 'deny', live],
+  ['a 100000-space redirect target after reset --hard', `git reset --hard > '${' '.repeat(100_000)}'`, 'deny', live],
+  // Outside the live tree the verdict is found and the target is then extracted and rejected:
+  // the whitespace run is read by target extraction, not skipped before it.
+  ['git, 50000 spaces and reset --hard outside the live tree', `git${' '.repeat(50_000)}reset --hard`, 'silent', home],
+  ['32000 repeated git words (128 KB)', repeatedGit(32_000), 'deny', live],
+  ['64000 repeated git words (256 KB)', repeatedGit(64_000), 'deny', live],
+  // A segment-wide check run once per git word turns quadratic when no word hits the live tree.
+  ['17000 repeated checkouts outside the live tree (256 KB)', 'git checkout x '.repeat(17_000), 'silent', home],
 ]
 
-describe('wt-live-config-tree-guard-hook — target extraction is linear in whitespace', () => {
-  for (const [name, command, expected] of TIMING_ROWS) {
+describe('wt-live-config-tree-guard-hook — detection is linear in the command length', () => {
+  for (const [name, command, expected, cwd] of TIMING_ROWS) {
     it(`${name} finishes within 1 s with the verdict ${expected}`, () => {
-      const r = parityVerdict(command, live, {}, 5_000)
+      const r = parityVerdict(command, cwd, {}, 5_000)
       expect(r.status, 'hook must finish, not time out').toBe(0)
       expect(r.verdict).toBe(expected)
       expect(r.ms).toBeLessThan(1_000)
