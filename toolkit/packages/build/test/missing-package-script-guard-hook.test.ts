@@ -309,7 +309,49 @@ describe('wt-missing-package-script-guard-hook', () => {
   registerCases4()
   registerCases5()
   registerManifestCase()
+  registerShellScriptCases()
 })
+
+function registerShellScriptCases(): void {
+  const smoke = () => join(root, 'packages', 'smoke')
+  it('warns on a missing script inside `bash -c` and `sh -c` scripts, tracking cwd', () => {
+    const rows: [string, string][] = [
+      ["bash -c 'pnpm nope-script'", root],
+      ['sh -c "cd packages/smoke && pnpm lint"', root],
+      ["bash -c 'cd packages/smoke && pnpm lint'", root],
+      ["cd packages/smoke && bash -c 'pnpm lint'", root],
+      ['setsid nohup bash -c "pnpm nope-script > out.log 2>&1" &', root],
+      ["/bin/zsh -lc 'pnpm nope-script'", root],
+      ["bash -o pipefail -c 'pnpm nope-script'", root],
+      ["bash -c \"bash -c 'pnpm nope-script'\"", root],
+    ]
+    for (const [command, cwd] of rows) {
+      const r = run(command, cwd)
+      expect(r.warned, command).toBe(true)
+      expect(r.stdout, command).not.toContain('permissionDecision')
+    }
+  })
+  it('stays silent when the script exists or is not a -c script', () => {
+    const rows: [string, string][] = [
+      ["bash -c 'pnpm test'", root],
+      ["bash -c 'cd packages/smoke && pnpm typecheck'", root],
+      ['bash script.sh -c "pnpm nope-script"', root],
+      ['git commit -m "bash -c \'pnpm nope-script\'"', root],
+      ['echo "pnpm nope-script"', root],
+      ["echo bash -c 'pnpm nope-script'", root],
+      ["bash -c 'cd packages/smoke; cd ../..; pnpm lint'", smoke()],
+    ]
+    for (const [command, cwd] of rows) {
+      const r = run(command, cwd)
+      expect(r.warned, command).toBe(false)
+      expect(r.stdout, command).toBe('')
+    }
+  })
+  it('a cd inside the script does not move the outer chain', () => {
+    const r = run("bash -c 'cd packages/smoke' && pnpm lint", root)
+    expect(r.warned).toBe(false)
+  })
+}
 
 describe('wt-missing-package-script-guard-hook: context-only notice', () => {
   beforeEach(setupNoticeRoot)

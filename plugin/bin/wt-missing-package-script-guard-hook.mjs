@@ -122,26 +122,40 @@ function findAncestorDefining(fromDir, scriptName) {
 // A command line carries CODE and DATA in the same string. Strip data spans before splitting on
 // shell separators, or a quoted/heredoc/commented mention of `pnpm <script>` reads as a real
 // chained invocation. Same discipline as wt-merge-chain-guard-hook.mjs's stripDataSpans().
+// A private-use character: it cannot occur in a shell command's own syntax.
+const SPAN_MARK = '\uE000'
+const SPAN_MARKER = new RegExp(`${SPAN_MARK}(\\d+)${SPAN_MARK}`, 'g')
+
 function stripDataSpans(cmd) {
   let out = cmd
   out = out.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\2$/gm, '<<HEREDOC')
   out = out.replace(/<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1[\s\S]*$/, '<<HEREDOC')
   out = out.replace(/`[^`]*`/g, '`CODESPAN`')
-  out = out.replace(/'[^']*'/g, "'Q'").replace(/"[^"]*"/g, '"Q"')
+  // One pass, so a quote inside the other kind stays inside its span. Each span's text is kept
+  // in `spans` and its place holds a numbered marker, so a `-c` script can be read back.
+  const spans = []
+  out = out.replace(/'[^']*'|"[^"]*"/g, (span) => {
+    spans.push(span.slice(1, -1))
+    return `${span[0]}${SPAN_MARK}${spans.length - 1}${SPAN_MARK}${span[0]}`
+  })
   out = out.replace(/(^|\s)#.*$/gm, '$1')
-  return out
+  return { text: out, spans }
 }
 
 // Tokenize a single simple command (already split on shell operators) into words, stripping
 // simple quoting. Not a real shell parser — good enough for `pnpm <script>` / `cd <dir>` shapes.
-function tokenize(segment) {
+function tokenize(segment, spans) {
   const tokens = []
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g
   let m
   while ((m = re.exec(segment))) {
-    tokens.push(m[1] ?? m[2] ?? m[3])
+    tokens.push(restoreSpans(m[1] ?? m[2] ?? m[3], spans))
   }
   return tokens
+}
+
+function restoreSpans(token, spans) {
+  return token.replace(SPAN_MARKER, (_, index) => spans[Number(index)])
 }
 
 // Split a full command string on shell command separators (&&, ||, ;, |, newline) into
@@ -155,8 +169,8 @@ function splitSegments(cmd) {
 
 // Recognize a `cd` invocation in a segment. Returns the raw target token, or null if the
 // segment isn't a `cd`.
-function matchCdTarget(segment) {
-  const tokens = tokenize(segment)
+function matchCdTarget(segment, spans) {
+  const tokens = tokenize(segment, spans)
   if (tokens.length === 0 || tokens[0] !== 'cd') return null
   return tokens[1] ?? '~' // bare `cd` goes to $HOME
 }
@@ -251,8 +265,8 @@ function extractScriptInvocation(tokens) {
   return { scriptName, workspaceAware }
 }
 
-function checkSegment(segment, cwd) {
-  const tokens = tokenize(segment)
+function checkSegment(segment, cwd, spans) {
+  const tokens = tokenize(segment, spans)
   if (tokens.length === 0) return null
   const mgr = tokens[0]
   if (!PACKAGE_MANAGERS.has(mgr)) return null
@@ -273,35 +287,73 @@ function checkSegment(segment, cwd) {
   return { scriptName, cwdPkgDir: nearest.dir, ancestorDir }
 }
 
-function findFinding(cmd, initialCwd) {
-  let currentCwd = initialCwd
-  let cwdTrusted = true // false once a `cd` in this chain leaves the directory unknown
+// Words that may stand before the shell word of a wrapped invocation (`setsid nohup bash -c …`,
+// `env A=1 bash -c …`); anything else before it means the shell word is an argument.
+const LAUNCHER_WORD = /^(?:setsid|nohup|env|sudo|time|exec|command|nice|timeout|stdbuf)$|^[A-Za-z_]\w*=|^-|^\d+$/
+const SHELL_WORD = /^(?:.*\/)?(?:sh|bash|zsh)$/
+const SHELL_OPTION_WITH_VALUE = /^[-+]o$|^--(?:rcfile|init-file)$/
+const MAX_SCRIPT_DEPTH = 3
 
-  for (const segment of splitSegments(stripDataSpans(cmd))) {
+// The script of `sh|bash|zsh [options] -c <script>`, or null when the shell runs a file, reads
+// stdin, or the word is not at command position.
+function shellScript(tokens) {
+  const head = tokens.findIndex((word) => SHELL_WORD.test(word))
+  if (head === -1 || !tokens.slice(0, head).every((word) => LAUNCHER_WORD.test(word))) return null
+  let runsScript = false
+  for (let i = head + 1; i < tokens.length; i++) {
+    const word = tokens[i]
+    if (SHELL_OPTION_WITH_VALUE.test(word)) i++
+    else if (/^[-+]/.test(word)) runsScript ||= /^-[A-Za-z]+$/.test(word) && word.includes('c')
+    else return runsScript ? word : null
+  }
+  return null
+}
+
+// A `-c` script runs in a child shell: it starts from the cwd in force here, and a `cd` inside
+// it never moves the outer chain.
+function checkShellScript(segment, cwd, spans, depth) {
+  if (depth >= MAX_SCRIPT_DEPTH) return null
+  const script = shellScript(tokenize(segment, spans))
+  return script === null ? null : walkChain(script, { cwd, trusted: true }, depth + 1)
+}
+
+function applyCd(cdTarget, state) {
+  const resolved = resolveCd(cdTarget, state.cwd, state.trusted)
+  if (resolved.unresolvable) {
+    state.trusted = false
+  } else {
+    state.cwd = resolved.cwd
+    state.trusted = true // recovered — this cd resolved with confidence
+  }
+}
+
+function walkChain(cmd, start, depth) {
+  const state = { ...start } // trusted is false once a `cd` in this chain leaves the directory unknown
+  const { text, spans } = stripDataSpans(cmd)
+
+  for (const segment of splitSegments(text)) {
     // Subshells / command grouping (`( … )`) are not modeled — stay silent rather than guess.
     if (segment.includes('(') || segment.includes(')')) {
-      cwdTrusted = false
+      state.trusted = false
       continue
     }
 
-    const cdTarget = matchCdTarget(segment)
+    const cdTarget = matchCdTarget(segment, spans)
     if (cdTarget !== null) {
-      const resolved = resolveCd(cdTarget, currentCwd, cwdTrusted)
-      if (resolved.unresolvable) {
-        cwdTrusted = false
-      } else {
-        currentCwd = resolved.cwd
-        cwdTrusted = true // recovered — this cd resolved with confidence
-      }
+      applyCd(cdTarget, state)
       continue
     }
 
-    if (!cwdTrusted) continue // effective directory unknown — don't check, don't guess
+    if (!state.trusted) continue // effective directory unknown — don't check, don't guess
 
-    const finding = checkSegment(segment, currentCwd)
+    const finding = checkSegment(segment, state.cwd, spans) ?? checkShellScript(segment, state.cwd, spans, depth)
     if (finding) return finding
   }
   return null
+}
+
+function findFinding(cmd, initialCwd) {
+  return walkChain(cmd, { cwd: initialCwd, trusted: true }, 0)
 }
 
 // The notice is context-only by construction: no permissionDecision field exists in it. The
