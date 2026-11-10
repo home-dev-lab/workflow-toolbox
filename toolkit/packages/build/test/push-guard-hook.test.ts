@@ -44,7 +44,7 @@ function fixture(parent = tmpdir()) {
   }
   const A = commit('A')
   git(local, 'push', '-q', 'public', 'main')
-  function install(...args: string[]) { return call(local, process.execPath, [installer, ...args, '--repo', local]) }
+  function install(...args: string[]) { return call(local, process.execPath, [installer, ...args, '--repo', local, '--owner-keys', join(dir, 'owner-keys.json'), '--exception-state', join(dir, 'exceptions')]) }
   const installed = install('--install', '--guard-remote', 'public', '--guard-path', 'home-dev-lab/workflow-toolbox')
   if (installed.status !== 0) throw Error(installed.out)
   const auth = join(local, '.git', 'wt-push-authorized.json')

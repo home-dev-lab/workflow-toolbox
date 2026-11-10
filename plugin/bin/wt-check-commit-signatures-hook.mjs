@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { derivePushChecks } from './lib/git-push.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
+import { confirmedPushDecision } from './lib/host/signature-hook-preflight.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CLI = path.join(HERE, 'wt-check-commit-signatures.mjs')
@@ -62,27 +63,30 @@ function handlePreToolUse(input) {
   if (checks.length === 0) return
 
   const findings = []
-  for (const { repo, range } of checks) {
-    const res = runSignatureCli(repo, ['--range', range])
+  const approvals = []
+  for (const check of checks) {
+    const res = runSignatureCli(check.repo, ['--range', check.range, '--json'])
     if (!res || res.error) continue
     if (res.status === 1) {
-      const stdout = String(res.stdout || '').trim()
-      if (stdout) findings.push(stdout)
+      const decision = confirmedPushDecision(check, res, HERE)
+      if (decision.allowed) approvals.push(decision.message)
+      else findings.push(decision.message)
     }
   }
-  if (findings.length === 0) return
+  if (findings.length === 0) {
+    if (approvals.length) process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: approvals.join('\n') } }))
+    return
+  }
 
-  // Block on CONFIRMED offenders only. The remote will reject the same push anyway, so this is
-  // just an earlier, cheaper failure. Everything uncertain fails open: no derived range, git
-  // trouble, malformed push shape, or CLI error all allow the push rather than teaching people to
-  // route around a noisy guard.
+  // Before confirmation uncertainty still allows. After exit 1, delegation starts denied and
+  // every parsing, policy, install or preview failure stays inside that deny boundary.
   process.stdout.write(
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason:
-          'COMMIT SIGNATURE PROBLEM — this push would send commits that do not satisfy this repository\'s signature policy. The remote is expected to reject them; blocking here names the offending commit(s) before the network round-trip:\n' +
+          'COMMIT SIGNATURE PROBLEM — this push would send commits that do not satisfy this repository\'s signature policy; blocking here names the offending commit(s) before the network round-trip:\n' +
           findings.join('\n\n'),
       },
     }),
