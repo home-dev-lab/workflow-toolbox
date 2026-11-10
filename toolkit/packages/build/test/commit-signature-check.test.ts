@@ -260,6 +260,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toBe('')
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs finding letters [fake git shim]', () => {
   it('signing configured + one N among several G → exit 1 and exactly that finding, with one cause hint', () => {
     const { repo, env } = makeFakeGitEnv('cli-one-n', {
       FAKE_GIT_COMMIT_GPGSIGN: 'true',
@@ -294,6 +297,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toContain('ccccccc: R (revoked signing key)')
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs unverifiable signatures [fake git shim]', () => {
   // ⚠ `E` is NOT `N`. `E` means git could not VERIFY the signature — commonly a signature made
   // with a key absent from this keyring, which is what a forge's web-flow key on a squash-merge
   // produces. Diagnosing it as "your signing key was unavailable or locked" sends the reader to
@@ -327,6 +333,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toMatch(/already published|rewriting published history/i)
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs unsigned causes [fake git shim]', () => {
   // ⚠ The population that must NOT change. One repo on this machine is deliberately unsigned —
   // 40 of its last 60 commits are `N` — so the existing wording describes a real majority
   // somewhere. Softening it globally would break a correct guard for people not in the room.
@@ -358,6 +367,9 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [f
     expect(res.stdout).toMatch(/could not be VERIFIED|unknown to this keyring/i)
   })
 
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs configuration and errors [fake git shim]', () => {
   it('user.signingkey set but commit.gpgsign absent still enforces the check', () => {
     const { repo, env } = makeFakeGitEnv('cli-signingkey', {
       FAKE_GIT_SIGNINGKEY: 'ssh-ed25519 AAAA',

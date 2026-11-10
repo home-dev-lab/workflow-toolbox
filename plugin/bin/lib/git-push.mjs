@@ -120,11 +120,13 @@ function invocationTokens(segment) {
   return tokens
 }
 
+const configOption = (token) => token.startsWith('-c') || token.startsWith('--config-env=')
+
 function advanceGitOption(tokens, state) {
   const token = tokens[state.index]
   if (token === '-C') { state.repo = path.resolve(state.repo, tokens[state.index + 1] || '.'); state.index += 2 }
   else if (token === '-c' || token === '--config-env') { state.gitConfigOverride = true; state.index += 2 }
-  else if (token.startsWith('-c') || token.startsWith('--config-env=')) { state.gitConfigOverride = true; state.index++ }
+  else if (configOption(token)) { state.gitConfigOverride = true; state.index++ }
   else if (token === '--git-dir' || token === '--work-tree') { state.unsupportedForm = token; state.index += 2 }
   else {
     if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=')) state.unsupportedForm = token
@@ -138,33 +140,41 @@ function gitInvocation(tokens, cwd) {
   return { repo: state.repo, index: state.index, action: tokens[state.index], unsupportedForm: state.unsupportedForm, gitConfigOverride: state.gitConfigOverride }
 }
 
+const skipsVerification = (token) => '--no-verify'.startsWith(token) && token.startsWith('--no-v')
+
+function advancePushOption(token, tokens, i, state, needsValue) {
+  if (token === '--') { state.afterDashDash = true; return i }
+  if (token === '--repo') { state.optionRemote = tokens[i + 1] || null; return i + 1 }
+  if (token.startsWith('--repo=')) { state.optionRemote = token.slice('--repo='.length) || null; return i }
+  if (token === '--delete') { state.deletion = true; return i }
+  if (skipsVerification(token)) { state.noVerify = true; return i }
+  if (token === '--all' || token === '--mirror') { state.aggregateForm = token; return i }
+  return advanceOtherPushOption(token, i, state, needsValue)
+}
+
+function advanceOtherPushOption(token, i, state, needsValue) {
+  if (token.startsWith('-')) return needsValue.has(token) ? i + 1 : i
+  state.positionals.push(token)
+  return i
+}
+
+function pushOptions(tokens, index) {
+  const state = { positionals: [], afterDashDash: false, optionRemote: null, deletion: false, aggregateForm: null, noVerify: false }
+  const needsValue = new Set(['--receive-pack', '--exec', '--upload-pack', '--push-option', '-o', '--recurse-submodules'])
+  for (let i = index + 1; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    if (state.afterDashDash) state.positionals.push(token)
+    else i = advancePushOption(token, tokens, i, state, needsValue)
+  }
+  return state
+}
+
 function parsePushSegment(segment, cwd) {
   const tokens = invocationTokens(segment)
   const invocation = gitInvocation(tokens, cwd)
   if (invocation?.action !== 'push') return null
   const { repo, index, unsupportedForm } = invocation
-
-  const positionals = []
-  let afterDashDash = false
-  let optionRemote = null
-  let deletion = false
-  let aggregateForm = null
-  let noVerify = false
-  const needsValue = new Set(['--receive-pack', '--exec', '--upload-pack', '--push-option', '-o', '--recurse-submodules'])
-  for (let i = index + 1; i < tokens.length; i += 1) {
-    const token = tokens[i]
-    if (!afterDashDash && token === '--') { afterDashDash = true; continue }
-    if (!afterDashDash && token === '--repo') { optionRemote = tokens[i + 1] || null; i += 1; continue }
-    if (!afterDashDash && token.startsWith('--repo=')) { optionRemote = token.slice('--repo='.length) || null; continue }
-    if (!afterDashDash && token === '--delete') { deletion = true; continue }
-    if (!afterDashDash && '--no-verify'.startsWith(token) && token.startsWith('--no-v')) { noVerify = true; continue }
-    if (!afterDashDash && (token === '--all' || token === '--mirror')) { aggregateForm = token; continue }
-    if (!afterDashDash && token.startsWith('-')) {
-      if (needsValue.has(token)) i += 1
-      continue
-    }
-    positionals.push(token)
-  }
+  const { positionals, optionRemote, deletion, aggregateForm, noVerify } = pushOptions(tokens, index)
   return {
     repo,
     remote: optionRemote || positionals[0] || null,

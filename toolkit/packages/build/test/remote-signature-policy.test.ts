@@ -28,6 +28,9 @@ describe('remote signature policy evidence', () => {
     expect(policy([[]]).state).toBe('no-requirement-found')
     expect(policy([[]], { enabled: true }).state).toBe('requirement-present')
   })
+})
+
+describe('remote signature policy unknown evidence', () => {
   it.each([null, {}, [], [[{}]], [[{ type: 3 }]], [[], {}]])('names unknown page shape %j', (rules) => {
     expect(policy(rules).state).toBe('unknown')
   })

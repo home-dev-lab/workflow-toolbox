@@ -53,6 +53,9 @@ describe('signed owner signature exception', () => {
     expect(f.check().failure.cause).toBe('no-pinned-owner-key')
     expect(findOwnerException({ statement, config: {} }).failure.cause).toBe('install-predates-exceptions')
   })
+})
+
+describe('signed owner signature exception tampering', () => {
   it.each([
     ['text', (a: Record<string, unknown>) => { a.text = 'No' }],
     ['selection', (a: Record<string, unknown>) => { a.selections = ['No'] }],
@@ -80,6 +83,9 @@ describe('signed owner signature exception', () => {
     f.relay(f.answer)
     expect(f.check().failure).toBeTruthy()
   })
+})
+
+describe('signed owner signature exception identity and freshness', () => {
   it('refuses a copied spent grant with a changed outer request id', () => {
     const f = fixture()
     f.relay(f.answer)
@@ -110,6 +116,9 @@ describe('signed owner signature exception', () => {
     f.relay(attestation(exceptionStatement(other), f.owner))
     expect(f.check().failure.cause).toBe('digest-mismatch')
   })
+})
+
+describe('signed owner signature exception veto and recording', () => {
   it.each(['No', 'clarification'])('vetoes every Yes when a signed %s is relayed', (choice) => {
     const f = fixture()
     f.relay(f.answer, 'a-yes.json')
@@ -140,6 +149,9 @@ describe('signed owner signature exception', () => {
     expect(f.check(true).failure.cause).toBe('recording-failed')
     expect(f.check().failure.cause).toBe('already-used')
   })
+})
+
+describe('signed owner signature exception pinning and destinations', () => {
   it('pins only a fresh signed Yes for the pin statement, without key additions', () => {
     const f = fixture()
     rmSync(f.config.ownerKeysFile)

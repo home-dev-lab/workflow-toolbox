@@ -16,7 +16,7 @@ const cli = join(root, 'plugin/bin/wt-signature-exception.mjs')
 const made: string[] = []
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
-function fixture(install = true) {
+function repositoryFixture() {
   const dir = mkdtempSync(join(tmpdir(), 'wt-signature-install-'))
   made.push(dir)
   const f = exceptionFixture(dir)
@@ -46,6 +46,12 @@ function fixture(install = true) {
   git('push', '-q', 'public', 'main')
   const B = commit('B')
   git('config', 'commit.gpgsign', 'true')
+  return { ...f, dir, local, bare, env, A, B, call, git, commit }
+}
+
+function fixture(install = true) {
+  const f = repositoryFixture()
+  const { local, bare, B, call } = f
   const installGuard = () => call(process.execPath, [installer, '--install', '--repo', local, '--guard-remote', 'public', '--owner-keys', f.config.ownerKeysFile, '--exception-state', f.config.exceptionStateDir])
   if (install) { const r = installGuard(); if (r.status !== 0) throw Error(r.out) }
   const statement = (ref = 'refs/heads/main', sha = B) => `workflow-toolbox signature exception v1: allow updating ${bare} ${ref} to ${sha} once, although it carries commits without an acceptable signature`
@@ -56,7 +62,7 @@ function fixture(install = true) {
     const r = call(process.execPath, [hook], JSON.stringify({ session_id: 'test-session', hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: local, tool_input: { command } }))
     return { ...r, payload: r.stdout ? JSON.parse(r.stdout).hookSpecificOutput : undefined }
   }
-  return { ...f, dir, local, bare, env, A, B, call, git, commit, installGuard, statement, relay, relayAttestation: f.relay, authorize, push, pre }
+  return { ...f, installGuard, statement, relay, relayAttestation: f.relay, authorize, push, pre }
 }
 
 function replacePinned(f: ReturnType<typeof fixture>, name: string, text: string) {
@@ -97,6 +103,9 @@ describe('owner exceptions through installed guard and disposable hook session',
     expect(existsSync(join(f.config.exceptionStateDir, 'claims', `${answer.request_id}.json`))).toBe(true)
     expect(readFileSync(join(f.config.exceptionStateDir, 'exceptions.jsonl'), 'utf8')).toContain('opened')
   })
+})
+
+describe('installed owner exception consumption', () => {
   it.skipIf(process.platform === 'win32')('spends a grant even when the remote rejects, then refuses reuse', () => {
     const f = fixture()
     const reject = join(f.bare, 'hooks/pre-receive')
@@ -114,6 +123,9 @@ describe('owner exceptions through installed guard and disposable hook session',
     f.relay(); f.authorize()
     expect(f.push().status).toBe(0)
   })
+})
+
+describe('installed owner exception invocation integrity', () => {
   it.each([
     'git push --no-verify public main', 'git push --no-ver public main', 'git -c core.hooksPath=/missing push public main',
     'git --config-env=core.hooksPath=OVERRIDE push public main', 'HOME=/elsewhere git push public main',
@@ -139,6 +151,9 @@ describe('owner exceptions through installed guard and disposable hook session',
     expect(f.pre().payload?.permissionDecision).toBe('deny')
     expect(f.pre().out).toContain('no-pinned-owner-key')
   })
+})
+
+describe('installed owner exception advertised refs', () => {
   it.each(['new', 'deleted'])('checks unsigned commits on a %s remote ref against advertised objects', (kind) => {
     const f = fixture()
     if (kind === 'deleted') {
@@ -153,6 +168,9 @@ describe('owner exceptions through installed guard and disposable hook session',
     f.relay('refs/heads/target'); f.authorize()
     expect(f.push('HEAD:refs/heads/target').status).toBe(0)
   })
+})
+
+describe('installed owner exception pinning and configuration', () => {
   it('pins via the CLI and refuses --add', () => {
     const f = fixture()
     for (const flag of ['--help', '-h']) {
@@ -180,6 +198,9 @@ describe('owner exceptions through installed guard and disposable hook session',
     expect(refused.out).toContain('install-predates-exceptions')
     expect(existsSync(join(f.config.exceptionStateDir, 'claims'))).toBe(false)
   })
+})
+
+describe('installed owner exception checker integrity', () => {
   it.each([
     "process.exit(2)",
     "console.log('not JSON'); process.exit(0)",
@@ -194,6 +215,9 @@ describe('owner exceptions through installed guard and disposable hook session',
     expect(refused.out).toContain('no exception attempted')
     expect(existsSync(join(f.config.exceptionStateDir, 'claims'))).toBe(false)
   })
+})
+
+describe('installed owner exception target and dependency integrity', () => {
   it('refuses a valid answer for another destination, ref or sha through a real install', () => {
     const f = fixture(); f.authorize()
     f.relay('refs/heads/elsewhere')

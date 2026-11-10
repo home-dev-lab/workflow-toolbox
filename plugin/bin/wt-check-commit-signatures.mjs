@@ -79,6 +79,11 @@ function printFindings({ offenders, headSha, range }, output) {
       `- ${shortSha(offender.sha)}: ${offender.status} (${statusMeaning(offender.status)}) — ${offender.subject}`,
     );
   }
+  printCauses(offenders, output);
+  printFix({ offenders, headSha, range }, output);
+}
+
+function printCauses(offenders, output) {
   // ⚠ `E` IS NOT `N`, AND THE DIFFERENCE DECIDES WHAT THE READER SHOULD DO.
   // `N` means no signature: the local signing setup is the likely cause, and amending is right.
   // `E` means git could NOT VERIFY one — most often a signature made with a key absent from this
@@ -103,7 +108,9 @@ function printFindings({ offenders, headSha, range }, output) {
       'Note: a status of E means the signature could not be VERIFIED here, not that it is missing — commonly a signature made with a key unknown to this keyring, such as a forge web-flow key on a squash-merge. Check the signing key with: git log -1 --format=%GK <sha>. If the key is not yours, nothing local needs fixing.',
     );
   }
+}
 
+function printFix({ offenders, headSha, range }, output) {
   const onlyHeadOffender = offenders.length === 1 && offenders[0].sha === headSha;
   if (onlyHeadOffender) {
     (output ?? console).log('Fix: git commit --amend --no-edit -S');
@@ -149,20 +156,16 @@ function remoteFromRange(repo, range) {
   return known.includes(candidate) ? candidate : null;
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2));
-
-  const repoCheck = runGit(args.repo, ['rev-parse', '--git-dir']);
-  if (repoCheck.status !== 0) {
-    usageError(args.repo, ['rev-parse', '--git-dir'], repoCheck, 'not a git repository');
-  }
-
+function signingConfig(args) {
   const configLines = [];
   const commitGpgsign = getOptionalConfig(args.repo, '--get', '--bool', 'commit.gpgsign');
   if (commitGpgsign !== null) configLines.push(`commit.gpgsign=${commitGpgsign}`);
   const signingKey = getOptionalConfig(args.repo, '--get', 'user.signingkey');
   if (signingKey !== null) configLines.push(`user.signingkey=${signingKey}`);
+  return configLines;
+}
 
+function signatureLog(args) {
   // ⚠ EXCLUDE WHAT THE TARGET REMOTE ALREADY HAS — and ONLY that remote.
   //
   // A range like <remote>/<branch>..HEAD answers "what would this push add" only while the branch
@@ -193,19 +196,10 @@ function main() {
   if (logRes.status !== 0) {
     usageError(args.repo, logArgs, logRes, 'git log failed');
   }
+  return logRes;
+}
 
-  const report = checkSignatures({
-    configLines,
-    logLines: String(logRes.stdout || '')
-      .split('\n')
-      .filter(Boolean),
-  });
-
-  if (!report.signingExpected || report.offenders.length === 0) {
-    if (args.json) console.log(JSON.stringify({ offenders: [], text: '' }));
-    process.exit(0);
-  }
-
+function reportFindings(args, report) {
   const headRes = runGit(args.repo, ['rev-parse', 'HEAD']);
   if (headRes.status !== 0) {
     usageError(args.repo, ['rev-parse', 'HEAD'], headRes, 'cannot resolve HEAD');
@@ -219,6 +213,32 @@ function main() {
   }, args.json ? { log: (line) => findings.push(line) } : undefined);
   if (args.json) console.log(JSON.stringify({ offenders: report.offenders.map(({ sha, status, subject }) => ({ sha, status, subject })), text: findings.join('\n') + '\n' }));
   process.exit(1);
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  const repoCheck = runGit(args.repo, ['rev-parse', '--git-dir']);
+  if (repoCheck.status !== 0) {
+    usageError(args.repo, ['rev-parse', '--git-dir'], repoCheck, 'not a git repository');
+  }
+
+  const configLines = signingConfig(args);
+  const logRes = signatureLog(args);
+
+  const report = checkSignatures({
+    configLines,
+    logLines: String(logRes.stdout || '')
+      .split('\n')
+      .filter(Boolean),
+  });
+
+  if (!report.signingExpected || report.offenders.length === 0) {
+    if (args.json) console.log(JSON.stringify({ offenders: [], text: '' }));
+    process.exit(0);
+  }
+
+  reportFindings(args, report);
 }
 
 main();
