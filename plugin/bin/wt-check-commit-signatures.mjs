@@ -8,9 +8,10 @@ signed (per git's own commit.gpgsign / user.signingkey config) actually carry a 
 and print the offending commits plus a ready-to-run fix.
 
 Usage:
-  node wt-check-commit-signatures.mjs [--repo <path>] [--range <git-range>]
+  node wt-check-commit-signatures.mjs [--repo <path>] [--range <git-range> ...] [--json]
     --repo <path>    git repo to check (default: cwd)
-    --range <range>  a git revision range (e.g. origin/main..HEAD); must not start with '-'; default: just HEAD
+    --range <range>  a git revision argument (repeatable, e.g. HEAD then ^<sha>); must not start with '-'; default: just HEAD
+    --json          print one {offenders, text} document; exit codes are unchanged
 
 Exit codes: 0 nothing to report · 1 unsigned commit(s) found (printed to stdout) · 2 usage/git error.
 `;
@@ -23,9 +24,9 @@ function fail(message) {
 function parseArgs(argv) {
   handleHelpFlag(argv, HELP, {
     valueFlags: ['--repo', '--range'],
-    booleanFlags: [],
+    booleanFlags: ['--json'],
   });
-  const out = { repo: process.cwd(), range: null };
+  const out = { repo: process.cwd(), range: null, ranges: [], json: false };
   const nextValue = (i, flag) => {
     if (i + 1 >= argv.length) fail(`${flag} requires a value`);
     return argv[i + 1];
@@ -34,15 +35,17 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--repo') out.repo = nextValue(i++, arg);
-    else if (arg === '--range') out.range = nextValue(i++, arg);
+    else if (arg === '--range') { const value = nextValue(i++, arg); out.range ??= value; out.ranges.push(value); }
+    else if (arg === '--json') out.json = true;
     else fail(`unknown argument: ${arg}`);
   }
 
-  if (out.range?.startsWith('-')) fail('--range must not start with "-"; expected a git revision range');
+  if (out.ranges.some((range) => range.startsWith('-'))) fail('--range must not start with "-"; expected a git revision range');
   return out;
 }
 
 function runGit(repo, args) {
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- Git is the user's repository interface on each supported platform.
   return spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
 }
 
@@ -69,10 +72,10 @@ function rebaseBase(range) {
   return range;
 }
 
-function printFindings({ offenders, headSha, range }) {
-  console.log('Commit signature check failed:');
+function printFindings({ offenders, headSha, range }, output) {
+  (output ?? console).log('Commit signature check failed:');
   for (const offender of offenders) {
-    console.log(
+    (output ?? console).log(
       `- ${shortSha(offender.sha)}: ${offender.status} (${statusMeaning(offender.status)}) — ${offender.subject}`,
     );
   }
@@ -91,35 +94,35 @@ function printFindings({ offenders, headSha, range }) {
   const unverifiableOffenders = offenders.filter((offender) => offender.status === 'E');
 
   if (unsignedOffenders.length > 0) {
-    console.log(
+    (output ?? console).log(
       'Common cause: signing likely failed at commit time because the signing key or signing agent was unavailable, locked, or otherwise unusable.',
     );
   }
   if (unverifiableOffenders.length > 0) {
-    console.log(
+    (output ?? console).log(
       'Note: a status of E means the signature could not be VERIFIED here, not that it is missing — commonly a signature made with a key unknown to this keyring, such as a forge web-flow key on a squash-merge. Check the signing key with: git log -1 --format=%GK <sha>. If the key is not yours, nothing local needs fixing.',
     );
   }
 
   const onlyHeadOffender = offenders.length === 1 && offenders[0].sha === headSha;
   if (onlyHeadOffender) {
-    console.log('Fix: git commit --amend --no-edit -S');
+    (output ?? console).log('Fix: git commit --amend --no-edit -S');
     // ⚠ THE RESERVATION BELONGS ON THIS BRANCH TOO, and it was only on the rebase branch below.
     // A single-offender HEAD is precisely the shape a freshly-fetched merge takes, so this is the
     // path that fires when the commit is ALREADY PUBLISHED — and amending it then diverges from
     // the remote. Stated unconditionally rather than only for `E`: an unsigned HEAD can be
     // published too, and refusing one door does not close the class.
-    console.log(
+    (output ?? console).log(
       'Warning: only if that commit is unpushed. If it is already published — a merge created by the forge, or anything already fetched — amending it rewrites published history and diverges from the remote; leave it alone.',
     );
     return;
   }
 
   const namedRange = range || 'HEAD';
-  console.log(
+  (output ?? console).log(
     `Fix: rebase the commits in ${namedRange}, for example: git rebase --exec 'git commit --amend --no-edit -S' ${rebaseBase(range)}`,
   );
-  console.log(
+  (output ?? console).log(
     'Warning: rewriting published history is not the same operation as amending an unpushed commit.',
   );
 }
@@ -184,7 +187,7 @@ function main() {
   // Finish options before the untrusted revision; reset --not after the remote exclusion.
   const excludeArgs = targetRemote === null ? [] : ['--not', `--remotes=${targetRemote}`, '--not'];
   const logArgs = args.range
-    ? ['log', '--format=%H%x09%G?%x09%s', ...excludeArgs, '--end-of-options', args.range, '--']
+    ? ['log', '--format=%H%x09%G?%x09%s', ...excludeArgs, '--end-of-options', ...args.ranges, '--']
     : ['log', '-1', '--format=%H%x09%G?%x09%s', '--end-of-options', 'HEAD', '--'];
   const logRes = runGit(args.repo, logArgs);
   if (logRes.status !== 0) {
@@ -198,18 +201,23 @@ function main() {
       .filter(Boolean),
   });
 
-  if (!report.signingExpected || report.offenders.length === 0) process.exit(0);
+  if (!report.signingExpected || report.offenders.length === 0) {
+    if (args.json) console.log(JSON.stringify({ offenders: [], text: '' }));
+    process.exit(0);
+  }
 
   const headRes = runGit(args.repo, ['rev-parse', 'HEAD']);
   if (headRes.status !== 0) {
     usageError(args.repo, ['rev-parse', 'HEAD'], headRes, 'cannot resolve HEAD');
   }
 
+  const findings = [];
   printFindings({
     offenders: report.offenders,
     headSha: String(headRes.stdout || '').trim(),
     range: args.range,
-  });
+  }, args.json ? { log: (line) => findings.push(line) } : undefined);
+  if (args.json) console.log(JSON.stringify({ offenders: report.offenders.map(({ sha, status, subject }) => ({ sha, status, subject })), text: findings.join('\n') + '\n' }));
   process.exit(1);
 }
 

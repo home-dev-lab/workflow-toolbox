@@ -108,17 +108,23 @@ function defaultDestination(source, branch) {
   return source
 }
 
+const environmentPrefix = (token) => token === 'sudo' || token === 'env' || /^[A-Za-z_]\w*=/.test(token || '')
+
 function invocationTokens(segment) {
   const tokens = tokenize(segment)
   if (!tokens) return null
-  while (tokens[0] === 'sudo' || tokens[0] === 'env' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0] || '')) tokens.shift()
+  const gitIndex = tokens.indexOf('git')
+  const wrapped = ['command', 'exec', 'nice', 'nohup', 'timeout', 'doas', 'time', 'setsid'].includes(tokens[0]) || environmentPrefix(tokens[0])
+  if (gitIndex > 0 && wrapped) return tokens.slice(gitIndex)
+  while (environmentPrefix(tokens[0])) tokens.shift()
   return tokens
 }
 
 function advanceGitOption(tokens, state) {
   const token = tokens[state.index]
   if (token === '-C') { state.repo = path.resolve(state.repo, tokens[state.index + 1] || '.'); state.index += 2 }
-  else if (token === '-c') state.index += 2
+  else if (token === '-c' || token === '--config-env') { state.gitConfigOverride = true; state.index += 2 }
+  else if (token.startsWith('-c') || token.startsWith('--config-env=')) { state.gitConfigOverride = true; state.index++ }
   else if (token === '--git-dir' || token === '--work-tree') { state.unsupportedForm = token; state.index += 2 }
   else {
     if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=')) state.unsupportedForm = token
@@ -127,9 +133,9 @@ function advanceGitOption(tokens, state) {
 }
 function gitInvocation(tokens, cwd) {
   if (!tokens || tokens[0] !== 'git') return null
-  const state = { repo: cwd, index: 1, unsupportedForm: null }
+  const state = { repo: cwd, index: 1, unsupportedForm: null, gitConfigOverride: false }
   while (tokens[state.index]?.startsWith('-')) advanceGitOption(tokens, state)
-  return { repo: state.repo, index: state.index, action: tokens[state.index], unsupportedForm: state.unsupportedForm }
+  return { repo: state.repo, index: state.index, action: tokens[state.index], unsupportedForm: state.unsupportedForm, gitConfigOverride: state.gitConfigOverride }
 }
 
 function parsePushSegment(segment, cwd) {
@@ -143,6 +149,7 @@ function parsePushSegment(segment, cwd) {
   let optionRemote = null
   let deletion = false
   let aggregateForm = null
+  let noVerify = false
   const needsValue = new Set(['--receive-pack', '--exec', '--upload-pack', '--push-option', '-o', '--recurse-submodules'])
   for (let i = index + 1; i < tokens.length; i += 1) {
     const token = tokens[i]
@@ -150,6 +157,7 @@ function parsePushSegment(segment, cwd) {
     if (!afterDashDash && token === '--repo') { optionRemote = tokens[i + 1] || null; i += 1; continue }
     if (!afterDashDash && token.startsWith('--repo=')) { optionRemote = token.slice('--repo='.length) || null; continue }
     if (!afterDashDash && token === '--delete') { deletion = true; continue }
+    if (!afterDashDash && '--no-verify'.startsWith(token) && token.startsWith('--no-v')) { noVerify = true; continue }
     if (!afterDashDash && (token === '--all' || token === '--mirror')) { aggregateForm = token; continue }
     if (!afterDashDash && token.startsWith('-')) {
       if (needsValue.has(token)) i += 1
@@ -164,6 +172,9 @@ function parsePushSegment(segment, cwd) {
     deletion,
     aggregateForm,
     unsupportedForm,
+    noVerify,
+    gitConfigOverride: invocation.gitConfigOverride,
+    prefixed: tokenize(segment)?.[0] !== 'git',
   }
 }
 
@@ -231,8 +242,8 @@ export function derivePushChecks(input) {
   const seen = new Set()
   return derivePushTargets(input).flatMap((target) => {
     if (!target.remote || !target.source || !target.destination) return []
-    const check = { repo: target.repo, range: `refs/remotes/${target.remote}/${target.destination}..${target.source}` }
-    const key = `${check.repo}\u0000${check.range}`
+    const check = { ...target, range: `refs/remotes/${target.remote}/${target.destination}..${target.source}` }
+    const key = `${check.repo}\u0000${check.range}\u0000${target.command}`
     if (seen.has(key)) return []
     seen.add(key)
     return [check]

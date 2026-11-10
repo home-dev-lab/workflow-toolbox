@@ -4,6 +4,7 @@ import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, 
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commandIO } from './command-io.mjs';
+import { exceptionLocations } from './signature-exception-io.mjs';
 
 const bin = fileURLToPath(new URL('../../', import.meta.url));
 const template = join(bin, 'git-hooks', 'pre-push');
@@ -11,8 +12,13 @@ const files = [
   'bin/wt-push-scope-check.mjs', 'bin/wt-check-commit-signatures.mjs',
   'bin/lib/cli-help.mjs', 'bin/lib/commit-signature-core.mjs',
   'bin/lib/host/push-guard-identity.mjs', 'bin/lib/host/push-guard-runtime.mjs',
+  'bin/lib/signature-attestation.mjs', 'bin/lib/signature-check-result.mjs',
+  'bin/lib/signature-exception.mjs', 'bin/lib/remote-signature-policy.mjs',
+  'bin/lib/host/signature-exception-io.mjs', 'bin/lib/host/push-signatures.mjs',
+  'bin/wt-signature-exception.mjs', 'bin/lib/host/signature-exception-cli.mjs',
 ];
-const help = 'Usage: wt-push-guard-install.mjs (--install | --check) --repo <path> [--guard-remote <name>] [--guard-path <owner/repo>] [--replace-existing]';
+const help = 'Usage: wt-push-guard-install.mjs (--install | --check) --repo <path> [--guard-remote <name>] [--guard-path <owner/repo>] [--owner-keys <file>] [--exception-state <dir>] [--replace-existing]';
+const locationFlags = { '--owner-keys': 'ownerKeysFile', '--exception-state': 'exceptionStateDir' };
 function fail(code, message) { console.error(message); process.exit(code); }
 function git(repo, ...args) {
   const result = commandIO.run('git', ['-C', repo, ...args], { cwd: repo });
@@ -31,10 +37,11 @@ function parse(args) {
       result.mode = a;
     }
     else if (a === '--replace-existing') result.replace = true;
-    else if (['--repo', '--guard-remote', '--guard-path'].includes(a)) {
+    else if (['--repo', '--guard-remote', '--guard-path', ...Object.keys(locationFlags)].includes(a)) {
       const value = args[++i];
       if (!value) fail(2, `${a} requires a value`);
-      if (a === '--repo') result.repo = value;
+      if (locationFlags[a]) result[locationFlags[a]] = resolve(value);
+      else if (a === '--repo') result.repo = value;
       else result[a === '--guard-remote' ? 'guardRemotes' : 'guardPaths'].push(value);
     } else fail(2, `unknown argument: ${a}`);
   }
@@ -77,7 +84,7 @@ function install(opts, p, fsOps) {
       digests[name] = hash(dest);
     }
     const config = join(stage, 'config.json');
-    writeFileSync(config, JSON.stringify({ guardRemotes: opts.guardRemotes, guardPaths: opts.guardPaths }) + '\n');
+    writeFileSync(config, JSON.stringify({ guardRemotes: opts.guardRemotes, guardPaths: opts.guardPaths, ...exceptionLocations(opts) }) + '\n');
     digests['config.json'] = hash(config);
     let rev = null;
     try { rev = git(bin, 'rev-parse', 'HEAD'); } catch { /* installed outside a source checkout */ }

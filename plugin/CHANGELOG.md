@@ -7,6 +7,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
+  `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
+  hook previews it only through an active pinned install. Install-time `--owner-keys` and
+  `--exception-state` flags fix the pin and attestation inbox/claim locations independently
+  of push-time HOME; older installs must be reinstalled to support exceptions. Setup uses
+  `wt-signature-exception.mjs pin --repo <repo> --attestation <file>` and is trust-on-first-use
+  (TOFU), not an independently owner-confirmed key fingerprint; key rotation requires
+  deliberately deleting and repinning. Only relayed answers are visible. New remote refs
+  now undergo signature checks against advertised object ids, including when tracking refs
+  are stale. Refusals read GitHub's branch rules and classic signature protection, reporting
+  a requirement or named uncertainty without predicting bypass rights or push success.
 - Suite-lock host clients can park and resume a ticket within a bounded window using
   `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
   shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.

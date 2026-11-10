@@ -226,6 +226,18 @@ export default tseslint.config(
     rules: { ...sonarRules, ...warningCeilings },
   },
   {
+    files: ['plugin/bin/lib/signature-*.mjs', '../plugin/bin/lib/signature-*.mjs',
+      'plugin/bin/lib/remote-signature-policy.mjs', '../plugin/bin/lib/remote-signature-policy.mjs',
+      'plugin/bin/lib/host/signature-*.mjs', '../plugin/bin/lib/host/signature-*.mjs',
+      'plugin/bin/lib/host/push-signatures.mjs', '../plugin/bin/lib/host/push-signatures.mjs',
+      'plugin/bin/wt-signature-exception.mjs', '../plugin/bin/wt-signature-exception.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
     files: ['packages/*/src/**/*.ts', 'toolkit/packages/*/src/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unused-expressions': 'warn',
