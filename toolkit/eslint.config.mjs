@@ -226,7 +226,12 @@ export default tseslint.config(
     rules: { ...sonarRules, ...warningCeilings },
   },
   {
-    files: ['plugin/bin/wt-stray-tool-markup-guard-hook.mjs', '../plugin/bin/wt-stray-tool-markup-guard-hook.mjs',
+    files: ['plugin/bin/lib/signature-*.mjs', '../plugin/bin/lib/signature-*.mjs',
+      'plugin/bin/lib/remote-signature-policy.mjs', '../plugin/bin/lib/remote-signature-policy.mjs',
+      'plugin/bin/lib/host/signature-*.mjs', '../plugin/bin/lib/host/signature-*.mjs',
+      'plugin/bin/lib/host/push-signatures.mjs', '../plugin/bin/lib/host/push-signatures.mjs',
+      'plugin/bin/wt-signature-exception.mjs', '../plugin/bin/wt-signature-exception.mjs',
+      'plugin/bin/wt-stray-tool-markup-guard-hook.mjs', '../plugin/bin/wt-stray-tool-markup-guard-hook.mjs',
       'plugin/bin/lib/stray-tool-markup-core.mjs', '../plugin/bin/lib/stray-tool-markup-core.mjs',
       'plugin/bin/lib/stray-tool-markup-command.mjs', '../plugin/bin/lib/stray-tool-markup-command.mjs',
       'plugin/bin/lib/host/stray-tool-markup-git.mjs', '../plugin/bin/lib/host/stray-tool-markup-git.mjs'],
