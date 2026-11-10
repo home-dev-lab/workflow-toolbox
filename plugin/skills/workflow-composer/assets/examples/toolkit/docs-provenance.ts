@@ -56,6 +56,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The internal merge/release operator runbook is maintained by the integrating session outside this worktree; CLI --help describes its interim invocation contract.',
   },
   {
+    script: 'plugin/bin/wt-signature-exception.mjs',
+    status: 'missing-doc-surface',
+    reason: 'Only the plugin CHANGELOG and the CLI --help describe the owner-exception pin and attestation setup; known-issues covers the pre-push signature guard but not this setup command.',
+  },
+  {
     script: 'plugin/bin/wt-grounding-sources.mjs',
     status: 'mapped',
     reason: 'The deep-grounding source-registry reference documents list, init, layering, and missing dependency reporting.',
