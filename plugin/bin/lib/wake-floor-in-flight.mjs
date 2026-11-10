@@ -52,121 +52,157 @@ function pluginMonitorArgv(argv) {
   return MONITOR_SCRIPTS.some((name) => argv.includes(`/${name}`) || argv.split('\0').some((argument) => path.basename(argument) === name))
 }
 
-export function sessionBackgroundTaskInFlight({
-  projectDir,
-  sessionId,
-  platform = process.platform,
-  tmpdirImpl = tmpdir,
-  getuidImpl = process.getuid,
-  readdirImpl = readdirSync,
-  readFileImpl = readFileSync,
-  readlinkImpl = readlinkSync,
-  statImpl = statSync,
-  maxProcesses = 10_000,
-  maxFds = 1_024,
-  maxTaskOutputs = 1_000,
-}) {
-  if (platform !== 'linux') return { status: 'unknown', reason: BACKGROUND_TASK_UNSUPPORTED }
-  if (typeof sessionId !== 'string' || sessionId === '') return { status: 'unknown', reason: 'session id unavailable' }
-  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return { status: 'unknown', reason: 'session id invalid' }
-  const uid = getuidImpl?.()
-  if (!Number.isInteger(uid)) return { status: 'unknown', reason: 'user id unavailable' }
-  const tasksDir = path.join(tmpdirImpl(), `claude-${uid}`, projectSlug(projectDir), sessionId, 'tasks')
+// Explicit `undefined` takes the default, as destructuring defaults would.
+function taskOptions(options) {
+  const defaults = {
+    platform: process.platform, tmpdirImpl: tmpdir, getuidImpl: process.getuid,
+    readdirImpl: readdirSync, readFileImpl: readFileSync, readlinkImpl: readlinkSync, statImpl: statSync,
+    maxProcesses: 10_000, maxFds: 1_024, maxTaskOutputs: 1_000,
+  }
+  // Each option is read exactly once: an accessor-backed option must not change between reads.
+  const resolved = Object.fromEntries(Object.entries(defaults).map(([key, fallback]) => {
+    const value = options[key]
+    return [key, value === undefined ? fallback : value]
+  }))
+  return { projectDir: options.projectDir, sessionId: options.sessionId, ...resolved }
+}
+
+// Returns { result } when the answer is already known, else { uid, outputs }.
+function taskOutputs(o, uid) {
+  const tasksDir = path.join(o.tmpdirImpl(), `claude-${uid}`, projectSlug(o.projectDir), o.sessionId, 'tasks')
   let taskEntries
   try {
-    taskEntries = readdirImpl(tasksDir, { withFileTypes: true })
+    taskEntries = o.readdirImpl(tasksDir, { withFileTypes: true })
   } catch (error) {
-    return missing(error) ? { status: 'none' } : { status: 'unknown', reason: 'task directory unreadable' }
+    return { result: missing(error) ? { status: 'none' } : { status: 'unknown', reason: 'task directory unreadable' } }
   }
   const names = taskEntries.map((entry) => entry.name).filter((name) => TASK_OUTPUT_NAME.test(name))
-  if (names.length === 0) return { status: 'none' }
-  if (names.length > maxTaskOutputs) return { status: 'unknown', reason: `task output scan capped at ${maxTaskOutputs}` }
-  const outputs = new Set(names.map((name) => path.join(tasksDir, name)))
-  const procfs = createProcfs({ platform, readdir: readdirImpl, readFile: readFileImpl, readlink: readlinkImpl, stat: statImpl })
+  if (names.length === 0) return { result: { status: 'none' } }
+  if (names.length > o.maxTaskOutputs) return { result: { status: 'unknown', reason: `task output scan capped at ${o.maxTaskOutputs}` } }
+  return { uid, outputs: new Set(names.map((name) => path.join(tasksDir, name))) }
+}
+
+function taskScope(o) {
+  if (o.platform !== 'linux') return { result: { status: 'unknown', reason: BACKGROUND_TASK_UNSUPPORTED } }
+  if (typeof o.sessionId !== 'string' || o.sessionId === '') return { result: { status: 'unknown', reason: 'session id unavailable' } }
+  if (!/^[A-Za-z0-9._-]+$/.test(o.sessionId)) return { result: { status: 'unknown', reason: 'session id invalid' } }
+  const uid = o.getuidImpl?.()
+  if (!Number.isInteger(uid)) return { result: { status: 'unknown', reason: 'user id unavailable' } }
+  return taskOutputs(o, uid)
+}
+
+// A listing failure stays unknown; a pid that vanished mid-scan is simply absent from the plain listing.
+function listTaskProcesses(procfs, maxProcesses) {
   let processes
   try {
-    processes = procfs.listProcesses({ withFileTypes: true })
-      .map((entry) => entry.name)
-      .filter((name) => /^\d+$/.test(name))
+    processes = procfs.listProcessIds()
   } catch {
-    return { status: 'unknown', reason: 'process table unreadable' }
+    return { result: { status: 'unknown', reason: 'process table unreadable' } }
   }
-  if (processes.length > maxProcesses) return { status: 'unknown', reason: `process scan capped at ${maxProcesses}` }
+  if (processes.length > maxProcesses) return { result: { status: 'unknown', reason: `process scan capped at ${maxProcesses}` } }
+  return { processes }
+}
+
+function ownedByUid(procfs, pid, uid, unknowns) {
+  try {
+    return procfs.processDirectoryStat(pid).uid === uid
+  } catch (error) {
+    if (!missing(error)) unknowns.push('process identity unreadable')
+    return false
+  }
+}
+
+function readStartAndDescriptors(procfs, pid) {
+  try {
+    const before = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
+    return { before, fds: procfs.listDescriptors(pid, { withFileTypes: true }) }
+  } catch {
+    return null
+  }
+}
+
+function writableOutputFd(procfs, pid, name, unknowns) {
+  try {
+    const writable = writableFd(String(procfs.readDescriptorInfo(pid, name, 'utf8')))
+    if (writable === null) unknowns.push('process fd mode unreadable')
+    return Boolean(writable)
+  } catch (error) {
+    if (!missing(error)) unknowns.push('process fd unreadable')
+    return false
+  }
+}
+
+function descriptorTarget(procfs, pid, name) {
+  try {
+    return procfs.readDescriptorTarget(pid, name)
+  } catch {
+    // An unreadable unrelated descriptor is not evidence about a task output.
+    return undefined
+  }
+}
+
+function findHeldOutput(procfs, pid, fds, outputs, unknowns) {
+  for (const fd of fds) {
+    const target = descriptorTarget(procfs, pid, fd.name)
+    if (outputs.has(target) && writableOutputFd(procfs, pid, fd.name, unknowns)) return { output: target, fd: fd.name }
+  }
+  return null
+}
+
+function rejectHolder(unknowns, reason) {
+  unknowns.push(reason)
+  return null
+}
+
+function heldFdChanged(procfs, pid, held) {
+  const finalTarget = procfs.readDescriptorTarget(pid, held.fd)
+  const finalWritable = writableFd(String(procfs.readDescriptorInfo(pid, held.fd, 'utf8')))
+  return finalTarget !== held.output || finalWritable !== true
+}
+
+function attestHolder(procfs, pid, held, before, sessionId, unknowns) {
+  const environment = String(procfs.readEnvironment(pid)).split('\0')
+  const argv = String(procfs.readCommandLine(pid))
+  const after = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
+  if (!after || after !== before) return rejectHolder(unknowns, 'background task process identity changed')
+  if (!environment.includes(`CLAUDE_CODE_SESSION_ID=${sessionId}`)) return null
+  if (argv === '') return rejectHolder(unknowns, 'background task argv unreadable')
+  if (pluginMonitorArgv(argv)) return null
+  if (heldFdChanged(procfs, pid, held)) return rejectHolder(unknowns, 'background task fd identity changed')
+  const finalStart = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
+  if (!finalStart || finalStart !== before) return rejectHolder(unknowns, 'background task process identity changed')
+  return { status: 'in-flight', reason: `session background task ${path.basename(held.output, '.output')} held by pid ${pid}` }
+}
+
+function attributeHolder(procfs, pid, held, before, sessionId, unknowns) {
+  try {
+    return attestHolder(procfs, pid, held, before, sessionId, unknowns)
+  } catch (error) {
+    if (!missing(error)) unknowns.push('background task attribution unreadable')
+    return null
+  }
+}
+
+function scanTaskProcess(procfs, pid, scope, unknowns) {
+  if (!ownedByUid(procfs, pid, scope.uid, unknowns)) return null
+  const head = readStartAndDescriptors(procfs, pid)
+  if (!head?.before) return null
+  if (head.fds.length > scope.maxFds) return rejectHolder(unknowns, `process fd scan capped at ${scope.maxFds}`)
+  const held = findHeldOutput(procfs, pid, head.fds, scope.outputs, unknowns)
+  return held ? attributeHolder(procfs, pid, held, head.before, scope.sessionId, unknowns) : null
+}
+
+export function sessionBackgroundTaskInFlight(options) {
+  const o = taskOptions(options)
+  const scope = taskScope(o)
+  if (scope.result) return scope.result
+  const procfs = createProcfs({ platform: o.platform, readdir: o.readdirImpl, readFile: o.readFileImpl, readlink: o.readlinkImpl, stat: o.statImpl })
+  const listed = listTaskProcesses(procfs, o.maxProcesses)
+  if (listed.result) return listed.result
   const unknowns = []
-  for (const pid of processes) {
-    try {
-      if (procfs.processDirectoryStat(pid).uid !== uid) continue
-    } catch (error) {
-      if (!missing(error)) unknowns.push('process identity unreadable')
-      continue
-    }
-    let before
-    let fds
-    try {
-      before = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
-      fds = procfs.listDescriptors(pid, { withFileTypes: true })
-    } catch {
-      continue
-    }
-    if (!before) continue
-    if (fds.length > maxFds) {
-      unknowns.push(`process fd scan capped at ${maxFds}`)
-      continue
-    }
-    let heldOutput = null
-    let heldFd = null
-    for (const fd of fds) {
-      let target
-      try {
-        target = procfs.readDescriptorTarget(pid, fd.name)
-      } catch {
-        // An unreadable unrelated descriptor is not evidence about a task output.
-        continue
-      }
-      if (outputs.has(target)) {
-        try {
-          const writable = writableFd(String(procfs.readDescriptorInfo(pid, fd.name, 'utf8')))
-          if (writable === null) unknowns.push('process fd mode unreadable')
-          if (writable) {
-            heldOutput = target
-            heldFd = fd.name
-            break
-          }
-        } catch (error) {
-          if (!missing(error)) unknowns.push('process fd unreadable')
-        }
-      }
-    }
-    if (!heldOutput) continue
-    try {
-      const environment = String(procfs.readEnvironment(pid)).split('\0')
-      const argv = String(procfs.readCommandLine(pid))
-      const after = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
-      if (!after || after !== before) {
-        unknowns.push('background task process identity changed')
-        continue
-      }
-      if (!environment.includes(`CLAUDE_CODE_SESSION_ID=${sessionId}`)) continue
-      if (argv === '') {
-        unknowns.push('background task argv unreadable')
-        continue
-      }
-      if (pluginMonitorArgv(argv)) continue
-      const finalTarget = procfs.readDescriptorTarget(pid, heldFd)
-      const finalWritable = writableFd(String(procfs.readDescriptorInfo(pid, heldFd, 'utf8')))
-      if (finalTarget !== heldOutput || finalWritable !== true) {
-        unknowns.push('background task fd identity changed')
-        continue
-      }
-      const finalStart = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
-      if (!finalStart || finalStart !== before) {
-        unknowns.push('background task process identity changed')
-        continue
-      }
-      return { status: 'in-flight', reason: `session background task ${path.basename(heldOutput, '.output')} held by pid ${pid}` }
-    } catch (error) {
-      if (!missing(error)) unknowns.push('background task attribution unreadable')
-    }
+  for (const pid of listed.processes) {
+    const found = scanTaskProcess(procfs, pid, { ...scope, maxFds: o.maxFds, sessionId: o.sessionId }, unknowns)
+    if (found) return found
   }
   return unknowns.length ? { status: 'unknown', reason: unknowns[0] } : { status: 'none' }
 }

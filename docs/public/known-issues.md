@@ -112,6 +112,45 @@ the gate.
 Hooks and monitors shipped under `plugin/bin/` that are not already covered by a section above:
 what fires them, what they check, and their output/exit contract.
 
+### `wt-stray-tool-markup-guard-hook.mjs` — stray tool-call markup warnings
+
+Warns without blocking on PreToolUse Write, Edit and MultiEdit when replacement text
+contains a column-zero whole-line `</content>` or `</invoke>`, or a line starting
+`<parameter name=` (optional XML namespace prefixes are supported). Trailing spaces,
+tabs and CR are ignored. Lines inside closed backtick or tilde fences are exempt: the
+opening fence is indented by at most three spaces, and the closing line uses the same
+fence character, at least as many of them, at most three spaces of indentation and nothing
+after it but whitespace. Unclosed fences exempt nothing. Each warning identifies the target
+and line numbers and explains how to remove the leaked lines with Edit or a clean Write.
+
+On PostToolUse Bash, a real `git commit` invocation also checks the stored HEAD
+message, including `-m`, `-F -` and heredoc forms. The invocation may carry leading
+`VAR=value` assignments or `env`/`sudo`, sit in a subshell or group, and use `git -C <dir>`
+(attached or separate, quoting and a leading `~/` resolved) or `git -c k=v`; each distinct
+commit directory in the command is checked, up to four. A `--dry-run` commit is skipped,
+and a `-C` value with `$`, a backtick or a glob character stays silent. Git failures and a
+HEAD whose committer time is more than 120 seconds old stay silent; the notice says "the
+HEAD commit in <dir> (committed within the last 120 s)" because a command that never
+committed (`false && git commit ...`) cannot be told apart from the stored HEAD alone.
+The remedy is to amend the message (`git commit --amend -F <corrected file>` or `--amend -m`).
+
+Not covered: indented tags, other close tags such as `</new_string>`, NotebookEdit,
+Bash-redirection file writes, directory changes through `cd` (the commit check uses the
+payload cwd), `--git-dir=` / `--work-tree=` on the git command, and the surrounding file
+for Edit and MultiEdit (only `new_string` is visible, so a fence or tag completed by the
+unseen text around a replacement is neither exempted nor flagged). The journal stores only
+tool, distinct kinds, count, tail proximity, tool-use identifier and the session `cwd` the
+guard journal records for every guard; the target file path, content and commit text are
+excluded. Observe mode journals silently. This hook is intentionally absent from SDK writer
+role lists, whose closed failure mode would violate the warn-only contract.
+
+Probation ends for Write/Edit/MultiEdit only after 20 distinct real-origin warned
+journal entries, each located in its transcript by toolUseId, have been read with
+zero false positives. A false positive resets the count and its fix lands first.
+Promotion would refuse with instructions to drop the listed lines and call again;
+the PostToolUse commit path stays warn-only. Precision measurement belongs to the
+integration review, separate from synthetic test fixtures.
+
 ### `wt-changelog-entry.mjs` — changelog and changeset writer
 
 The `changelog` skill runs `node plugin/bin/wt-changelog-entry.mjs` after a plugin or published

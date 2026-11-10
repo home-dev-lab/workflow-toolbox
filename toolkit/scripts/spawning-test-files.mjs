@@ -206,6 +206,7 @@ export const spawningTestFiles = [
   'packages/build/test/spawn-guards.test.ts',
   'packages/build/test/stale-date-guard.test.ts',
   'packages/build/test/standing-authorizations.test.ts',
+  'packages/build/test/stray-tool-markup-guard-hook.test.ts',
   'packages/build/test/suite-lock-broker.test.ts',
   'packages/build/test/suite-lock-bypass-guard-hook.test.ts',
   'packages/build/test/suite-lock-exclusive.test.ts',
