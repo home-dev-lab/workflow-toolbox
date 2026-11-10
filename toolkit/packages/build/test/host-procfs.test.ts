@@ -135,6 +135,19 @@ describe('host procfs roots and permissions', () => {
     expect(readdir).toHaveBeenCalledWith('fake-tree/', { withFileTypes: true })
   })
 
+  it('lists pid names with a plain read and keeps only numeric names', () => {
+    const readdir = vi.fn(() => ['1', '77', 'self', 'uptime', '12a'])
+    const procfs = host!.createProcfs({ root: 'fake-tree/', platform: 'linux', readdir })
+    expect(procfs.listProcessIds()).toEqual(['1', '77'])
+    expect(readdir).toHaveBeenCalledExactlyOnceWith('fake-tree/')
+  })
+
+  it('lets a failed pid listing propagate and refuses it off Linux', () => {
+    const error = Object.assign(new Error('denied'), { code: 'EACCES' })
+    expect(() => host!.createProcfs({ platform: 'linux', readdir: () => { throw error } }).listProcessIds()).toThrow(error)
+    expect(() => host!.createProcfs({ platform: 'win32', readdir: () => [] }).listProcessIds()).toThrow(expect.objectContaining({ code: 'PROCFS_UNAVAILABLE' }))
+  })
+
   it('supplies the default Linux root while keeping reads fully injectable', () => {
     const readFile = vi.fn(() => '0.125 0.25 0.5')
     const procfs = host!.createProcfs({ platform: 'linux', readFile })
