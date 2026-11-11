@@ -1,6 +1,6 @@
 import childProcess, { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, closeSync, constants, cpSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
 import { syncBuiltinESMExports } from 'node:module'
@@ -24,13 +24,13 @@ isolateOpencodeAdmission()
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
-interface SandboxPlan { kind: 'bwrap' | 'none', line: string, opencodeDataDir?: string | null, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+interface SandboxPlan { kind: 'bwrap' | 'none', line: string, opencodeDataDir?: string | null, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, egressHosts?: string[], anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
 type NoticeDestination = ((text: string) => void) | number | { write: (text: string) => unknown }
-interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
+interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void, writePrivateText: (f: string, text: string) => void }
 interface SocketScanResult { status: number | null, signal: NodeJS.Signals | null, error?: NodeJS.ErrnoException, stdout: Buffer, stderr: Buffer }
 type SocketScanRunner = (command: string, args: string[], options: { timeout: number, maxBuffer: number }) => SocketScanResult
 interface SandboxModule {
-  realFs: { isWindowsDriveMount?: DriveMountModule['isWindowsDriveMount'] }
+  realFs: { isWindowsDriveMount?: DriveMountModule['isWindowsDriveMount'], writePrivateText: (file: string, text: string) => void }
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
   laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
   announceUnsandboxedLane: (plan: SandboxPlan, write?: NoticeDestination) => void
@@ -121,6 +121,7 @@ function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpat
     ensureDir: (d) => { dirSet.add(d); ensured.push(d) },
     ensureFile: (f) => { files[f] ??= '' },
     copy: (a, b) => { copied.push([a, b]); if (a in files) files[b] = files[a] ?? '' },
+    writePrivateText: (f, text) => { if (f in files) throw new Error('EEXIST'); files[f] = text },
   }
 }
 
@@ -1198,11 +1199,15 @@ function registerPrivateOpenCodeTests() {
 
   it('follows {file:} references of the GLOBAL config only, read-only', () => {
     const config = `${HOME}/.config/opencode`
-    const files = { [`${config}/opencode.jsonc`]: '{ "k": "{file:~/.config/proxy/api.key}", "p": "{file:./prompts/r.txt}", "gone": "{file:~/missing}" }', [`${HOME}/.config/proxy/api.key`]: 'k', [`${config}/prompts/r.txt`]: 'p' }
-    const [, args] = plan({ fs: fakeFs(files, [config]) }).wrap('opencode', [])
+    const files = { [`${config}/opencode.jsonc`]: '{ "provider": {"other": {"options": {"apiKey": "{file:~/.config/proxy/api.key}"}}}, "agent": {"x": {"prompt": "{file:./prompts/r.txt}"}}, "gone": "{file:~/missing}" }', [`${HOME}/.config/proxy/api.key`]: 'k', [`${config}/prompts/r.txt`]: 'p' }
+    const [, args] = plan({ fs: fakeFs(files, [config]), args: ['run', '--model', 'openai/m'] }).wrap('opencode', [])
     const ro = flat(args, '--ro-bind-try')
-    expect(ro).toEqual(expect.arrayContaining([`${HOME}/.config/proxy/api.key`, `${config}/prompts/r.txt`]))
+    expect(ro).not.toContain(`${HOME}/.config/proxy/api.key`)
+    expect(ro).toContain(`${config}/prompts/r.txt`)
+    expect(configOverlay(args, `${config}/opencode.jsonc`)).not.toBe('')
     expect(ro).not.toContain(`${HOME}/missing`)
+    expect(files[`${config}/opencode.jsonc`]).toContain('{file:./prompts/r.txt}')
+    expect((files as Record<string, string>)[configOverlay(args, `${config}/opencode.jsonc`)]).toContain('{file:./prompts/r.txt}')
   })
 
 }
@@ -1324,6 +1329,405 @@ function registerHostStateNoticeTests() {
     expect(lines).toEqual([`workflow-toolbox: ${none.line}\n`])
   })
 }
+
+function credentialFixture(text = '{"provider":{"other":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}', extra: Record<string, string> = {}, realpaths: Record<string, string> = {}) {
+  const config = `${HOME}/.config/opencode/opencode.jsonc`
+  const key = `${HOME}/.config/proxy/api.key`
+  const files: Record<string, string> = { [config]: text, [key]: 'FAKE_KEY_BYTES', ...extra }
+  const fs = fakeFs(files, [posix.dirname(config), posix.dirname(key)], realpaths)
+  return { config, key, files, fs }
+}
+
+function credentialPlan(overrides: Record<string, unknown> = {}) {
+  return plan({ args: ['run', '--model', 'openai/m'], ...overrides })
+}
+
+function configOverlay(args: string[], config: string): string {
+  return args.find((value, index) => args[index - 1] === '--ro-bind-try' && args[index + 1] === config && value !== config) ?? ''
+}
+
+function registerCredentialOverlayTests() {
+  it('withholds other-provider credentials without reading key bytes and overlays the classified snapshot', () => {
+    const f = credentialFixture()
+    const read = vi.spyOn(f.fs, 'readText')
+    const p = plan({ fs: f.fs, args: ['run', '--model', 'openai/m'] })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      const copy = configOverlay(args, f.config)
+      expect(copy).toMatch(/\/oc-config\/opencode.jsonc$/)
+      expect(f.files[copy]).toBe('{"provider":{"other":{"options":{"apiKey":""}}}}')
+      expect(read.mock.calls.flat()).not.toContain(f.key)
+      expect(p.line).toContain(`; withheld credential file references ${f.key}`)
+      expect(p.line).not.toContain('FAKE_KEY_BYTES')
+    } finally { p.dispose() }
+  })
+
+  it.each(['--model=other/m', '-m=other/m', '--model', '-m', 'config'])('refuses its own provider credential via %s', (flag) => {
+    const model = flag === 'config' ? 'other/m' : 'openai/m'
+    const f = credentialFixture(`{"model":"${model}","provider":{"other":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}`)
+    const args = flag === 'config' ? ['run'] : ['run', flag, ...(['--model', '-m'].includes(flag) ? ['other/m'] : [])]
+    expect(() => plan({ fs: f.fs, args })).toThrow(sandbox.LaneSandboxRefusal)
+    expect(() => plan({ fs: f.fs, args })).toThrow(`model other/m in ${f.config} references credential ${f.key}; a lane never gets an API key file; WT_LANE_SANDBOX=off is the only bypass`)
+  })
+
+  it('allows a model-less capability probe while withholding credentials and overlaying its config', () => {
+    const f = credentialFixture()
+    const p = plan({ fs: f.fs, args: ['run'] })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      expect(f.files[configOverlay(args, f.config)]).toBe('{"provider":{"other":{"options":{"apiKey":""}}}}')
+      expect(p.line).toContain(`; withheld credential file references ${f.key}`)
+      expect(p.egressHosts).toEqual([])
+      expect(p.endpoints).toEqual([])
+    } finally { p.dispose() }
+  })
+}
+
+function registerCredentialLocationTests() {
+  it.each([
+    '{"mcp":{"x":{"headers":{"Authorization":"Bearer {file:~/.config/proxy/api.key}"}}}}',
+    '{"mcp":{"x":{"environment":{"KEY":"{file:~/.config/proxy/api.key}"}}}}',
+    '{"prompt":"{file:~/.config/proxy/api.key}","apiKey":"{file:~/.config/proxy/api.key}"}',
+    '{"apiKey":{file:~/.config/proxy/api.key}}',
+    '{/* {file:~/.config/proxy/api.key} */}',
+  ])('withholds credential locations and sanitizes valid JSONC: %s', (text) => {
+    const f = credentialFixture(text)
+    const p = credentialPlan({ fs: f.fs })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      const copy = configOverlay(args, f.config)
+      expect(f.files[copy]).toBeTruthy()
+      expect(f.files[copy]).not.toContain('{file:')
+    } finally { p.dispose() }
+  })
+
+  it('ignores //-prefixed references even when they exist', () => {
+    const f = credentialFixture('// {file:~/.config/proxy/api.key}\n{}')
+    const p = credentialPlan({ fs: f.fs })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      expect(configOverlay(args, f.config)).toBe('')
+      expect(f.files[f.config]).toContain('{file:')
+      expect(p.line).not.toContain('withheld')
+    } finally { p.dispose() }
+  })
+}
+
+function registerCredentialAggregationTests() {
+  it('lets credentials win across global files and canonical symlink aliases', () => {
+    const contentConfig = `${HOME}/.config/opencode/config.json`
+    const alias = `${HOME}/.config/proxy/alias.key`
+    const f = credentialFixture(undefined, { [contentConfig]: `{"instructions":[["{file:${alias}}"]]}`, [alias]: 'alias' }, { [alias]: `${HOME}/.config/proxy/api.key` })
+    const p = credentialPlan({ fs: f.fs })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      for (const key of [f.key, alias]) expect(args).not.toContain(key)
+      for (const config of [contentConfig, f.config]) expect(f.files[configOverlay(args, config)]).not.toContain('{file:')
+    } finally { p.dispose() }
+  })
+
+  it('keeps the original host loopback egress configuration when overlaying credentials', () => {
+    const f = credentialFixture('{"model":"relay/m","provider":{"relay":{"options":{"baseURL":"http://127.0.0.1:8317/v1"}},"other":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}')
+    const p = plan({ fs: f.fs })
+    try {
+      expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
+      expect(f.files[f.config]).toContain('{file:')
+      expect(f.files[configOverlay(p.wrap('opencode', [])[1], f.config)]).not.toContain('{file:')
+    } finally { p.dispose() }
+  })
+
+  it('fails closed on environment-dependent references and invalid sanitized JSONC', () => {
+    for (const text of ['{"apiKey":"{file:{env:KEY_PATH}}"}', '{"apiKey":"{file:~/.config/proxy/api.key}", broken}']) {
+      const f = credentialFixture(text)
+      expect(() => credentialPlan({ fs: f.fs })).toThrow(sandbox.LaneSandboxRefusal)
+    }
+  })
+}
+
+function extraCredentialFixture(global = '{}', value = '{file:~/.config/proxy/api.key}') {
+  const extraConfig = '/configs/opencode.jsonc'
+  const text = JSON.stringify({ provider: { other: { options: { apiKey: value } } } })
+  const f = credentialFixture(global, { [extraConfig]: text })
+  f.fs.ensureDir('/configs')
+  return { ...f, extraConfig, env: { HOME, PATH: '/usr/bin', OPENCODE_CONFIG: extraConfig } }
+}
+
+function registerExtraConfigCredentialTests() {
+  it('promotes a global content reference used as an OPENCODE_CONFIG credential and overlays both snapshots', () => {
+    const f = extraCredentialFixture('{"prompt":"{file:~/.config/proxy/api.key}","apiKey":"{file:~/missing-key}"}')
+    const p = credentialPlan({ fs: f.fs, env: f.env })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      const globalCopy = configOverlay(args, f.config); const extraCopy = configOverlay(args, f.extraConfig)
+      expect(globalCopy).not.toBe(extraCopy)
+      expect(f.files[globalCopy]).toBe('{"prompt":"","apiKey":""}')
+      expect(f.files[extraCopy]).toBe('{"provider":{"other":{"options":{"apiKey":""}}}}')
+      expect(p.line).toContain(`withheld credential file references ${f.key}`)
+    } finally { p.dispose() }
+  })
+
+  it.each([true, false])('inventories an OPENCODE_CONFIG-only credential (exists: %s)', (exists) => {
+    const f = extraCredentialFixture()
+    if (!exists) delete f.files[f.key]
+    const p = credentialPlan({ fs: f.fs, env: f.env })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      expect(f.files[configOverlay(args, f.extraConfig)]).toBe('{"provider":{"other":{"options":{"apiKey":""}}}}')
+      expect(p.line).toContain(`${exists ? 'withheld' : 'removed missing'} credential file references ${f.key}`)
+    } finally { p.dispose() }
+  })
+}
+
+function registerExtraConfigCredentialRefusalTests() {
+  it('refuses an OPENCODE_CONFIG credential reachable through the global content directory bind', () => {
+    const key = `${HOME}/.config/opencode/prompts/api.key`
+    const f = extraCredentialFixture(`{"prompt":"{file:${key}}"}`, `{file:${key}}`)
+    f.files[key] = 'FAKE_KEY_BYTES'
+    expect(() => credentialPlan({ fs: f.fs, env: f.env })).toThrow(/credential .*prompts\/api.key is covered by mount .*opencode/)
+  })
+
+  it('refuses the selected provider credential found only in OPENCODE_CONFIG', () => {
+    const f = extraCredentialFixture()
+    expect(() => credentialPlan({ fs: f.fs, env: f.env, args: ['run', '--model', 'other/m'] })).toThrow(`model other/m in ${f.extraConfig} references credential ${f.key}`)
+  })
+
+  it('classifies OPENCODE_CONFIG on its expanded tree', () => {
+    const f = extraCredentialFixture()
+    f.files[f.extraConfig] = '{"{env:LOCATION}":"{file:~/.config/proxy/api.key}"}'
+    const p = credentialPlan({ fs: f.fs, env: f.env, optionEnv: { LOCATION: 'apiKey' } })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(f.key)
+      expect(f.files[configOverlay(args, f.extraConfig)]).toBe('{"{env:LOCATION}":""}')
+    } finally { p.dispose() }
+  })
+
+  it('refuses changed file inventories in OPENCODE_CONFIG after environment expansion', () => {
+    const f = extraCredentialFixture('{}', '{env:A}{env:B}')
+    expect(() => credentialPlan({ fs: f.fs, env: f.env, optionEnv: { A: '{fi', B: 'le:/fake/key}' } })).toThrow(`environment substitution changes the {file:} references of ${f.extraConfig}`)
+  })
+}
+
+describe('lane sandbox extra config credential isolation', () => {
+  registerExtraConfigCredentialTests()
+  registerExtraConfigCredentialRefusalTests()
+})
+
+function registerCredentialCoverageTests() {
+  it.each<[string, string, Record<string, unknown>]>([
+    ['config directory', `${HOME}/.config/opencode/api.key`, {}],
+    ['read extra', `${HOME}/.config/proxy/api.key`, { optionEnv: { WT_LANE_SANDBOX_READ: `${HOME}/.config/proxy` } }],
+    ['caller readable', `${HOME}/.config/proxy/api.key`, { paths: { readable: [`${HOME}/.config/proxy`] } }],
+    ['attachment', `${HOME}/.config/proxy/api.key`, { args: ['run', '--model', 'openai/m', '--file', `${HOME}/.config/proxy/api.key`] }],
+    ['worktree', '/work/tree/api.key', {}],
+    ['writable extra', '/scratch/api.key', { paths: { writable: ['/scratch'] } }],
+    ['private remap destination', `${HOME}/.cache/opencode/api.key`, {}],
+    ['executable overlay', '/opt/opencode/bin/api.key', {}],
+    ['system directory', '/etc/fake-api.key', {}],
+  ])('refuses a withheld key covered by %s', (_name, key, overrides) => {
+    const f = credentialFixture(`{"apiKey":"{file:${key}}"}`, { [key]: 'FAKE_KEY_BYTES' })
+    expect(() => credentialPlan({ fs: f.fs, ...overrides })).toThrow(/credential .* covered by mount/)
+  })
+
+  it('refuses a sanitized copy under a writable runtime parent, including aliases', () => {
+    for (const [runtimeParent, aliases] of [['/work/tree/runtime', {}], ['/alias/runtime', { '/alias': '/work/tree' }]] as const) {
+      const f = credentialFixture(undefined, {}, aliases)
+      const realpath = f.fs.realpath
+      f.fs.realpath = (file) => file.startsWith('/alias/') && f.fs.exists(file) ? posix.join('/work/tree', posix.relative('/alias', file)) : realpath(file)
+      expect(() => credentialPlan({ fs: f.fs, runtimeParent })).toThrow(/sanitized config .* lane-writable/)
+    }
+  })
+
+  it('compares covering mount sources by their canonical paths', () => {
+    const f = credentialFixture(undefined, {}, { '/alias': `${HOME}/.config/proxy` })
+    expect(() => credentialPlan({ fs: f.fs, paths: { readable: ['/alias'] } })).toThrow(/credential .* covered by mount \/alias/)
+  })
+}
+
+function registerCredentialSnapshotTests() {
+  it('sanitizes the classified snapshot while network planning still reads original host config', () => {
+    const text = '{"model":"relay/m","provider":{"relay":{"options":{"baseURL":"http://127.0.0.1:8317/v1"}},"other":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}'
+    const f = credentialFixture(text)
+    const isFile = f.fs.isFile
+    f.fs.isFile = (file) => {
+      if (file === f.key) f.files[f.config] = text.replace(':8317/', ':8318/')
+      return isFile(file)
+    }
+    const p = plan({ fs: f.fs })
+    try {
+      const copy = configOverlay(p.wrap('opencode', [])[1], f.config)
+      expect(f.files[copy]).toContain(':8317/')
+      expect(f.files[copy]).not.toContain('{file:')
+      expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8318 }])
+    } finally { p.dispose() }
+  })
+
+  it('checks writable remap sources as well as their destinations', () => {
+    const f = credentialFixture()
+    const ensureDir = f.fs.ensureDir
+    f.fs.ensureDir = (directory) => {
+      ensureDir(directory)
+      if (/\/wt-lane-sandbox-[^/]+$/.test(directory)) {
+        const key = `${directory}/oc-share/api.key`
+        f.files[key] = 'FAKE_KEY_BYTES'
+        f.files[f.config] = `{"apiKey":"{file:${key}}"}`
+      }
+    }
+    expect(() => credentialPlan({ fs: f.fs })).toThrow(/credential .*oc-share\/api.key.* covered by mount .*oc-share/)
+  })
+}
+
+function registerCredentialCopyTests() {
+  it.skipIf(process.platform === 'win32')('refuses a real runtime-parent symlink into the writable worktree', () => {
+    const root = tempRoot('credential-runtime-alias')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree'); const alias = join(root, 'alias')
+    const config = join(home, '.config/opencode/opencode.jsonc'); const key = join(home, '.config/proxy/api.key')
+    for (const dir of [dirname(config), dirname(key), worktree]) mkdirSync(dir, { recursive: true })
+    writeFileSync(config, `{"apiKey":"{file:${key}}"}`); writeFileSync(key, 'FAKE_KEY_BYTES')
+    symlinkSync(worktree, alias)
+    const options = { ...posixPlanner(root), profile: 'opencode', bin: '/bin/sh', args: ['--model', 'openai/m'], cwd: worktree, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, runtimeParent: alias, socat: null, find: '/usr/bin/find' }
+    expect(() => sandbox.resolveLaneSandbox(options)).toThrow(/sanitized config .* lane-writable/)
+  })
+
+  it.skipIf(process.platform === 'win32')('writes the private sanitized snapshot exclusively with modes 0700/0600 and disposes it', () => {
+    const root = tempRoot('credential-copy')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const config = join(home, '.config/opencode/opencode.jsonc'); const key = join(home, '.config/proxy/api.key')
+    for (const dir of [dirname(config), dirname(key), worktree]) mkdirSync(dir, { recursive: true })
+    writeFileSync(config, `{"apiKey":"{file:${key}}"}`); writeFileSync(key, 'FAKE_KEY_BYTES')
+    const options = { ...posixPlanner(root), profile: 'opencode', bin: '/bin/sh', args: ['run', '--model', 'openai/m'], cwd: worktree, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, runtimeParent: root, socat: null, find: '/usr/bin/find' }
+    const p = sandbox.resolveLaneSandbox(options)
+    const copy = configOverlay(p.wrap('/bin/true', [])[1], config)
+    try {
+      expect(JSON.parse(readFileSync(copy, 'utf8'))).toEqual({ apiKey: '' })
+      expect(statSync(copy).mode & 0o777).toBe(0o600)
+      expect(statSync(dirname(copy)).mode & 0o777).toBe(0o700)
+      expect(() => sandbox.realFs.writePrivateText(copy, 'replacement')).toThrow(/EEXIST/)
+      expect(JSON.parse(readFileSync(copy, 'utf8'))).toEqual({ apiKey: '' })
+    } finally { p.dispose() }
+    expect(() => accessSync(copy)).toThrow()
+  })
+}
+
+function registerCredentialEnvironmentTests() {
+  it('checks the full launcher environment even when a variable is absent from the child subset', () => {
+    const f = credentialFixture('{"apiKey":"{env:KEY}"}')
+    expect(() => credentialPlan({ fs: f.fs, optionEnv: { KEY: `{file:${f.key}}` } })).toThrow(/environment.*file/)
+  })
+
+  it.each(['{"apiKey":"{env:KEY}"}', '{/* {env:KEY} */}'])('refuses launcher environment file injection: %s', (text) => {
+    const f = credentialFixture(text)
+    expect(() => credentialPlan({ fs: f.fs, env: { HOME, PATH: '/usr/bin', KEY: `{file:${f.key}}` } })).toThrow(/environment.*file/)
+  })
+
+  it.each(['config', 'cli'])('resolves the %s model through launcher environment values', (source) => {
+    const model = source === 'config' ? '{env:MODEL}' : 'openai/m'
+    const f = credentialFixture(`{"model":"${model}","provider":{"other":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}`)
+    const args = source === 'config' ? ['run'] : ['run', '--model', '{env:MODEL}']
+    expect(() => plan({ fs: f.fs, args, env: { HOME, PATH: '/usr/bin', MODEL: 'other/m' } })).toThrow(/model other\/m .* references credential/)
+  })
+
+  it.each(['invalid', '{env:UNKNOWN}', '{env:NESTED}'])('refuses an unresolvable effective model %s when credentials exist', (model) => {
+    const f = credentialFixture()
+    const args = ['run', '--model', model]
+    expect(() => plan({ fs: f.fs, args, env: { HOME, PATH: '/usr/bin', NESTED: '{env:UNKNOWN}' } })).toThrow(/effective model.*unresolvable/)
+  })
+
+  it('uses the expanded model for original-host loopback network planning', () => {
+    const f = credentialFixture('{"model":"{env:MODEL}","provider":{"relay":{"options":{"baseURL":"http://127.0.0.1:8317/v1"}},"other":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}')
+    const p = plan({ fs: f.fs, args: ['run'], optionEnv: { MODEL: 'relay/m' } })
+    try { expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }]) } finally { p.dispose() }
+  })
+}
+
+function registerCredentialExpandedEnvironmentTests() {
+  it('refuses file substitutions assembled across launcher environment values', () => {
+    const f = credentialFixture('{"apiKey":"{env:A}{env:B}"}')
+    expect(() => credentialPlan({ fs: f.fs, optionEnv: { A: '{fi', B: 'le:/etc/lane-demo.key}' } })).toThrow(`environment substitution changes the {file:} references of ${f.config}`)
+  })
+
+  it('refuses its own provider selected by an unquoted environment model', () => {
+    const f = credentialFixture('{"model":{env:MODEL},"provider":{"relay":{"options":{"apiKey":"{file:~/.config/proxy/api.key}"}}}}')
+    expect(() => plan({ fs: f.fs, args: ['run'], optionEnv: { MODEL: '"relay/m"' } })).toThrow(/model relay\/m .* references credential/)
+  })
+}
+
+function registerCredentialHardlinkTests() {
+  it.skipIf(process.platform === 'win32')('uses real device/inode identities for hard-linked reference targets', () => {
+    const root = tempRoot('credential-hardlink')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const config = join(home, '.config/opencode/opencode.jsonc'); const key = join(home, '.config/proxy/api.key')
+    const alias = join(dirname(key), 'hardlink.key')
+    for (const dir of [dirname(config), dirname(key), worktree]) mkdirSync(dir, { recursive: true })
+    writeFileSync(key, 'FAKE_KEY_BYTES'); linkSync(key, alias)
+    writeFileSync(config, JSON.stringify({ apiKey: `{file:${key}}`, prompt: `{file:${alias}}` }))
+    const options = { ...posixPlanner(root), profile: 'opencode', bin: '/bin/sh', args: ['--model', 'openai/m'], cwd: worktree, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, runtimeParent: root, socat: null, find: '/usr/bin/find' }
+    const p = sandbox.resolveLaneSandbox(options)
+    try {
+      const args = p.wrap('/bin/true', [])[1]
+      expect(args).not.toContain(alias)
+      expect(JSON.parse(readFileSync(configOverlay(args, config), 'utf8'))).toEqual({ apiKey: '', prompt: '' })
+    } finally { p.dispose() }
+  })
+
+  it('lets credentials win across global files and hard-linked content aliases without reading bytes', () => {
+    const alias = `${HOME}/.config/proxy/hardlink.key`
+    const contentConfig = `${HOME}/.config/opencode/config.json`
+    const f = credentialFixture(undefined, { [alias]: 'FAKE_KEY_BYTES', [contentConfig]: `{"instructions":[["{file:${alias}}"]]}` })
+    const identity = vi.fn((file: string) => [f.key, alias].includes(file) ? '2:10' : `2:${file}`)
+    const read = vi.spyOn(f.fs, 'readText')
+    const p = credentialPlan({ fs: Object.assign(f.fs, { identity }) })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      expect(args).not.toContain(alias)
+      expect(f.files[configOverlay(args, contentConfig)]).not.toContain('{file:')
+      expect(p.line).toContain(`withheld credential file references ${alias}, ${f.key}`)
+      expect(identity).toHaveBeenCalledWith(alias)
+      expect(read.mock.calls.flat()).not.toContain(alias)
+      expect(read.mock.calls.flat()).not.toContain(f.key)
+    } finally { p.dispose() }
+  })
+}
+
+function registerMissingCredentialTests() {
+  it.each(['"{file:~/missing}"', '{file:~/missing}', '"Bearer {file:~/missing}"'])('removes missing credential substitutions in %s, preserving missing content', (value) => {
+    const f = credentialFixture(`{"provider":{"other":{"options":{"apiKey":${value}}}},"prompt":"{file:~/missing-prompt}"}`)
+    const p = credentialPlan({ fs: f.fs })
+    try {
+      const args = p.wrap('opencode', [])[1]
+      const copy = JSON.parse(f.files[configOverlay(args, f.config)]!)
+      expect(copy.provider.other.options.apiKey).toBe(value.includes('Bearer') ? 'Bearer ' : '')
+      expect(copy.prompt).toBe('{file:~/missing-prompt}')
+      expect(args).not.toContain(`${HOME}/missing`)
+      expect(p.line).toContain(`; removed missing credential file references ${HOME}/missing`)
+      expect(p.line).not.toContain('withheld credential file references')
+    } finally { p.dispose() }
+  })
+
+  it('checks copy writability even when every removed credential target is missing', () => {
+    const f = credentialFixture('{"apiKey":"{file:~/missing}"}')
+    expect(() => credentialPlan({ fs: f.fs, runtimeParent: '/work/tree/runtime' })).toThrow(/sanitized config .* lane-writable/)
+  })
+}
+
+describe('lane sandbox credential file isolation', () => {
+  registerCredentialOverlayTests()
+  registerCredentialLocationTests()
+  registerCredentialAggregationTests()
+  registerCredentialCoverageTests()
+  registerCredentialSnapshotTests()
+  registerCredentialCopyTests()
+  registerCredentialEnvironmentTests()
+  registerCredentialExpandedEnvironmentTests()
+  registerCredentialHardlinkTests()
+  registerMissingCredentialTests()
+})
 
 describe('lane sandbox plan — filesystem allow-list', () => {
   registerSocketMaskTests()
@@ -1922,6 +2326,24 @@ function runCanary(f: ReturnType<typeof realHomeFixture>, sw: string | undefined
     return fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', CANARY, 'canary', allowed], { cwd: f.worktree, env: { PATH: hermeticPath([]), HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
   } finally { if (prev === undefined) delete process.env.WT_LANE_SANDBOX; else process.env.WT_LANE_SANDBOX = prev }
 }
+
+describe.skipIf(!BWRAP_WORKS)('real sandbox global credential isolation (requires usable root-owned bwrap)', () => {
+  it('cannot access a fake key but reads and parses the sanitized global config', () => {
+    const f = realHomeFixture()
+    const config = join(f.home, '.config/opencode/opencode.jsonc'); const key = join(f.home, '.config/proxy/api.key')
+    mkdirSync(dirname(key), { recursive: true }); writeFileSync(key, 'FAKE_KEY_BYTES')
+    writeFileSync(config, JSON.stringify({ provider: { other: { options: { apiKey: `{file:${key}}` } } } }))
+    const env = { HOME: f.home, PATH: hermeticPath([]) }
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: f.worktree, env, optionEnv: {}, args: ['--model', 'openai/m'] })
+    try {
+      const script = 'const fs=require("node:fs");const [key,config]=process.argv.slice(1);try{fs.accessSync(key);process.exit(7)}catch(e){if(!["ENOENT","EACCES"].includes(e.code))throw e}const c=JSON.parse(fs.readFileSync(config,"utf8"));if(c.provider.other.options.apiKey!=="")process.exit(8);console.log("key absent; config parses")'
+      const [command, args] = p.wrap(process.execPath, ['-e', script, key, config])
+      const result = spawnSync(command, args, { cwd: f.worktree, env, encoding: 'utf8', timeout: 30_000 })
+      expect(result.status, String(result.stderr)).toBe(0)
+      expect(result.stdout.trim()).toBe('key absent; config parses')
+    } finally { p.dispose() }
+  })
+})
 
 describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without a working bwrap)', () => {
   it('preserves PATH priority for a symlinked executable and its sibling helper (skips when bwrap is unavailable)', () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// wt-missing-package-script-guard-hook.mjs — a PreToolUse guard, plugin-level: journals (never
+// wt-missing-package-script-guard-hook.mjs — a PreToolUse guard, plugin-level: warns (never
 // blocks) on a Bash command that invokes a package-manager script (`pnpm <script>`, `npm run
 // <script>`, `yarn <script>`) whose name does NOT exist in the `scripts` map of the
 // `package.json` governing the command's effective directory.
@@ -14,11 +14,18 @@
 // certified by a chained gate. This guard closes the adjacent case: a genuinely fresh tree, a
 // script name that simply does not resolve from the directory the command runs in.
 //
-// ⚠ JOURNAL-ONLY, NEVER DENIES — a new guard's precision is measured on material it did not choose
+// ⚠ WARN-ONLY, NEVER DENIES — a new guard's precision is measured on material it did not choose
 // before it is allowed to block (mechanise-on-sight.md). Command-line parsing here is
-// necessarily heuristic (no real shell parser), so a false positive is possible; journal-only until
-// its false-positive rate is measured on this project's own real traffic.
-// No stdout warning: allow would auto-approve the call, and permissionDecisionReason reaches no model.
+// necessarily heuristic (no real shell parser), so a false positive is possible; a nag, never a
+// refusal, until its false-positive rate is measured on this project's own real traffic.
+//
+// WHAT IT EMITS, AND WHY ONLY THAT. The finding is journaled AND delivered to the model as a
+// PreToolUse `additionalContext` notice (through emitGuardNotice, so a subagent gets the same
+// text and WT_GUARD_MODE=observe keeps stdout silent). The payload is `{ hookSpecificOutput:
+// { hookEventName, additionalContext } }` and NOTHING else: a `permissionDecision` of "allow"
+// would auto-approve the call, and `permissionDecisionReason` reaches no model. The notice names
+// the script, the directory whose package.json governs the command, and either the ancestor
+// that does define the script or a hint that the name may be a genuine typo.
 //
 // `cd`/`&&` CHAINS ARE TRACKED. `cd toolkit && pnpm test` resolves the script against `toolkit`,
 // not against whatever directory the Bash tool call itself carries, and several `cd`s in one
@@ -58,7 +65,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -115,26 +122,59 @@ function findAncestorDefining(fromDir, scriptName) {
 // A command line carries CODE and DATA in the same string. Strip data spans before splitting on
 // shell separators, or a quoted/heredoc/commented mention of `pnpm <script>` reads as a real
 // chained invocation. Same discipline as wt-merge-chain-guard-hook.mjs's stripDataSpans().
+// Each quoted span's place holds a numbered marker made of a private-use character. That
+// character is legal in a shell word, so every literal occurrence of the two private-use characters
+// used here is ESCAPED first (MARK -> ESC m, ESC -> ESC e): a marker can then only be one this code
+// wrote, and restoring a token un-escapes it back to the command's own text.
+const SPAN_MARK = '\uE000'
+const SPAN_ESC = '\uE001'
+const SPAN_MARKER = new RegExp(`${SPAN_MARK}(\\d+)${SPAN_MARK}`, 'g')
+const ESCAPED = new RegExp(`${SPAN_ESC}([me])`, 'g')
+
+function escapeMarks(text) {
+  return text.replace(/[\uE000\uE001]/g, (ch) => SPAN_ESC + (ch === SPAN_MARK ? 'm' : 'e'))
+}
+
+function unescapeMarks(text) {
+  return text.replace(ESCAPED, (_, kind) => (kind === 'm' ? SPAN_MARK : SPAN_ESC))
+}
+
+// Inside double quotes the shell removes the backslash before `\ " $ \``: `bash -c "pnpm \"test\""`
+// hands the child shell `pnpm "test"`. An unclosed quote runs to the end of the command.
+const QUOTED_SPAN = /'([^']*)'?|"((?:[^"\\]|\\[\s\S])*)"?/g
+
+function quotedText(single, double) {
+  return single ?? double.replace(/\\([\\"$`\n])/g, '$1')
+}
+
 function stripDataSpans(cmd) {
-  let out = cmd
+  let out = escapeMarks(cmd)
   out = out.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\2$/gm, '<<HEREDOC')
   out = out.replace(/<<-?\s*(['"]?)[A-Za-z_][A-Za-z0-9_]*\1[\s\S]*$/, '<<HEREDOC')
   out = out.replace(/`[^`]*`/g, '`CODESPAN`')
-  out = out.replace(/'[^']*'/g, "'Q'").replace(/"[^"]*"/g, '"Q"')
+  // One pass, so a quote inside the other kind stays inside its span. Each span's text is kept
+  // in `spans` and its place holds a numbered marker, so a `-c` script can be read back.
+  const spans = []
+  out = out.replace(QUOTED_SPAN, (span, single, double) => {
+    spans.push(quotedText(single, double))
+    return `${span[0]}${SPAN_MARK}${spans.length - 1}${SPAN_MARK}${span[0]}`
+  })
   out = out.replace(/(^|\s)#.*$/gm, '$1')
-  return out
+  return { text: out, spans }
 }
 
 // Tokenize a single simple command (already split on shell operators) into words, stripping
-// simple quoting. Not a real shell parser — good enough for `pnpm <script>` / `cd <dir>` shapes.
-function tokenize(segment) {
-  const tokens = []
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
-  let m
-  while ((m = re.exec(segment))) {
-    tokens.push(m[1] ?? m[2] ?? m[3])
-  }
-  return tokens
+// simple quoting. Adjacent quoted and bare pieces form ONE word, as in the shell: `pnpm 'test'nope`
+// names the script `testnope`. Not a real shell parser — good enough for `pnpm <script>` /
+// `cd <dir>` shapes.
+function tokenize(segment, spans) {
+  return Array.from(segment.matchAll(/(?:"[^"]*"|'[^']*'|\S)+/g), (m) =>
+    restoreSpans(m[0].replace(/"([^"]*)"|'([^']*)'/g, '$1$2'), spans))
+}
+
+// A marker index this code never wrote stays literal text rather than naming `undefined`.
+function restoreSpans(token, spans) {
+  return unescapeMarks(token.replace(SPAN_MARKER, (marker, index) => spans[Number(index)] ?? marker))
 }
 
 // Split a full command string on shell command separators (&&, ||, ;, |, newline) into
@@ -148,8 +188,8 @@ function splitSegments(cmd) {
 
 // Recognize a `cd` invocation in a segment. Returns the raw target token, or null if the
 // segment isn't a `cd`.
-function matchCdTarget(segment) {
-  const tokens = tokenize(segment)
+function matchCdTarget(segment, spans) {
+  const tokens = tokenize(segment, spans)
   if (tokens.length === 0 || tokens[0] !== 'cd') return null
   return tokens[1] ?? '~' // bare `cd` goes to $HOME
 }
@@ -244,8 +284,8 @@ function extractScriptInvocation(tokens) {
   return { scriptName, workspaceAware }
 }
 
-function checkSegment(segment, cwd) {
-  const tokens = tokenize(segment)
+function checkSegment(segment, cwd, spans) {
+  const tokens = tokenize(segment, spans)
   if (tokens.length === 0) return null
   const mgr = tokens[0]
   if (!PACKAGE_MANAGERS.has(mgr)) return null
@@ -266,35 +306,91 @@ function checkSegment(segment, cwd) {
   return { scriptName, cwdPkgDir: nearest.dir, ancestorDir }
 }
 
-function findFinding(cmd, initialCwd) {
-  let currentCwd = initialCwd
-  let cwdTrusted = true // false once a `cd` in this chain leaves the directory unknown
+// Words that may stand before the shell word of a wrapped invocation (`setsid nohup bash -c …`,
+// `env A=1 bash -c …`); anything else before it means the shell word is an argument.
+const LAUNCHER_WORD = /^(?:setsid|nohup|env|sudo|time|exec|command|nice|timeout|stdbuf)$|^[A-Za-z_]\w*=|^-|^\d+$/
+const SHELL_WORD = /^(?:.*\/)?(?:sh|bash|zsh)$/
+const SHELL_OPTION_WITH_VALUE = /^[-+][oO]$|^--(?:rcfile|init-file)$/
+const MAX_SCRIPT_DEPTH = 3
 
-  for (const segment of splitSegments(stripDataSpans(cmd))) {
+// The script of `sh|bash|zsh [options] -c <script>`, or null when the shell runs a file, reads
+// stdin, or the word is not at command position.
+function shellScript(tokens) {
+  const head = tokens.findIndex((word) => SHELL_WORD.test(word))
+  if (head === -1 || !tokens.slice(0, head).every((word) => LAUNCHER_WORD.test(word))) return null
+  let runsScript = false
+  for (let i = head + 1; i < tokens.length; i++) {
+    const word = tokens[i]
+    if (SHELL_OPTION_WITH_VALUE.test(word)) i++
+    else if (/^[-+]/.test(word)) runsScript ||= /^-[A-Za-z]+$/.test(word) && word.includes('c')
+    else return runsScript ? word : null
+  }
+  return null
+}
+
+// A `-c` script runs in a child shell: it starts from the cwd in force here, and a `cd` inside
+// it never moves the outer chain.
+function checkShellScript(segment, cwd, spans, depth) {
+  if (depth >= MAX_SCRIPT_DEPTH) return null
+  const script = shellScript(tokenize(segment, spans))
+  return script === null ? null : walkChain(script, { cwd, trusted: true }, depth + 1)
+}
+
+function applyCd(cdTarget, state) {
+  const resolved = resolveCd(cdTarget, state.cwd, state.trusted)
+  if (resolved.unresolvable) {
+    state.trusted = false
+  } else {
+    state.cwd = resolved.cwd
+    state.trusted = true // recovered — this cd resolved with confidence
+  }
+}
+
+function walkChain(cmd, start, depth) {
+  const state = { ...start } // trusted is false once a `cd` in this chain leaves the directory unknown
+  const { text, spans } = stripDataSpans(cmd)
+
+  for (const segment of splitSegments(text)) {
     // Subshells / command grouping (`( … )`) are not modeled — stay silent rather than guess.
     if (segment.includes('(') || segment.includes(')')) {
-      cwdTrusted = false
+      state.trusted = false
       continue
     }
 
-    const cdTarget = matchCdTarget(segment)
+    const cdTarget = matchCdTarget(segment, spans)
     if (cdTarget !== null) {
-      const resolved = resolveCd(cdTarget, currentCwd, cwdTrusted)
-      if (resolved.unresolvable) {
-        cwdTrusted = false
-      } else {
-        currentCwd = resolved.cwd
-        cwdTrusted = true // recovered — this cd resolved with confidence
-      }
+      applyCd(cdTarget, state)
       continue
     }
 
-    if (!cwdTrusted) continue // effective directory unknown — don't check, don't guess
+    if (!state.trusted) continue // effective directory unknown — don't check, don't guess
 
-    const finding = checkSegment(segment, currentCwd)
+    const finding = checkSegment(segment, state.cwd, spans) ?? checkShellScript(segment, state.cwd, spans, depth)
     if (finding) return finding
   }
   return null
+}
+
+function findFinding(cmd, initialCwd) {
+  return walkChain(cmd, { cwd: initialCwd, trusted: true }, 0)
+}
+
+// The notice is context-only by construction: no permissionDecision field exists in it. The
+// directory is named here (stdout reaches the model) but never in the journal record.
+function contextOnlyNotice(scriptName, cwdPkgDir, ancestorDir) {
+  const hint = ancestorDir
+    ? ` It IS defined in the package.json at \`${ancestorDir}\` — run it from there instead.`
+    : ' No package.json up the tree defines it either — this may be a genuine typo.'
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext:
+        `⚠ Script \`${scriptName}\` is not defined in the package.json governing \`${cwdPkgDir}\`.` +
+        hint +
+        ' A failure here can be mistaken for a real regression right after a merge — verify the ' +
+        'CWD before reading this as a broken build.',
+    },
+  }
 }
 
 function main() {
@@ -312,7 +408,7 @@ function main() {
   const finding = findFinding(cmd, initialCwd)
   if (!finding) return
 
-  const { ancestorDir } = finding
+  const { scriptName, cwdPkgDir, ancestorDir } = finding
 
   recordGuardEvent({
     guard: 'wt-missing-package-script-guard-hook.mjs',
@@ -322,7 +418,7 @@ function main() {
     class: 'missing-script',
     evidence: { nearest: 'package_json', ancestor: ancestorDir ? 'yes' : 'no' },
   })
-
+  emitGuardNotice({ payload: input, stdoutJson: contextOnlyNotice(scriptName, cwdPkgDir, ancestorDir) })
 }
 
 runFailOpenHook('wt-missing-package-script-guard-hook.mjs', main)
