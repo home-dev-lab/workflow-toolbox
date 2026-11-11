@@ -34,7 +34,7 @@ function redactBody(text) {
   for (let pass = 0; pass < 4; pass += 1) {
     const next = bodyPass(current);
     if (next.value === current) break;
-    replacements.push(...(next.replacements ?? []));
+    for (const replacement of next.replacements ?? []) replacements.push(replacement);
     current = next.value;
   }
   return { value: current, replacements };

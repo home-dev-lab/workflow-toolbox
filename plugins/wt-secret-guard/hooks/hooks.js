@@ -16,6 +16,7 @@ import { REDACTION_NOTE } from './constants.js';
 import { handleOwnerRelease, redactConfirmationCodes, releaseGrammarRefusal } from './owner-release.js';
 import { planOwnerChannel } from './owner-channel.js';
 import { consoleNotice } from './console-notice.js';
+import { finalizeDenial } from './finalize-denial.js';
 
 export { configure, testState, tokenize };
 
@@ -137,7 +138,7 @@ async function refuseRawOutbound($, event) {
   if (!classified.findings.length) return null;
   // Described before the findings are tokenised below: a pattern match must read as its detector, not as a held value.
   const described = describeFindings(event, classified.findings);
-  const replacements = classified.findings.map(({ kind, value, secret = value }) => ({ raw: value, token: tokenize(kind, secret) }));
+  const replacements = classified.findings.filter(({ value }) => value).map(({ kind, value, secret = value }) => ({ raw: value, token: tokenize(kind, secret) }));
   if (event.agentId) await consoleNotice(journalHost($), 'denied-subagent-input', 'wt-secret-guard: denied subagent input; subagent transcript location is unmeasured, so persisted input could not be repaired.');
   else await scrubToolUseStorage(storageHost($), replacements, event.tool_use_id);
   await appendEvent(journalHost($), {
@@ -148,7 +149,23 @@ async function refuseRawOutbound($, event) {
   const guidance = classified.surface === 'bash'
     ? ' Use a supported secret reference instead.'
     : ' Remove the raw value from the outbound content.';
-  return { deny: redactConfirmationCodes(`wt-secret-guard refused raw secret-bearing ${classified.surface} input: ${described.join('; ')}.${guidance}`) };
+  const refusal = { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input: ${described.join('; ')}.${guidance}` };
+  denialFindings.set(refusal, classified.findings);
+  return refusal;
+}
+
+const denialFindings = new WeakMap();
+
+// All tool-call routes, including early grammar and execution refusals, finish here.
+function finalizedRegistration(on) {
+  return (event, ...args) => {
+    if (event !== 'tool.call') return on(event, ...args);
+    const handler = args.pop();
+    return on(event, ...args, async ($, input, next) => {
+      const result = await handler($, input, next);
+      return finalizeDenial(result, denialFindings.get(result));
+    });
+  };
 }
 
 async function guardedOutbound($, event, next) {
@@ -204,6 +221,7 @@ async function submitPrompt($, event, next) {
 
 /** @type {import('claude-code').Register} */
 export const register = (on, options) => {
+  on = finalizedRegistration(on);
   configure(options);
   on('session.receive', scrubInbound);
   on('prompt.attachment', warnHookAttachment);

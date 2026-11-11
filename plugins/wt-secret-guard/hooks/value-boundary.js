@@ -129,12 +129,12 @@ export function boundaryFindings(text) {
     if (routeSMatch(text, item)) continue;
     if (item.base) {
       found.push(item.finding);
-      if ([...item.finding.value.matchAll(WIDE_REFERENCE)].length) found.push(...rawFindings(text, item));
+      if ([...item.finding.value.matchAll(WIDE_REFERENCE)].length) for (const raw of rawFindings(text, item)) found.push(raw);
     }
-    else found.push(...rawFindings(text, item));
+    else for (const raw of rawFindings(text, item)) found.push(raw);
   }
   for (const element of xmlElements(text)) {
-    if (!referenceProof(element.text)) found.push(...residueFindings(element.text, 'xml-element', element.start));
+    if (!referenceProof(element.text)) for (const raw of residueFindings(element.text, 'xml-element', element.start)) found.push(raw);
   }
   return found;
 }

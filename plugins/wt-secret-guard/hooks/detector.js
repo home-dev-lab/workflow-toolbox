@@ -370,6 +370,13 @@ function scannedConcealedDetections(text) {
   return found;
 }
 
+function collectConcealedNode(found, pending, value) {
+  if (!Array.isArray(value) && value.type === 'CONCEALED' && typeof value.value === 'string' && value.value) {
+    found.push({ kind: 'op-json-concealed', value: JSON.stringify(value.value).slice(1, -1), secret: value.value });
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) pending.push(child);
+}
+
 function concealedJsonDetections(text) {
   const candidate = text.trimStart();
   if (!candidate.includes('"CONCEALED"')) return [];
@@ -382,10 +389,7 @@ function concealedJsonDetections(text) {
   while (pending.length) {
     const value = pending.pop();
     if (!value || typeof value !== 'object') continue;
-    if (!Array.isArray(value) && value.type === 'CONCEALED' && typeof value.value === 'string' && value.value) {
-      found.push({ kind: 'op-json-concealed', value: JSON.stringify(value.value).slice(1, -1), secret: value.value });
-    }
-    pending.push(...(Array.isArray(value) ? value : Object.values(value)));
+    collectConcealedNode(found, pending, value);
   }
   return found.length ? found : scannedConcealedDetections(text);
 }

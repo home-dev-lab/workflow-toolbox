@@ -4145,7 +4145,9 @@ await test('a redaction note joined to an errored refusal never carries a held v
 }));
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 const { runValueBoundaryLocks } = await import('./value-boundary-locks.mjs');
+const { runTraversalLocks } = await import('./traversal-locks.mjs');
 await runValueBoundaryLocks({ test, freshVault, $, tokenize, hookForTool });
+await runTraversalLocks({ test, freshVault, $, tokenize, hookForTool, mcp });
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
 console.log(`hooks registered: ${hooks.length}`);
 const helpProse = 'read from the file named by EXAMPLE_USER_TOKEN_FILE; else from the example_token_file';
