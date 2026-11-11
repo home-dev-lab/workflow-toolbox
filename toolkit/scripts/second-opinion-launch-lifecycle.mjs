@@ -118,19 +118,25 @@ export async function waitForLaunch(f, timeoutMs) {
   return state
 }
 
-function isAlive(pid) {
-  try { process.kill(pid, 0) } catch (error) {
+const probeSignal = (pid) => process.kill(pid, 0)
+const readProcStat = (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8')
+
+// Detached POSIX children can remain zombies until their reaper runs; they hold no files.
+// A pid that exits after the probe but before the read raises ENOENT or ESRCH: both mean gone.
+function linuxStatAlive(pid, readStat) {
+  try { return !/^ [ZX] /.test(readStat(pid).split(')').at(-1)) } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return false
+    throw error
+  }
+}
+
+// Seams (platform, probe, readStat) let a lock inject the exit-mid-read race on any host.
+export function isAlive(pid, { platform = process.platform, probe = probeSignal, readStat = readProcStat } = {}) {
+  try { probe(pid) } catch (error) {
     if (error.code === 'ESRCH') return false
     throw error
   }
-  // Detached POSIX children can remain zombies until their reaper runs; they hold no files.
-  if (process.platform === 'linux') {
-    try { return !/^ [ZX] /.test(readFileSync(`/proc/${pid}/stat`, 'utf8').split(')').at(-1)) } catch (error) {
-      if (error.code === 'ENOENT') return false
-      throw error
-    }
-  }
-  return true
+  return platform === 'linux' ? linuxStatAlive(pid, readStat) : true
 }
 
 function recordedPid(path) {
@@ -150,7 +156,7 @@ function liveChildren(f) {
     const pid = recordedPid(`${f.out}.${suffix}`)
     if (pid) pids.add(pid)
   }
-  return [...pids].filter(isAlive)
+  return [...pids].filter((pid) => isAlive(pid))
 }
 
 async function waitForChildren(f, timeoutMs) {

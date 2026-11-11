@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error executable .mjs test companion
 import { cleanupLaunch, documentedLaunch, launchFixture, outEvidence, pluginRoot, skillPath, windowsShortPath } from '../../../scripts/second-opinion-launch-e2e.mjs'
 // @ts-expect-error executable .mjs test companion
-import { completed, launchDiagnostics, launchFailureDiagnostics, runShell, terminatePid, waitForLaunch } from '../../../scripts/second-opinion-launch-lifecycle.mjs'
+import { completed, isAlive, launchDiagnostics, launchFailureDiagnostics, runShell, terminatePid, waitForLaunch } from '../../../scripts/second-opinion-launch-lifecycle.mjs'
 
 // Cover shell startup, cold-child completion, and the ready/release cleanup regression.
 vi.setConfig({ testTimeout: process.platform === 'win32' ? 240_000 : 60_000,
@@ -472,4 +472,50 @@ while (!existsSync(${JSON.stringify(`${f.out}.release`)})) await setTimeout(10)`
     rmSync(`${f.out}.launch.pid`, { recursive: true, force: true })
     writeFileSync(`${f.out}.release`, 'release')
   }
+})
+
+function errno(code: string) {
+  return Object.assign(new Error(`${code}: injected`), { code })
+}
+
+function linuxStat(readStat: (pid: number) => string) {
+  return { platform: 'linux', probe: () => true, readStat }
+}
+
+it('isAlive treats a pid that exits between the signal probe and the /proc read (ESRCH) as gone', () => {
+  expect(isAlive(4242, linuxStat(() => { throw errno('ESRCH') }))).toBe(false)
+})
+
+it('isAlive keeps ENOENT as gone and rethrows any other /proc read error', () => {
+  expect(isAlive(4242, linuxStat(() => { throw errno('ENOENT') }))).toBe(false)
+  expect(() => isAlive(4242, linuxStat(() => { throw errno('EACCES') }))).toThrow(/EACCES/)
+})
+
+it('isAlive reads the state after the last parenthesis of /proc/<pid>/stat', () => {
+  expect(isAlive(4242, linuxStat(() => '4242 (node) Z 1 4242'))).toBe(false)
+  expect(isAlive(4242, linuxStat(() => '4242 (no) de) S 1 4242'))).toBe(true)
+})
+
+it('isAlive returns false on a failed signal probe without reading /proc', () => {
+  const readStat = vi.fn(() => '4242 (node) S 1 4242')
+  expect(isAlive(4242, { platform: 'linux', probe: () => { throw errno('ESRCH') }, readStat })).toBe(false)
+  expect(readStat).not.toHaveBeenCalled()
+})
+
+it('isAlive reads a dead (X) state as gone', () => {
+  expect(isAlive(4242, linuxStat(() => '4242 (node) X 1 4242'))).toBe(false)
+})
+
+it('isAlive rethrows every /proc read error other than ENOENT and ESRCH', () => {
+  for (const code of ['EPERM', 'EMFILE', 'EIO']) {
+    expect(() => isAlive(4242, linuxStat(() => { throw errno(code) })), code).toThrow(code)
+  }
+})
+
+it('isAlive never reads /proc off Linux', () => {
+  const readStat = vi.fn(() => '4242 (node) Z 1 4242')
+  for (const platform of ['darwin', 'win32']) {
+    expect(isAlive(4242, { platform, probe: () => true, readStat })).toBe(true)
+  }
+  expect(readStat).not.toHaveBeenCalled()
 })
