@@ -306,7 +306,8 @@ type Row = [string, string] | [string, string, Verdict]
 
 const PARITY_HOME = mkdtempSync(join(tmpdir(), 'wt-live-tree-parity-'))
 const home = gitBashPath(PARITY_HOME)
-const live = join(home, '.claude', 'rules')
+// join() spells its result with the host separator, so the Git Bash spelling is applied last.
+const live = gitBashPath(join(home, '.claude', 'rules'))
 // The same directory in the host's native spelling: on Windows, with backslashes.
 const liveNative = join(PARITY_HOME, '.claude', 'rules')
 mkdirSync(join(live, '.git'), { recursive: true })
@@ -593,6 +594,11 @@ for (const target of [live, '~/.claude/rules', `'${live}'`, `"${live}"`, ...QUOT
 describe('wt-live-config-tree-guard-hook — verdict parity with the retired private guard (deny mode)', () => {
   it('has the whole row table loaded', () => {
     expect(PARITY_ROWS.length).toBeGreaterThan(170)
+  })
+
+  it('spells the unquoted live target the way Git Bash passes it through', () => {
+    expect(live, 'an unquoted backslash would be an escape').toBe(gitBashPath(live))
+    expect(home).toBe(gitBashPath(home))
   })
 
   for (const row of PARITY_ROWS) {
