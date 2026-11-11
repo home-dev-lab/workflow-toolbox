@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -24,6 +25,57 @@ function run(command: string) {
     stdout: res.stdout,
     stderr: res.stderr,
     status: res.status,
+  }
+}
+
+function readJournal(journalDir: string): Record<string, unknown>[] {
+  return readdirSync(journalDir)
+    .filter((file) => file.endsWith('.ndjson'))
+    .flatMap((file) =>
+      readFileSync(join(journalDir, file), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>),
+    )
+}
+
+// Same hook, with the guard journal redirected to a scratch directory so a warning's journal
+// rows can be read back; `extraEnv` and `agentId` drive observe mode and subagent payloads. HOME
+// and the config dir are sealed to the same scratch root, so no run reads or writes the account's.
+function runJournaled(command: string, extraEnv: Record<string, string> = {}, agentId?: string) {
+  const scratch = mkdtempSync(join(tmpdir(), 'wt-commit-backtick-journal-'))
+  const journalDir = join(scratch, 'journal')
+  mkdirSync(journalDir)
+  try {
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+        ...(agentId ? { agent_id: agentId } : {}),
+      }),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: join(scratch, 'home'),
+        USERPROFILE: join(scratch, 'home'),
+        CLAUDE_CONFIG_DIR: join(scratch, 'claude-config'),
+        ...extraEnv,
+        WT_GUARD_JOURNAL_DIR: journalDir,
+      },
+    })
+    const entries = readJournal(journalDir)
+    const parsed = res.stdout ? (JSON.parse(res.stdout) as { hookSpecificOutput?: { additionalContext?: string } }) : null
+    return {
+      warned: res.stdout.includes('hookSpecificOutput'),
+      denied: res.stdout.includes('"deny"'),
+      stdout: res.stdout,
+      context: parsed?.hookSpecificOutput?.additionalContext ?? '',
+      status: res.status,
+      entries,
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
   }
 }
 
@@ -101,5 +153,159 @@ describe('wt-git-commit-backtick-guard-hook', () => {
         h.command?.includes('wt-git-commit-backtick-guard-hook.mjs'),
       )
     expect(wired).toBe(true)
+  })
+})
+
+const EMPTY_CLASS = 'empty-commit-claims-delivery'
+
+describe('wt-git-commit-backtick-guard-hook: empty commit that claims delivery', () => {
+  it('WARN: --allow-empty with a double-quoted message naming no marker', () => {
+    const r = runJournaled('git commit --allow-empty -m "feat: ship the new importer"')
+    expect(r.warned).toBe(true)
+    expect(r.denied).toBe(false)
+    expect(r.status).toBe(0)
+    expect(r.context).toContain('--allow-empty')
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({ decision: 'warned', class: EMPTY_CLASS })
+  })
+
+  it('WARN: single-quoted message, and the --message=<text> spelling', () => {
+    expect(runJournaled("git commit --allow-empty -m 'feat: ship the new importer'").warned).toBe(true)
+    expect(runJournaled('git commit --allow-empty --message="feat: ship it"').warned).toBe(true)
+  })
+
+  it('SILENT: a message that names the marker (every marker word, any case)', () => {
+    for (const word of ['marker', 'no code written', 'empty', 'wip', 'checkpoint', 'CI', 'placeholder', 'no-op', 'trigger']) {
+      const r = runJournaled(`git commit --allow-empty -m "${word}: re-run the pipeline"`)
+      expect(r.stdout, word).toBe('')
+      expect(r.entries, word).toHaveLength(0)
+    }
+  })
+
+  it('SILENT: one marker message among several -m arguments', () => {
+    const r = runJournaled('git commit --allow-empty -m "feat: ship it" -m "marker only"')
+    expect(r.stdout).toBe('')
+  })
+
+  it('SILENT: --allow-empty-message is a different flag, and a -F source has no readable message', () => {
+    expect(runJournaled('git commit --allow-empty-message -m "feat: ship it"').stdout).toBe('')
+    expect(runJournaled('git commit --allow-empty -F notes.txt').stdout).toBe('')
+  })
+
+  it('SILENT: a git commit written inside a heredoc body is data', () => {
+    const r = runJournaled(["cat <<'EOF'", 'git commit --allow-empty -m "feat: ship it"', 'EOF'].join('\n'))
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+})
+
+describe('wt-git-commit-backtick-guard-hook: each git commit is judged alone', () => {
+  it.each([
+    'git commit --allow-empty -m "ship it"; git commit -m "marker"',
+    'git commit -m "marker"\ngit commit --allow-empty -m "ship it"',
+    'git commit -m "marker" && git commit --allow-empty -m "ship it"',
+    'git commit --allow-empty -mship-it',
+    'git commit --allow-empty -am "ship it"',
+    'git commit --allow-empty --message "ship it"',
+  ])('WARN: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.entries.map((e) => e.class)).toEqual([EMPTY_CLASS])
+    expect(r.denied).toBe(false)
+  })
+
+  it.each([
+    `echo 'git commit --allow-empty -m "ship it"'`,
+    'printf "%s" "git commit --allow-empty -m ship"',
+    'git commit --allow-empty -mmarker',
+  ])('SILENT: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+
+  it('the notice says the commit MAY record no change, never that it is empty', () => {
+    const r = runJournaled('git commit --allow-empty -m "feat: ship it"')
+    expect(r.context).toContain('may record NO change')
+    expect(r.context).not.toMatch(/commit is EMPTY/i)
+    expect(r.context).toContain('delivery')
+  })
+
+  it('WARN: --message="..." with a backtick raises the backtick hazard', () => {
+    const r = runJournaled('git commit --message="the `thing`"')
+    expect(r.entries.map((e) => e.class)).toEqual(['unescaped-backtick'])
+  })
+})
+
+// Each level is a real shell nesting: single quotes, an inner quote spelled '\''.
+function nestShell(script: string, levels: number): string {
+  let command = script
+  for (let i = 0; i < levels; i += 1) command = `bash -c '${command.replaceAll("'", "'\\''")}'`
+  return command
+}
+
+describe('wt-git-commit-backtick-guard-hook: launchers, reserved words and -c scripts', () => {
+  const SHIP = `git commit --allow-empty -m 'ship it'`
+  it.each([
+    `env ${SHIP}`,
+    `env A=1 ${SHIP}`,
+    `sudo -u root timeout 5 nice -n 1 ${SHIP}`,
+    `setsid nohup ${SHIP}`,
+    `if true; then ${SHIP}; fi`,
+    `bash -c 'git commit --allow-empty -m "ship it"'`,
+    `env A=1 bash -lc 'cd x && git commit --allow-empty -m "ship it"'`,
+    nestShell(SHIP, 3),
+  ])('WARN: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.entries.map((e) => e.class)).toEqual([EMPTY_CLASS])
+    expect(r.denied).toBe(false)
+  })
+
+  it.each([
+    `echo bash -c 'git commit --allow-empty -m "ship it"'`,
+    `bash -c 'git commit --allow-empty -m "marker: no code"'`,
+    `echo env ${SHIP}`,
+    // `command -v` / `-V` looks a name up; it runs nothing.
+    `command -v ${SHIP}`,
+    `command -V ${SHIP}`,
+  ])('SILENT: %s', (command) => {
+    const r = runJournaled(command)
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+
+  it('walks three nested scripts and stops at the fourth', () => {
+    // The pair is the lock: removing the walk (both silent) or the bound (both warn) fails here.
+    expect(runJournaled(nestShell(SHIP, 3)).warned).toBe(true)
+    const r = runJournaled(nestShell(SHIP, 4))
+    expect(r.stdout).toBe('')
+    expect(r.entries).toHaveLength(0)
+  })
+})
+
+describe('wt-git-commit-backtick-guard-hook: empty commit and backtick notices', () => {
+  it('ONE notice carries BOTH warnings when the command has both hazards', () => {
+    const r = runJournaled('git commit --allow-empty -m "ship the `thing` now"')
+    expect(r.stdout.match(/hookSpecificOutput/g)).toHaveLength(1)
+    expect(r.context).toContain('may record NO change')
+    expect(r.context).toContain('contains an unescaped backtick')
+    expect(r.entries.map((e) => e.class).sort()).toEqual([EMPTY_CLASS, 'unescaped-backtick'])
+  })
+
+  it('a backtick-only command still gets just the backtick warning', () => {
+    const r = runJournaled('git commit -m "the default `stretch` applied"')
+    expect(r.context).not.toContain('may record NO change')
+    expect(r.entries.map((e) => e.class)).toEqual(['unescaped-backtick'])
+  })
+
+  it('WT_GUARD_MODE=observe stays silent on stdout for the empty-commit case, journal kept', () => {
+    const r = runJournaled('git commit --allow-empty -m "feat: ship it"', { WT_GUARD_MODE: 'observe' })
+    expect(r.stdout).toBe('')
+    expect(r.entries[0]).toMatchObject({ class: EMPTY_CLASS })
+  })
+
+  it('a subagent gets the notice as context only', () => {
+    const r = runJournaled('git commit --allow-empty -m "feat: ship it"', {}, 'agent-1')
+    expect(r.context).toContain('--allow-empty')
+    expect(r.stdout).not.toContain('permissionDecision')
   })
 })

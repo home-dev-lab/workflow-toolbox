@@ -140,13 +140,26 @@ describe('unambiguous timestamp and epoch literals', () => {
     "'2026-10-25 01:10:59-04:00'",
     '@1792887059',
     '@-1',
-    '@1792887059.123',
-    '@-1.25',
+    "'@1793460687'",
   ])('SILENT: an unambiguous instant %s', (argument) => {
     const r = run(`find . -newermt ${argument}`)
     expect(r.warned).toBe(false)
     expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
+  })
+
+  it.each([
+    '@1792887059.123',
+    '@-1.25',
+    "'@1793460687.3'",
+  ])('WARN: a fractional @epoch literal %s, which some builds such as bfs reject', (argument) => {
+    const r = run(`find . -newermt ${argument}`)
+    expect(r.warned).toBe(true)
+    expect(r.denied).toBe(false)
+    expect(r.status).toBe(0)
+    const context = JSON.parse(r.stdout).hookSpecificOutput.additionalContext
+    expect(context).toContain(`find -newermt "${argument.replace(/'/g, '')}"`)
+    expect(context).toContain('reject a fractional `@epoch` value as well as a natural-language date')
   })
 })
 
@@ -242,6 +255,8 @@ describe('simple-command scope', () => {
     'find . -name "-newermt yesterday"',
     'find . -name safe; echo -newermt yesterday',
     'bfs . -newermt 2026-10-25T01:10:59Z',
+    // `command -v` looks a name up; the shell after it never runs.
+    "command -v bash -c 'find . -newermt yesterday'",
   ])('SILENT: %s', (command) => {
     const r = run(command)
     expect(r.stdout).toBe('')
@@ -338,5 +353,139 @@ describe('hook delivery filters', () => {
     expect(r.stdout).toBe('')
     expect(r.denied).toBe(false)
     expect(r.status).toBe(0)
+  })
+})
+
+describe('find inside command substitutions', () => {
+  it.each([
+    { command: "x=$(find . -newermt '-24 hours')", flagged: '-24 hours' },
+    { command: "for f in $(find . -newermt '-2 days'); do :; done", flagged: '-2 days' },
+    { command: 'export N=$(find . -newermt yesterday | wc -l)', flagged: 'yesterday' },
+    { command: 'echo "$(find . -newermt yesterday)"', flagged: 'yesterday' },
+    { command: 'x="$(find . -newermt "5 minutes ago")"', flagged: '5 minutes ago' },
+    { command: 'echo "it\'s $(find . -newermt yesterday)"', flagged: 'yesterday' },
+    { command: 'echo $(echo $(find . -newermt yesterday))', flagged: 'yesterday' },
+    { command: 'echo $(a $(b $(find . -newermt yesterday)))', flagged: 'yesterday' },
+    { command: 'x=$(cd /tmp && find . -newermt @1793460687.3)', flagged: '@1793460687.3' },
+    { command: `echo "$(printf ')'; find . -newermt yesterday)"`, flagged: 'yesterday' },
+    { command: `echo "$(printf ")"; find . -newermt yesterday)"`, flagged: 'yesterday' },
+    { command: `x=$(printf ')'; find . -newermt yesterday)`, flagged: 'yesterday' },
+  ])('WARN: $command', ({ command, flagged }) => {
+    const r = run(command)
+    expect(r.warned).toBe(true)
+    expect(r.stdout).toContain(`find -newermt \\"${flagged}\\"`)
+    expect(r.denied).toBe(false)
+    expect(r.status).toBe(0)
+  })
+
+  it.each([
+    'x=$(find . -newermt 2026-10-01)',
+    'x=$(find . -newermt 2026-10-01T00:00:00Z)',
+    "x=$(find . -newermt \"$(date -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S%:z)\")",
+    'x=$(find . -newermt "$T")',
+    "echo '$(find . -newermt yesterday)'",
+    'echo safe # $(find . -newermt yesterday)',
+    'x=$(echo "find . -newermt yesterday")',
+  ])('SILENT: %s', (command) => {
+    const r = run(command)
+    expect(r.stdout).toBe('')
+    expect(r.denied).toBe(false)
+    expect(r.status).toBe(0)
+  })
+})
+
+describe('find inside sh, bash and zsh -c scripts', () => {
+  it.each([
+    'bash -c "find . -newermt yesterday"',
+    "sh -c 'find . -newermt yesterday'",
+    'zsh -c "find . -newermt \\"5 minutes ago\\""',
+    "bash -lc 'cd /tmp && find . -newermt yesterday'",
+    "/bin/bash -c 'find . -newermt yesterday'",
+    "bash -o pipefail -c 'find . -newermt yesterday | wc -l'",
+    "bash -e -c -- 'find . -newermt yesterday'",
+    'bash -c "x=\\$(find . -newermt yesterday)"',
+    "x=$(bash -c 'find . -newermt yesterday')",
+  ])('WARN: %s', (command) => {
+    const r = run(command)
+    expect(r.warned).toBe(true)
+    expect(r.stdout).toMatch(/find -newermt \\"(?:yesterday|5 minutes ago)\\"/)
+    expect(r.denied).toBe(false)
+    expect(r.status).toBe(0)
+  })
+
+  it.each([
+    "bash -c 'find . -newermt 2026-10-01'",
+    "bash -c 'find . -newermt \"$T\"'",
+    'bash review.sh -c "find . -newermt yesterday"',
+    "bash -c 'echo \"find . -newermt yesterday\"'",
+    "bash -o 'find . -newermt yesterday' -c true",
+    "echo bash -c 'find . -newermt yesterday'",
+    "printf '%s' bash -c 'find . -newermt yesterday'",
+    "echo then bash -c 'find . -newermt yesterday'",
+  ])('SILENT: %s', (command) => {
+    const r = run(command)
+    expect(r.stdout).toBe('')
+    expect(r.denied).toBe(false)
+    expect(r.status).toBe(0)
+  })
+})
+
+describe('the shell word of a -c script is in command position', () => {
+  it.each([
+    "bash --rcfile /dev/null -c 'find . -newermt yesterday'",
+    "bash --init-file /dev/null -c 'find . -newermt yesterday'",
+    "sudo -u root bash -c 'find . -newermt yesterday'",
+    "timeout 1s bash -c 'find . -newermt yesterday'",
+    "timeout -s KILL 30 bash -c 'find . -newermt yesterday'",
+    "env A=1 nice -n 5 bash -c 'find . -newermt yesterday'",
+    "setsid nohup bash -c 'find . -newermt yesterday'",
+    "if true; then bash -c 'find . -newermt yesterday'; fi",
+    "for f in x; do bash -c 'find . -newermt yesterday'; done",
+    "while false; do :; done; until true; do sh -c 'find . -newermt yesterday'; done",
+    "if false; then :; else bash -c 'find . -newermt yesterday'; fi",
+    "if false; then :; elif bash -c 'find . -newermt yesterday'; then :; fi",
+    "! bash -c 'find . -newermt yesterday'",
+    "{ bash -c 'find . -newermt yesterday'; }",
+    "(bash -c 'find . -newermt yesterday')",
+  ])('WARN: %s', (command) => {
+    const r = run(command)
+    expect(r.warned).toBe(true)
+    expect(r.denied).toBe(false)
+  })
+})
+
+describe('nesting depth bound', () => {
+  const bashChain = (levels: number) => {
+    let script = 'find . -newermt yesterday'
+    for (let level = 0; level < levels; level++) script = `bash -c ${JSON.stringify(script)}`
+    return script
+  }
+
+  it('WARN: a find nested eight -c scripts deep is still examined', () => {
+    const r = run(bashChain(8))
+    expect(r.warned).toBe(true)
+    expect(r.denied).toBe(false)
+  })
+
+  it('stops descending past the depth bound', () => {
+    // The pair is the lock: eight levels warn and nine stay silent in one test, so removing the
+    // descent (both silent) or the bound (both warn) fails here.
+    expect(run(bashChain(8)).warned).toBe(true)
+    const r = run(bashChain(9))
+    expect(r.stdout).toBe('')
+    expect(r.status).toBe(0)
+  })
+
+  it.each([
+    { label: 'balanced substitutions', command: `${'$('.repeat(3000)}find . -newermt 2026-10-01${')'.repeat(3000)}` },
+    { label: 'unclosed quoted substitutions', command: `find . -newermt 2026-10-01 ${'"$('.repeat(20000)}` },
+    { label: 'quoted substitutions with no closing quote', command: `find . -newermt 2026-10-01 ${'"$(a)'.repeat(20000)}` },
+    { label: 'deep -c scripts', command: bashChain(14) },
+  ])('finishes fast on pathological $label', ({ command }) => {
+    const started = performance.now()
+    const r = run(command)
+    expect(performance.now() - started).toBeLessThan(5000)
+    expect(r.status).toBe(0)
+    expect(r.denied).toBe(false)
   })
 })
