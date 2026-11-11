@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error -- plain .mjs host module without type declarations
+import { nativeDrivePath } from '../../../../plugin/bin/lib/host/live-config-tree-host.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-live-config-tree-guard-hook.mjs')
@@ -144,6 +146,69 @@ function registerLiveModeCases() {
 describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (default warn posture)', () => {
   registerLiveWarningCases()
   registerLiveModeCases()
+})
+
+/** A git rules fixture under a directory spelled `<parent>` in the command: on POSIX `a\b` is one
+ *  directory literally named so, on Windows it is `a` then `b`. */
+function spelledFixture(tag: string, parent: string) {
+  const root = mkdtempSync(join(tmpdir(), `wt-live-tree-spelled-${tag}-`))
+  roots.push(root)
+  mkdirSync(join(root, parent, '.claude', 'rules', '.git'), { recursive: true })
+  const home = join(root, 'home')
+  return { root, env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
+}
+
+const WINDOWS_SEAM = { WT_LIVE_CONFIG_TREE_GUARD_PLATFORM: 'win32' }
+
+function registerWindowsSpellingCases() {
+  it.skipIf(process.platform === 'win32')('reads an unquoted backslash as a POSIX shell does: an escape', () => {
+    const f = spelledFixture('posix-escape', 'a\\b')
+    const r = runHook(`git -C ${f.root}/a\\b/.claude/rules switch x`, f.root, f.env)
+    expect(r.systemMessage).toBeNull()
+  })
+
+  it('reads an unquoted backslash before a path character as a Windows separator', () => {
+    const f = spelledFixture('win-separator', 'a\\b')
+    const r = runHook(`git -C ${f.root}/a\\b/.claude/rules switch x`, f.root, { ...f.env, ...WINDOWS_SEAM })
+    expect(r.systemMessage, 'a Windows path spelled without quotes must not go silent').toContain('LIVE CONFIG TREE')
+  })
+
+  it('denies that spelling in deny mode', () => {
+    const f = spelledFixture('win-deny', 'a\\b')
+    const env = { ...f.env, ...WINDOWS_SEAM, WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny' }
+    expect(runHook(`git -C ${f.root}/a\\b/.claude/rules reset --hard`, f.root, env).decision).toBe('deny')
+  })
+
+  it('reads the same spelling inside a shell -c script', () => {
+    const f = spelledFixture('win-script', 'a\\b')
+    const r = runHook(`bash -c "git -C ${f.root}/a\\b/.claude/rules reset --hard"`, f.root, { ...f.env, ...WINDOWS_SEAM })
+    expect(r.systemMessage).toContain('LIVE CONFIG TREE')
+  })
+
+  it('keeps a backslash before a blank an escape on Windows', () => {
+    const f = spelledFixture('win-blank', 'a b')
+    const r = runHook(`git -C ${f.root}/a\\ b/.claude/rules switch x`, f.root, { ...f.env, ...WINDOWS_SEAM })
+    expect(r.systemMessage).toContain('LIVE CONFIG TREE')
+  })
+
+  it.runIf(process.platform === 'win32')('resolves a Git Bash drive path (/c/...) to its drive', () => {
+    const f = spelledFixture('msys', 'm')
+    const native = join(f.root, 'm', '.claude', 'rules')
+    const msys = `/${native[0].toLowerCase()}${native.slice(2).replace(/\\/g, '/')}`
+    expect(runHook(`git -C ${msys} switch x`, f.root, f.env).systemMessage).toContain('LIVE CONFIG TREE')
+  })
+}
+
+describe('wt-live-config-tree-guard-hook — Windows path spellings', () => {
+  registerWindowsSpellingCases()
+
+  it('maps a Git Bash drive path to a Windows drive only on Windows', () => {
+    expect(nativeDrivePath('/c/Users/x/.claude/rules', 'win32')).toBe('C:/Users/x/.claude/rules')
+    expect(nativeDrivePath('/cygdrive/d/w', 'win32')).toBe('D:/w')
+    expect(nativeDrivePath('/c', 'win32')).toBe('C:/')
+    expect(nativeDrivePath('/cc/x', 'win32')).toBe('/cc/x')
+    expect(nativeDrivePath('/c/Users/x', 'linux')).toBe('/c/Users/x')
+  })
 })
 
 describe('wt-live-config-tree-guard-hook — does NOT block legitimate work', () => {

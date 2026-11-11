@@ -48,6 +48,7 @@ import { existsSync, readFileSync, writeSync } from 'node:fs'
 import { isAbsolute, posix, resolve, sep } from 'node:path'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 import { homeDirectory } from './lib/host/home-directory.mjs'
+import { liveConfigTreeGuardPlatform, nativeDrivePath } from './lib/host/live-config-tree-host.mjs'
 
 const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
 
@@ -105,6 +106,13 @@ const MAX_PATH_CHARS = 4096
 const FS_ROOT = resolve(sep)
 // The shell's escape character (shell syntax, not a path separator).
 const SHELL_ESCAPE = '\\'
+// The platform whose path spelling the commands use.
+const PATH_PLATFORM = liveConfigTreeGuardPlatform()
+// On Windows an unquoted backslash before a path character is read as a separator. Git Bash drops
+// it, so such a command cannot reach the directory either way; reading it as a separator keeps
+// the verdict on the warning side for a Windows path spelled without quotes.
+const WINDOWS_BACKSLASH = PATH_PLATFORM === 'win32'
+const PATH_CHARACTER = /[\w.~-]/
 const CHECKOUT_SWITCHES = /^(?:-[bB]|--orphan|--detach|-t$|--track)/
 const CHECKOUT_PATHS_ONLY = /^(?:-p$|--patch$|--pathspec-from-file)/
 const SHORT_FLAGS = /^-[a-zA-Z]+$/
@@ -127,6 +135,14 @@ function quotedPiece(text, i) {
   return { piece: text.slice(i + 1, end).replace(/\\([\\"$`\n])/g, '$1'), next: end + 1 }
 }
 
+/** The text an unquoted backslash at `text[i]` leaves in the word. A backslash-newline is a line
+ *  continuation; any other escaped character is literal, except a Windows path separator. */
+function escapedText(text, i) {
+  const next = text[i + 1]
+  if (next === undefined || next === '\n') return ''
+  return WINDOWS_BACKSLASH && PATH_CHARACTER.test(next) ? SHELL_ESCAPE + next : next
+}
+
 /** One shell WORD read from `text` at offset `at`, as the shell hands it to git: quotes removed,
  *  adjacent quoted and bare pieces joined, whitespace inside quotes kept. */
 function lexWord(text, at) {
@@ -138,8 +154,7 @@ function lexWord(text, at) {
       word += piece
       i = next
     } else if (text[i] === SHELL_ESCAPE) {
-      // A backslash-newline is a line continuation; any other escaped character is literal.
-      if (text[i + 1] !== '\n') word += text[i + 1] ?? ''
+      word += escapedText(text, i)
       i += 2
     } else word += text[i++]
   }
@@ -323,9 +338,10 @@ function segmentCd(seg) {
   return cd ? (cd[2] ?? cd[3] ?? cd[4]) : null
 }
 
-/** `~` and `~/x` spelled against the account's home directory; anything else unchanged. */
+/** `~` and `~/x` spelled against the account's home directory, and a Git Bash drive path mapped to
+ *  its Windows drive; anything else unchanged. */
 function expandTilde(raw) {
-  return raw.startsWith('~') ? homeDirectory() + raw.slice(1) : raw
+  return raw.startsWith('~') ? homeDirectory() + raw.slice(1) : nativeDrivePath(raw, PATH_PLATFORM)
 }
 
 function resolveTarget(raw, cwd) {
@@ -445,8 +461,7 @@ function shellStep(script, i, state) {
   if (ch === "'" || ch === '"') return quotedSpan(script, i, state)
   if (ch === '$' && script[i + 1] === "'") return i + 1 // ANSI-C quoting: the body is kept raw
   if (ch === SHELL_ESCAPE) {
-    // A backslash-newline is a line continuation; any other escaped character is literal.
-    if (script[i + 1] !== '\n') appendWord(state, script[i + 1] ?? '')
+    appendWord(state, escapedText(script, i))
     return i + 2
   }
   plainChar(ch, state)
