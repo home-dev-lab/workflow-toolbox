@@ -213,7 +213,9 @@ const cases: Array<{
   {
     hook: 'wt-missing-package-script-guard-hook.mjs',
     make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: REPO_ROOT, tool_input: { command: 'pnpm definitely-missing-script' } } }),
-    contains: '',
+    // The finding reaches the model as context (no permission decision); observe mode suppresses it.
+    // Changed from journal-only in d6b298287, for parity with the retired private copy of this guard.
+    contains: 'is not defined in the package.json',
   },
   {
     hook: 'wt-pgrep-env-dump-guard-hook.mjs',
