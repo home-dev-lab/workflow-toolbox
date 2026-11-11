@@ -5,6 +5,59 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
+  `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
+  hook previews it only through an active pinned install. Install-time `--owner-keys` and
+  `--exception-state` flags fix the pin and attestation inbox/claim locations independently
+  of push-time HOME; older installs must be reinstalled to support exceptions. Setup uses
+  `wt-signature-exception.mjs pin --repo <repo> --attestation <file>` and is trust-on-first-use
+  (TOFU), not an independently owner-confirmed key fingerprint; key rotation requires
+  deliberately deleting and repinning. Only relayed answers are visible. New remote refs
+  now undergo signature checks against advertised object ids, including when tracking refs
+  are stale. Refusals read GitHub's branch rules and classic signature protection, reporting
+  a requirement or named uncertainty without predicting bypass rights or push success.
+- Warn-only stray tool-call markup guard for Write, Edit and MultiEdit, plus stored
+  commit messages after Bash invokes git commit. Closed fenced examples are exempt;
+  warnings include line-specific cleanup instructions and content-free journal evidence.
+  The guard journal now keeps `toolUseId` evidence values up to 128 characters and `kinds` up
+  to 64 for every guard using those keys; `wt-suite-lock-bypass-guard-hook.mjs` already
+  recorded `toolUseId` and was truncating it at 24 characters, which broke its transcript lookup.
+
+### Fixed
+
+- `wt-lane` no longer holds the machine-wide launch admission for up to 15 minutes when the lane's
+  model command never runs under a process named `opencode` or `codex` (a Node script, for example).
+  Once the lane's process family has shown no such process for 30 seconds, the launcher releases
+  admission, leaves the lane running, and warns that this lane is not counted against the lane cap.
+  A counted lane is now confirmed on two consecutive checks before admission is released.
+
+- A `wt-rules-on-demand` refusal now states on its first line that only that call was
+  refused, names its tool and description when present, says that the other calls sent in
+  the same message ran normally unless their own result is also a refusal, and asks to
+  re-send exactly the refused calls.
+- OpenCode lane sandboxes withhold global and OPENCODE_CONFIG credential-file references and hard-link aliases, sanitize missing references, and refuse unsafe environment substitutions, mount exposure or selected-provider credentials.
+- Four Bash guards now catch cases they used to miss. The find -newermt guard checks a `find` inside `$(...)` or inside a `sh -c`/`bash -c`/`zsh -c` script, and warns on a fractional `@epoch`. The git-commit backtick guard warns on an `--allow-empty` commit whose message does not say it is a marker. The missing-package-script guard now prints a notice when a `pnpm`/`npm` script it names is missing (enforce mode; `WT_GUARD_MODE=observe` keeps it silent). The notice is context for the model; it was journal-only, and it never approves a call. The live-config-tree guard ignores an empty `-C` target, no longer slows down on long runs of spaces, and points to the Edit/Write tools when the git text is data.
+- The live-config-tree guard now refuses a tree-changing git command hidden behind global options (`-c`, `--no-pager`, `--git-dir`, `--work-tree`, a chain of `-C`), and `checkout --detach` and the other option-led checkouts that switch. It also follows the `cd`s inside a `bash -c` script, and reads a long command in linear time. The missing-package-script guard reads a literal private-use character, a word built from quoted and bare pieces, and escaped quotes inside a `-c` script correctly. The find -newermt guard keeps reading a substitution past a quoted `)`, and no longer warns on `echo bash -c '…'`. The empty-commit warning judges each `git commit` on its own, reads `-mmsg` and `--message=msg`, and no longer claims the commit is empty.
+- On Windows, the live-config-tree guard catches the live rules directory spelled as a Git Bash
+  drive path (`/c/Users/…/.claude/rules`). Such a path used to resolve on the current drive
+  (`C:\c\Users\…`), so the guard stayed silent. An unquoted backslash is read as Git Bash reads it,
+  an escape: `C:\Users\x` names `C:Usersx`, and `.cl\aude` names `.claude`.
+- A process that exits while `/proc` is being listed no longer fails the whole listing. The lane-launch
+  count (`lane count NOT MEASURED: ENOENT`), the idle reader, the watcher-orphan check and the wake-floor
+  scan now list plain pid names and read a vanished pid as gone, while a listing that genuinely cannot be
+  read still reports unknown or unavailable.
+
+- The arc watcher's credential scrubber no longer stalls on a long line: its two patterns
+  ran in super-linear time (a 50 000-character line took over a second each) and now run
+  in linear time, redacting exactly what they redacted before.
+- The critic and delegate return contract now reads the same in every place that states it: the pilot template chooses the final-report channel by `Write` (never by `SendMessage`), the delegation-chain skill restricts its foreground exception to an anonymous call and gives the file-report completion line as `REPORT WRITTEN: <verdict>` like the templates, and the content test now fails on an inverted contract, a deleted persistence clause, a removed SendMessage fallback, or a launch-agents copy that drifts from its template.
+- Routed findings reconcile ambiguous card-creation answers by exact title and a unique per-call provenance section, never adopt quoted copies or one of several matches, retain recovered card identities, and report post-creation recording failures without claiming creation was refused.
+- The pilot and pilot-orchestrator templates, and the delegation-chain skill, no longer tell a read-only critic or verifier (a type with no Write tool) to write a report file, which the spawn-capability guard refuses. Such a type is now spawned anonymously in the foreground and its final message is the report, which the spawner saves; the file-report contract stays for named spawns and types that have Write.
+- The suite-lock lane runner honours an explicit `--light` launcher prefix, preserves the real command in queued tickets, and refuses unsupported or repeated launcher flags before taking the lock.
+- The arc watch no longer reports a sub-agent as stale when the harness has marked it finished (its `finished` flag was written after the last transcript record), even if its last message did not end in a clean end-of-turn. An agent that was resumed after finishing still gets reported.
+
 ## [0.198.0] - 2026-11-08
 
 ### Added

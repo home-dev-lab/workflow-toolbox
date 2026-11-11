@@ -59,19 +59,18 @@ export function detectOrphanWatchers({ procRoot = DEFAULT_PROC_ROOT, platform = 
   let entries
   try {
     if (!procfs.rootExists()) return unavailable
-    entries = procfs.listProcesses({ withFileTypes: true })
+    entries = procfs.listProcessIds()
   } catch (error) {
     return { status: 'unavailable', reason: procReadFailureReason(error), retryable: true, orphans, reports }
   }
-  for (const entry of entries) {
-    collectOrphanWatcher(entry, procRoot, selfPid, orphans, reports)
+  for (const name of entries) {
+    collectOrphanWatcher(name, procRoot, selfPid, orphans, reports)
   }
   return { status: 'known', orphans, reports }
 }
 
-function collectOrphanWatcher(entry, procRoot, selfPid, orphans, reports) {
-  if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) return
-  const pid = Number(entry.name)
+function collectOrphanWatcher(name, procRoot, selfPid, orphans, reports) {
+  const pid = Number(name)
   if (pid === selfPid) return
   const row = inspectWatcher(procRoot, pid)
   if (!row) return

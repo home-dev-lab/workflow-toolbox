@@ -17,7 +17,7 @@ import { acquireSuiteLock as acquireAmbientSuiteLock, formatSuiteLockHolder, has
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
-const RUNNER = join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
+const RUNNER = process.env.WT_SUITE_LOCK_RUNNER_TEST_PATH ?? join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
 const roots: string[] = []
 // Same probe as wt-lane-launcher.test.ts: the ubuntu-latest GitHub runner in cross-os run
 // 36238137992 had no working zsh, so an unconditional spawn returned status: null (spawn error,
@@ -823,6 +823,10 @@ function registerCliLiteralCommands() {
 }
 
 describe('wt-suite-lock-run runner', () => {
+  registerRunnerPrefixes()
+  registerRunnerQueueClasses()
+  registerRunnerFlagRefusals()
+
   it('runs the given argv verbatim under the lock', () => {
     const root = tempRoot('runner-verbatim')
     const result = runner([process.execPath, '-e', 'process.stdout.write("ran")'], root)
@@ -867,6 +871,82 @@ describe('wt-suite-lock-run runner', () => {
     await new Promise((resolve) => child.once('exit', resolve))
   })
 })
+
+function registerRunnerPrefixes() {
+  it.each([{ prefix: ['run', '--light', '--'] }, { prefix: ['--light', '--'] }])('honours the explicit light launcher prefix $prefix', ({ prefix }) => {
+    const result = runner([...prefix, process.execPath, '-e', 'process.stdout.write("ran")'], tempRoot('runner-light'))
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('ran')
+  })
+
+  it('keeps a real command containing a later separator verbatim', () => {
+    const command = [process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', '--', 'foo']
+    const result = runner(command, tempRoot('runner-later-separator'))
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('["foo"]')
+  })
+}
+
+async function queuedRunner(prefix: string[], light: boolean) {
+  const root = tempRoot('runner-queue-class')
+  const holder = await acquireSuiteLock({ root })
+  const command = [process.execPath, '-e', 'process.stdout.write("ran")']
+  const child = spawnHeld(process.execPath, [RUNNER, ...prefix, ...command], {
+    env: suiteLockEnv(root, { PATH: hermeticPath([]) }), stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''; let stdout = ''
+  child.stderr!.on('data', (chunk: Buffer) => { stderr += String(chunk) })
+  child.stdout!.on('data', (chunk: Buffer) => { stdout += String(chunk) })
+  const done = new Promise<number | null>((resolve) => child.once('exit', resolve))
+  try {
+    await waitFor(() => queueRecords(root).length === 1)
+    const status = cli(['status', '--json'], root)
+    expect(status.status, status.stderr).toBe(0)
+    const ticket = JSON.parse(status.stdout).queue[0]
+    expect(ticket.light, light ? 'an explicit light command must queue light' : 'a full command must remain exclusive').toBe(light)
+    const record = JSON.parse(readFileSync(join(root, 'queue.d', queueRecords(root)[0]!), 'utf8'))
+    expect(record.argv).toEqual(command)
+  } finally {
+    releaseSuiteLock(holder)
+    await done
+    await stopHeld(child)
+  }
+  expect(await done, stderr).toBe(0)
+  expect(stdout).toBe('ran')
+}
+
+function registerRunnerQueueClasses() {
+  it.each([{ prefix: ['run', '--light', '--'] }, { prefix: ['--light', '--'] }])('queues an explicit light launcher prefix $prefix with the real command argv', async ({ prefix }) => {
+    await queuedRunner(prefix, true)
+  })
+
+  it.each([{ prefix: ['run', '--'] }, { prefix: [] }])('keeps a full command exclusive with prefix $prefix', async ({ prefix }) => {
+    await queuedRunner(prefix, false)
+  })
+}
+
+function registerRunnerFlagRefusals() {
+  it.each([
+    { prefix: ['run', '--priority', 'P0', '--'], flag: '--priority' },
+    { prefix: ['run', '--light', '--light', '--'], flag: '--light' },
+    { prefix: ['--wait-s', '--'], flag: '--wait-s' },
+    { prefix: ['run', '--static', '--'], flag: '--static' },
+    { prefix: ['run', '-x', '--'], flag: '-x' },
+    { prefix: ['run', '--light', '-x', '--'], flag: '-x' },
+    { prefix: ['run', 'task', '--verbose', '--'], flag: 'task' },
+  ])('refuses unsupported launcher flags before taking the lock: $prefix', ({ prefix, flag }) => {
+    const root = tempRoot('runner-refused-flag')
+    const marker = join(root, 'ran')
+    const result = runner([...prefix, process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain(`unsupported flag: ${flag}`)
+    expect(result.stderr).toContain('accepted forms: <command> [args...], run [--light] -- <command> [args...], [--light] -- <command> [args...]')
+    expect(result.stderr.trim().split('\n')).toHaveLength(1)
+    expect(existsSync(marker)).toBe(false)
+    expect(existsSync(join(root, 'lock.d'))).toBe(false)
+    expect(existsSync(join(root, 'queue.d'))).toBe(false)
+  })
+}
 
 describe('spawn shell decision (Windows shims only)', () => {
   // The 0.182.0 tag run went red on windows-latest with `expected 1 to be +0` on both CLI run tests:

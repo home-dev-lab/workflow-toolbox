@@ -190,7 +190,7 @@ function registerLinuxIdentityContracts() {
 
     expect(readLinuxProcProcesses({
       readFile,
-      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      readDirectory: () => ['42'],
       observedAt: 20_000,
     })).toEqual({ processes: [], unknownPids: [42] })
   })
@@ -203,7 +203,7 @@ function registerLinuxIdentityContracts() {
 
     expect(readLinuxProcProcesses({
       readFile,
-      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      readDirectory: () => ['42'],
       observedAt: 20_000,
     })).toEqual({ processes: [], unknownPids: [42] })
   })
@@ -226,10 +226,39 @@ describe('Linux process CPU counters', () => {
         if (file.endsWith('/stat')) return procStat(42, 'model (worker)', 100, ++reads === 1 ? '0' : user, reads === 1 ? '0' : system)
         return 'model\0'
       },
-      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      readDirectory: () => ['42'],
       observedAt: 20_000,
     })
     expect(snapshot.processes).toEqual([expect.objectContaining({ pid: 42, startIdentity: 100, command: 'model', cpuTicks })])
+  })
+})
+
+// Mimics Node on a /proc that reports entries of unknown type: asking for Dirent types lstats
+// every entry, so one pid that exits mid-scan fails the whole listing.
+function churnedProcListing(root = '/proc') {
+  return (dir: string, options?: { withFileTypes?: boolean }) => {
+    expect(dir).toBe(root)
+    if (options?.withFileTypes) throw Object.assign(new Error("ENOENT: no such file or directory, lstat '/proc/77'"), { code: 'ENOENT' })
+    return ['1', '77', 'self', 'uptime']
+  }
+}
+
+describe('Linux process listing under churn', () => {
+  const readFile = (file: string) => {
+    if (file === '/proc/uptime') return '10 1\n'
+    if (file.startsWith('/proc/77/')) throw Object.assign(new Error('gone'), { code: 'ENOENT' })
+    if (file.endsWith('/stat')) return procStat(1, 'init', 100)
+    return 'init\0'
+  }
+  it('reads a pid that exits during the launch-path scan as gone', () => {
+    const snapshot = readLinuxProcProcesses({ readFile, readDirectory: churnedProcListing(), observedAt: 20_000 })
+    expect(snapshot.processes.map((row: { pid: number }) => row.pid)).toEqual([1])
+    expect(snapshot.unknownPids).toEqual([])
+  })
+  it('reads a pid that exits during the idle scan as gone', () => {
+    const snapshot = readLinuxIdleProcProcesses({ readFile, readDirectory: churnedProcListing(), observedAt: 20_000, readLink: () => String(process.pid) })
+    expect(snapshot.processes.map((row: { pid: number }) => row.pid)).toEqual([1])
+    expect(snapshot.unknownPids).toEqual([])
   })
 })
 

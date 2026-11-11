@@ -20,6 +20,13 @@ function procfsRootExists(exists, stat) {
   }
 }
 
+// Plain names only: with `withFileTypes` Node lstats every entry to fill in its type, and a
+// process that exits mid-scan fails the whole listing with ENOENT. Numeric names in the
+// root are always pid directories, so no type is needed. A listing failure still throws.
+export function procPidNames(readdir, root = DEFAULT_PROC_ROOT) {
+  return readdir(root).filter((name) => /^\d+$/.test(name))
+}
+
 // The seam is below path construction: injected readers see the same paths and arguments
 // as the real filesystem. Errors stay intact so a caller can distinguish exit races from
 // unreadable evidence. No operation substitutes an empty listing or zero for unavailable.
@@ -36,6 +43,7 @@ export function createProcfs({
     available: platform === 'linux',
     rootExists: () => procfsRootExists(() => invoke(exists, [], []), () => invoke(stat, [], [])),
     listProcesses: (...args) => invoke(readdir, [], args),
+    listProcessIds: () => invoke((dir) => procPidNames(readdir, dir), [], []),
     processDirectoryStat: (pid, ...args) => invoke(stat, [String(pid)], args),
     readCommandLine: (pid, ...args) => invoke(readFile, [String(pid), 'cmdline'], args),
     readProcessStat: (pid, ...args) => invoke(readFile, [String(pid), 'stat'], args),

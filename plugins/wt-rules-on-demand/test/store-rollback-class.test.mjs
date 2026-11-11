@@ -8,9 +8,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { copyFile, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock, HOST_STORE_LIMIT, sandboxRoot } from './store-host-fake.mjs';
+import { readerTotals, exhaustedBudgetClock, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_ARCHIVE } from '../hooks/store-budget.js';
 import { readStoreArchives, withArchivedSessions } from '../scripts/store-archives.mjs';
+import { hostStore, hookFixture, HOST_STORE_LIMIT, assertSmallStoreFixture } from '../test-support/small-store-hooks.mjs';
 
 const overBudget = '(?:[a]{1024}){4}b';
 const promptRule = `---\non-demand:\n  triggers:\n    - kind: 'prompt'\n      regex: '${overBudget}'\n      before-first-act: 'false'\n  compliance:\n    kind: 'none'\n    reason: 'fixture'\n---\nBudget rule body.\n`;
@@ -152,3 +153,5 @@ test('L4: same-millisecond actions with forced reloads lose no deliveries, even 
   clock = Date.parse(AT);
   await checkSequences(t, true);
 });
+
+test('the scaled matrix fixture retains every row and forces eviction into bounded multipart archives', assertSmallStoreFixture);

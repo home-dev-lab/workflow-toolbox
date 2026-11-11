@@ -594,13 +594,22 @@ worktree/commits) before concluding anything died. A failed/idle/unreachable-by-
 describes a TURN or a routing gap, not the agent's existence, and a premature respawn into the
 same worktree corrupts it under a live writer.
 
-Every pilot/verifier brief you write MUST say: "write your full report to
-`<REPORT_DIR>/<cardId>-report.md`; your final message is ONE line: REPORT WRITTEN: <verdict>".
-**Keep `report` at the END of the basename, never the start** — the CLI hard-blocks a
-sub-agent's `Write` when a basename starts with `report`, `summary`, `findings`, or `analysis`
-(case-insensitive), so `report-<cardId>.md` would silently fail while `<cardId>-report.md`
-succeeds. You read the files; you never depend on final-message routing. Mid-arc escalations
-(SendMessage addressed to you by name) do reach you and wake you.
+Every pilot brief you write, and every brief for a verifier type that has Write, MUST say:
+"write your full report to `<REPORT_DIR>/<cardId>-report.md`; your final message is ONE line:
+REPORT WRITTEN: <verdict>". **Keep `report` at the END of the basename, never the start** — the
+CLI hard-blocks a sub-agent's `Write` when a basename starts with `report`, `summary`,
+`findings`, or `analysis` (case-insensitive), so `report-<cardId>.md` would silently fail while
+`<cardId>-report.md` succeeds. You read the files; you never depend on final-message routing.
+Mid-arc escalations (SendMessage addressed to you by name) do reach you and wake you.
+
+A verifier type whose allow-list has no Write (the shipped `wt-reviewer` and `leaf-readonly`, or
+any type declaring `tools: Read, Grep, Glob`) cannot comply with that contract, and the plugin's
+spawn-capability guard refuses a brief that asks it to. Spawn it anonymously (no `name`) and in
+the foreground (pass `run_in_background: false`; agents run in the background by default): the Agent call hands its final message back to you as
+the tool result, so that final message is the report. The brief asks, positively, for the full
+report as its final message with nothing after it, and carries no file-report marker line and no
+phrase about writing or saving to a path, even negated. Save the returned report yourself under
+`REPORT_DIR` before you act on it.
 
 ## Liveness file — the arc watcher's third input
 

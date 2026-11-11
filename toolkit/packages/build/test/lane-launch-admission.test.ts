@@ -15,6 +15,8 @@ const PLATFORMS = ['linux', 'darwin', 'win32'] as const
 const load = () => import('../../../../plugin/bin/lib/host/lane-launch-admission.mjs')
 // @ts-expect-error runtime .mjs module
 const launcher = () => import('../../../../plugin/bin/wt-lane.mjs')
+// @ts-expect-error runtime .mjs module
+const adapter = () => import('../../../../plugin/bin/lib/host/adapter.mjs')
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'lane-admission-'))
   roots.push(root)
@@ -331,6 +333,215 @@ it.skipIf(process.platform === 'win32')('reclaims the claim after an uncatchable
 })
 
 type Lease = { trackWorker: (pid: number, verify?: () => boolean) => void, waitUntilVisible: (readPid: () => number | null) => Promise<void> }
+
+type GracePoll = { child?: number | null, pids?: number[], excluded?: { pid: number }[], time?: number }
+const UNCOUNTED_WARNING = 'wt-lane: lane child pid 41 is not countable: no opencode/codex process in its family for 5s; admission released; this lane is NOT counted against the cap of 16'
+
+async function graceAdmission(observe: (poll: number) => GracePoll, concurrent = false, visibilityMs = 1_000_000,
+  behavior: { repeat?: boolean, throwingWarn?: boolean, graceMs?: number } = {}) {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const messages: string[] = []
+  const stopped: number[] = []
+  let poll = 0
+  let reads = 0
+  let launches = 0
+  let now = 0
+  let sample: GracePoll = {}
+  const options = { lockPath, clock: () => now, visibilityMs, uncountedGraceMs: behavior.graceMs ?? 5_000, pollMs: 0,
+    workerFinished: () => false, warn: (line: string) => { messages.push(line); if (behavior.throwingWarn) throw Error('warning failed') },
+    stopWorker: (pid: number) => { stopped.push(pid); return { status: 'ended' } },
+    readProcesses: () => ({ processes: [{ pid: 43, ppid: 42 }, { pid: 42, ppid: 41 }, { pid: 41, ppid: 40 }] }),
+    counter: () => {
+      if (launches) {
+        sample = observe(++poll)
+        now = sample.time ?? (poll > 20 ? 2_000_000 : poll * 1_000)
+      }
+      return { state: 'ok', count: concurrent ? 15 + Number(Boolean(sample.pids?.includes(43))) : 3,
+        pids: sample.pids ?? [900, 901, 902], excluded: sample.excluded ?? [] }
+    } }
+  const launch = async (lease: Lease) => {
+    launches++
+    lease.trackWorker(40, () => true)
+    await lease.waitUntilVisible(() => { reads++; return sample.child === undefined ? 41 : sample.child })
+    if (behavior.repeat) await lease.waitUntilVisible(() => { reads++; return 41 })
+    return 0
+  }
+  const first = withLaneLaunchAdmission(launch, options).catch((error: Error) => error.message)
+  const results = await Promise.all(concurrent ? [first, withLaneLaunchAdmission(launch, options)] : [first])
+  expect(existsSync(lockPath), 'every admission path must release its private claim').toBe(false)
+  return { results, messages, stopped, poll, reads, launches, now }
+}
+
+it('uncounted grace: releases an unnamed family promptly with one full warning and no worker stop', async () => {
+  const result = await graceAdmission(() => ({}))
+  expect(result.results, 'an uncountable live child must be admitted instead of timing out').toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'readPid must be called once per visibility poll').toBe(result.poll)
+  expect(result.now, 'the grace is measured from first sighting, not the visibility deadline').toBe(6_000)
+})
+
+it('uncounted grace: unnamed polls followed by a stable bwrap descendant release silently within grace', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll >= 3 ? [43] : [] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'the same descendant must be counted on two consecutive polls').toBe(4)
+})
+
+it('uncounted grace: a child never published still reaches the visibility timeout', async () => {
+  const result = await graceAdmission(() => ({ child: null }))
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+  expect(result.now).toBeGreaterThan(5_000)
+})
+
+it.each([41, 42])('uncounted grace: named but lock-excluded family pid %i retains the existing timeout', async (pid) => {
+  const result = await graceAdmission(() => ({ pids: [], excluded: [{ pid }] }))
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+})
+
+it('uncounted grace: a late child receives its full grace past the original visibility deadline', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 1 ? null : 41, time: 997_000 + poll * 1_000 }))
+  expect(result.results, 'first child publication must extend a nearly expired deadline').toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.now).toBe(1_004_000)
+})
+
+it('uncounted grace: grace at least as long as visibility preserves the explicit deadline without warning', async () => {
+  for (const visibilityMs of [5_000, 4_000]) {
+    const result = await graceAdmission((poll) => ({ child: poll < 3 ? null : 41 }), false, visibilityMs)
+    expect(result.results).toEqual([expect.stringContaining(`new lane was not visible to the counter within ${visibilityMs}ms`)])
+    expect(result.messages).toEqual([])
+    expect(result.stopped).toEqual([40])
+    expect(result.now).toBe(visibilityMs)
+  }
+})
+
+it.each([41, 42])('uncounted grace: a family pid %i named for one poll cannot silently release admission', async (pid) => {
+  const result = await graceAdmission((poll) => ({ pids: poll === 2 ? [pid] : [] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages, 'a transient process name must not hide an uncountable lane').toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(8)
+})
+
+it('uncounted grace: preflight longer than grace does not start the child grace early', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll < 8 ? null : 41, pids: poll >= 9 ? [43] : [] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'null child polls cannot consume the grace or confirmation').toBe(10)
+})
+
+it('uncounted grace: two launchers retain the cap while a delayed lane becomes counted within grace', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll >= 3 ? [43] : [] }), true)
+  expect(result.results.sort()).toEqual([0, 1])
+  expect(result.launches).toBe(1)
+  expect(result.messages).toEqual(['wt-lane: Refused: 16 lanes live, cap 16; wait for a lane to exit, then retry the same wt-lane command'])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(4)
+})
+
+it('uncounted grace: alternating named descendants never confirm the same pid twice', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll % 2 ? [42] : [43] }))
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+})
+
+it('uncounted grace: a replacement child gets its own full grace and warning pid', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 1 ? 41 : 42, time: poll === 1 ? 1_000 : 4_000 + poll * 1_000 }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING.replace('pid 41', 'pid 42')])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(result.poll)
+  expect(result.now, 'a replacement cannot inherit the old child grace').toBe(11_000)
+})
+
+it('uncounted grace: a stable counted descendant confirms while the direct child alternates names', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll % 2 ? [41, 42] : [42] }))
+  expect(result.results, 'the stable descendant must remain in every confirmation set').toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(2)
+})
+
+it('uncounted grace: a first counted observation at the deadline gets one confirming poll', async () => {
+  const result = await graceAdmission((poll) => poll === 1 ? { time: 0, pids: [], excluded: [{ pid: 42 }] }
+    : { pids: [42], time: 1_000_000 + (poll - 2) * 25 })
+  expect(result.results, 'a healthy lane first counted at expiry must have a confirmation poll').toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(3)
+})
+
+it('uncounted grace: an unconfirmed deadline observation gets exactly one extra poll then timeout', async () => {
+  const result = await graceAdmission((poll) => poll === 1 ? { time: 0, pids: [], excluded: [{ pid: 42 }] }
+    : { pids: poll < 5 ? [poll % 2 ? 42 : 43] : [], excluded: [{ pid: 42 }], time: 1_000_000 + (poll - 2) * 25 })
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+  expect(result.reads, 'changing counted pids cannot renew the confirmation allowance').toBe(3)
+})
+
+it.each(['counted', 'excluded'])('uncounted grace: recent %s evidence resets the continuous unnamed grace', async (kind) => {
+  const result = await graceAdmission((poll) => {
+    if (poll === 1) return { time: 0, pids: [] }
+    if (poll === 2) return { time: 29_990, pids: kind === 'counted' ? [42] : [], excluded: kind === 'excluded' ? [{ pid: 42 }] : [] }
+    if (poll === 3) return { time: 30_020, pids: [] }
+    return { time: 30_030 + (poll - 4) * 25, pids: [42] }
+  }, false, 1_000_000, { graceMs: 30_000 })
+  expect(result.results).toEqual([0])
+  expect(result.messages, 'one unnamed poll after recent named evidence cannot release admission').toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(5)
+})
+
+it('uncounted grace: a null child read interrupts unnamed evidence and starts a fresh full grace', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 2 ? null : 41, time: poll === 1 ? 1_000 : 4_000 + poll * 1_000 }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.now, 'missing child evidence cannot consume the unnamed grace').toBe(12_000)
+})
+
+it('uncounted grace: changing child roots resets a shared descendant confirmation', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 1 ? 41 : 42, pids: [43] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'a shared descendant cannot confirm across different child roots').toBe(3)
+})
+
+it('uncounted grace: a null child read cannot confirm the preceding counted observation', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 2 ? null : 41, pids: [42] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(4)
+})
+
+it('uncounted grace: a second wait on the released lease returns without another warning or poll', async () => {
+  const result = await graceAdmission(() => ({}), false, 1_000_000, { repeat: true })
+  expect(result.results).toEqual([0])
+  expect(result.messages, 'the named warning belongs to the lease, not each wait invocation').toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(6)
+})
+
+it('uncounted grace: a throwing warning callback cannot stop an already released worker', async () => {
+  const result = await graceAdmission(() => ({}), false, 1_000_000, { throwingWarn: true })
+  expect(result.results).toEqual(['warning failed'])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped, 'the worker is visible before warning delivery can throw').toEqual([])
+})
+
 // Worker 40 runs a counted preflight probe 41; its real lane spawn is 50, wrapped 50 -> 51 -> 52.
 const PREFLIGHT_TREE = { processes: [{ pid: 41, ppid: 40 }, { pid: 50, ppid: 40 }, { pid: 51, ppid: 50 }, { pid: 52, ppid: 51 }] }
 
@@ -526,6 +737,194 @@ it('names the live holder once to a long waiter, never suggesting deletion, and 
     expect.stringContaining(`still waiting for admission lock ${lockPath} (owner pid ${process.pid})`),
   ])
   expect(messages.join('\n')).not.toMatch(/remove/i)
+})
+
+it('bounds identity reads for a long waiter behind this process to at most two', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { hostAdapter } = await adapter()
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity')
+  const snapshot = vi.spyOn(hostAdapter, 'readProcessSnapshot')
+  let holder
+  let now = 0
+  try {
+    holder = await acquireLaneAdmissionLock(lockPath)
+    await expect(acquireLaneAdmissionLock(lockPath, { clock: () => (now += 10_000), waitMs: 190_000, pollMs: 1, warn: () => {} })).rejects.toThrow('admission lock')
+    expect(identity.mock.calls.length, 'self claims must not read identity on every poll').toBeLessThanOrEqual(2)
+    expect(snapshot.mock.calls.length, 'self claims must not read snapshots on every poll').toBeLessThanOrEqual(2)
+  } finally { releaseLaneLaunchAdmission(holder); vi.restoreAllMocks() }
+})
+
+async function foreignHolder() {
+  const { root, lockPath } = setup()
+  writeFileSync(join(root, 'count.json'), JSON.stringify({ state: 'ok', count: 0, pids: [] }))
+  const holder = contender(root)
+  await holder.entered
+  const owner = JSON.parse(readFileSync(lockPath, 'utf8'))
+  writeFileSync(lockPath, JSON.stringify({ ...owner, startIdentity: 1000 }))
+  return { lockPath, holder }
+}
+
+it.each(PLATFORMS)('bounds foreign identity reads by elapsed time on %s while checking liveness every poll', async (platform) => {
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  releaseLaneLaunchAdmission(await acquireLaneAdmissionLock(join(setup().root, 'warmup.lock')))
+  const { lockPath, holder } = await foreignHolder()
+  const { hostAdapter } = await adapter()
+  const originalPlatform = hostAdapter.platform
+  hostAdapter.platform = platform
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: unknown) => platform === 'linux' || pid === process.pid
+    ? { status: 'known', startIdentity: 1000 } : { status: 'unknown', reason: 'PROCESS_IDENTITY_UNAVAILABLE' })
+  const snapshot = vi.spyOn(hostAdapter, 'readProcessSnapshot').mockReturnValue({ processes: [{ pid: holder.child.pid, startIdentity: 1000 }] })
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'unknown' })
+  const live = vi.spyOn(hostAdapter, 'readProcessLiveness')
+  let now = -100
+  try {
+    await expect(acquireLaneAdmissionLock(lockPath, { clock: () => (now += 100), waitMs: 2500, pollMs: 1, warn: () => {} })).rejects.toThrow('admission lock')
+    const bound = Math.floor(now / 1000) + 1
+    expect(identity.mock.calls.filter(([pid]) => pid === holder.child.pid).length, 'foreign identity reads must be bounded by elapsed time, not polls').toBeLessThanOrEqual(bound)
+    expect(snapshot.mock.calls.length, 'foreign snapshots must be bounded by elapsed time, not polls').toBeLessThanOrEqual(bound)
+    expect(live.mock.calls.filter(([pid]) => pid === holder.child.pid).length, 'signal zero still runs every poll').toBeGreaterThanOrEqual(25)
+  } finally { hostAdapter.platform = originalPlatform; vi.restoreAllMocks(); holder.child.kill('SIGKILL'); await holder.exited }
+})
+
+it('rechecks a reused foreign PID at the one-second boundary, without polling identity before then', async () => {
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { lockPath, holder } = await foreignHolder()
+  const { hostAdapter } = await adapter()
+  let now = 0
+  const reads: number[] = []
+  const realIdentity = hostAdapter.readProcessIdentity
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((pid: unknown) => {
+    if (pid !== holder.child.pid) return realIdentity(pid)
+    reads.push(now)
+    return { status: 'known', startIdentity: now === 0 ? 1000 : 2000 }
+  })
+  const execution = vi.spyOn(hostAdapter, 'readProcessExecutionState')
+  let claim
+  const pending = acquireLaneAdmissionLock(lockPath, { clock: () => now, pollMs: 1, warn: () => {} })
+  try {
+    now = 999
+    await vi.waitFor(() => expect(execution.mock.calls.filter(([pid]) => pid === holder.child.pid).length).toBeGreaterThanOrEqual(3))
+    expect(reads, 'a live cached birth must last until its re-check boundary').toEqual([0])
+    expect(JSON.parse(readFileSync(lockPath, 'utf8')).pid).toBe(holder.child.pid)
+    now = 1000
+    await vi.waitFor(() => expect(reads, 'PID reuse and guarded confirmation each need fresh evidence at the boundary').toEqual([0, 1000, 1000]))
+    claim = await pending
+    expect(claim.owner.pid).toBe(process.pid)
+  } finally {
+    now = 1000
+    if (!claim) releaseLaneLaunchAdmission({ file: lockPath, owner: JSON.parse(readFileSync(lockPath, 'utf8')) })
+    claim ??= await pending
+    releaseLaneLaunchAdmission(claim); vi.restoreAllMocks(); holder.child.kill('SIGKILL'); await holder.exited
+  }
+})
+
+it('detects a gone foreign holder on the next poll even with a cached birth', async () => {
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { lockPath, holder } = await foreignHolder()
+  const { hostAdapter } = await adapter()
+  let gone = false
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockReturnValue({ status: 'known', startIdentity: 1000 })
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'unknown' })
+  const live = vi.spyOn(hostAdapter, 'readProcessLiveness').mockImplementation((pid: unknown) => ({ status: pid === holder.child.pid && gone ? 'gone' : 'alive' }))
+  let claim
+  const pending = acquireLaneAdmissionLock(lockPath, { clock: () => 0, pollMs: 1 })
+  try {
+    await vi.waitFor(() => expect(live.mock.calls.filter(([pid]) => pid === holder.child.pid).length).toBeGreaterThanOrEqual(3))
+    const liveChecks = live.mock.calls.filter(([pid]) => pid === holder.child.pid).length
+    expect(identity.mock.calls.filter(([pid]) => pid === holder.child.pid), 'live polls before death must reuse the matching cached identity').toHaveLength(1)
+    gone = true
+    claim = await pending
+    expect(live.mock.calls.filter(([pid]) => pid === holder.child.pid)).toHaveLength(liveChecks + 2)
+    expect(claim.owner.pid).toBe(process.pid)
+  } finally {
+    gone = true
+    claim ??= await pending
+    releaseLaneLaunchAdmission(claim); vi.restoreAllMocks(); holder.child.kill('SIGKILL'); await holder.exited
+  }
+})
+
+it.each(['holder', 'queued claim', 'reclaim guard'])('preserves a live replacement %s inside the identity cache interval', async (kind) => {
+  const { root, lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { hostAdapter } = await adapter()
+  const pid = 2147483600
+  const old = { pid, startIdentity: 'birth-A', token: 'old', ticket: 1 }
+  const replacement = { ...old, startIdentity: 'birth-B', token: 'replacement' }
+  const seed = `${lockPath}.seed.claim`
+  writeFileSync(seed, JSON.stringify(old))
+  let nativeBirth = 'birth-A'
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: unknown) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'alive' })
+  const path = kind === 'holder' ? lockPath : kind === 'queued claim' ? `${lockPath}.replacement.claim` : join(`${lockPath}.reclaim`, replacement.token)
+  let ticks = 0
+  let waitingTicket
+  let admitted
+  try {
+    const result = await acquireLaneAdmissionLock(lockPath, { waitMs: 100, pollMs: 1, clock: () => {
+      if (ticks++ === 0) return 0
+      if (existsSync(seed)) {
+        rmSync(seed); nativeBirth = 'birth-B'
+        if (kind === 'reclaim guard') mkdirSync(`${lockPath}.reclaim`)
+        writeFileSync(path, JSON.stringify(replacement))
+      }
+      const waiting = readdirSync(root).find((name) => name.endsWith('.claim') && !name.endsWith('.replacement.claim'))
+      if (waiting) waitingTicket = JSON.parse(readFileSync(join(root, waiting), 'utf8')).ticket
+      return 100
+    } }).catch((error: Error) => error)
+    if (!(result instanceof Error)) admitted = result
+    expect(existsSync(path), 'a live replacement owner file must never be removed by cached mismatch').toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(replacement)
+    expect(result, 'a live replacement must retain admission priority').toBeInstanceOf(Error)
+    expect(waitingTicket, 'the waiting acquisition must remain behind replacement ticket one').toBe(2)
+  } finally { releaseLaneLaunchAdmission(admitted); vi.restoreAllMocks() }
+})
+
+it('freshly verifies a replacement holder again under the reclaim guard', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock } = await load()
+  const { hostAdapter } = await adapter()
+  const pid = 2147483600
+  const replacement = { pid, startIdentity: 'birth-C', token: 'replacement' }
+  writeFileSync(lockPath, JSON.stringify({ ...replacement, startIdentity: 'birth-A', token: 'old' }))
+  let nativeBirth = 'birth-B'
+  vi.spyOn(hostAdapter, 'readProcessIdentity').mockImplementation((target: unknown) => ({ status: 'known', startIdentity: target === pid ? nativeBirth : 'own' }))
+  vi.spyOn(hostAdapter, 'readProcessExecutionState').mockReturnValue({ status: 'alive' })
+  const rename = fs.renameSync
+  vi.spyOn(fs, 'renameSync').mockImplementation((...args: Parameters<typeof fs.renameSync>) => {
+    rename(...args)
+    if (String(args[1]) === `${lockPath}.reclaim`) {
+      nativeBirth = 'birth-C'
+      writeFileSync(lockPath, JSON.stringify(replacement))
+    }
+  })
+  syncBuiltinESMExports()
+  try {
+    await expect(acquireLaneAdmissionLock(lockPath, { waitMs: 0 })).rejects.toThrow('admission lock')
+    expect(existsSync(lockPath), 'guarded recheck must not delete a live replacement holder').toBe(true)
+    expect(JSON.parse(readFileSync(lockPath, 'utf8'))).toEqual(replacement)
+  } finally { vi.restoreAllMocks(); syncBuiltinESMExports() }
+})
+
+it('retries an unavailable own identity on a later acquisition', async () => {
+  vi.resetModules()
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const { hostAdapter } = await adapter()
+  const platform = hostAdapter.platform
+  hostAdapter.platform = 'linux'
+  const identity = vi.spyOn(hostAdapter, 'readProcessIdentity').mockReturnValue({ status: 'unknown', reason: 'PROCESS_IDENTITY_UNAVAILABLE' })
+  let claim
+  try {
+    claim = await acquireLaneAdmissionLock(lockPath)
+    expect(claim.owner.startIdentity).toMatch(/^self:/)
+    expect(identity).toHaveBeenCalledTimes(1)
+    releaseLaneLaunchAdmission(claim)
+    identity.mockReturnValue({ status: 'known', startIdentity: 'recovered-native-birth' })
+    claim = await acquireLaneAdmissionLock(lockPath)
+    expect(claim.owner.startIdentity, 'a later acquisition must record the recovered native birth').toBe('recovered-native-birth')
+    expect(identity).toHaveBeenCalledTimes(2)
+  } finally { releaseLaneLaunchAdmission(claim); hostAdapter.platform = platform; vi.restoreAllMocks() }
 })
 
 it('waits through a burst without the arbitrary default two-minute refusal', async () => {

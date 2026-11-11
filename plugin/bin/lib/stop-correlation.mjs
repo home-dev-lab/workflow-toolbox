@@ -147,3 +147,16 @@ export function lastStopTimestamps(records) {
   }
   return m
 }
+
+// The harness writes `"finished": true` into the sub-agent's meta.json when it finishes. Measured on
+// 3,823 finished metas: the meta file mtime is always after the transcript's last real record
+// (+25 ms to +29 s), so a flag OLDER than the anchor (beyond tolerance) belongs to a resumed agent.
+// Own constant, not BACKWARD_TOLERANCE_MS: filesystems with one-second mtime granularity can
+// truncate the meta write time by up to 999 ms.
+export const META_FINISHED_TOLERANCE_MS = 1_000
+
+export function finishedPerMeta(meta, metaMtimeMs, anchorMs) {
+  if (meta?.finished !== true) return false
+  if (!Number.isFinite(metaMtimeMs) || !Number.isFinite(anchorMs)) return false
+  return metaMtimeMs >= anchorMs - META_FINISHED_TOLERANCE_MS
+}

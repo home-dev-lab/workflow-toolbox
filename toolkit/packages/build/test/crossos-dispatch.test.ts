@@ -14,6 +14,8 @@ import { commandIO } from '../../../../plugin/bin/lib/host/command-io.mjs'
 import { dispatch as liveDispatch } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
 // @ts-expect-error JS plugin module
 import { ciBranchFor, matchesHostPath, verdictFromEvidence as liveVerdictFromEvidence } from '../../../../plugin/bin/lib/crossos-verdict.mjs'
+// @ts-expect-error JS plugin module
+import { workflowJobNames } from '../../../../plugin/bin/lib/crossos-evidence.mjs'
 
 const root = resolve(import.meta.dirname, '../../../..')
 const fixtureDir = join(import.meta.dirname, 'fixtures/crossos-dispatch')
@@ -1174,8 +1176,7 @@ describe('green only from positive evidence', () => {
 
 function pagedWorkflowScenario(defect: string) {
   const source = parse(readFileSync(join(root, '.github/workflows/cross-os.yml'), 'utf8')) as { jobs: Record<string, unknown> }
-  const names = ['matrix (ubuntu-latest, 1)', 'matrix (ubuntu-latest, 2)', 'matrix (ubuntu-latest, 3)',
-    'matrix (macos-latest)', 'matrix (windows-latest, 1, 75)', 'matrix (windows-latest, 2, 75)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage']
+  const names: string[] = workflowJobNames(JSON.stringify(source))
   if (defect === 'paginated') {
     for (let index = 1; index <= 100; index++) {
       names.push(`extra-${index}`)
@@ -1298,7 +1299,7 @@ describe('cross-OS timeout recovery', () => {
 })
 
 describe('live dispatcher roster and paginated jobs', () => {
-  it.each(['none', 'matrix (ubuntu-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage', 'all Ubuntu', 'partial page', 'legacy gh', 'paginated'])(
+  it.each(['none', 'matrix (ubuntu-latest, 2)', 'matrix (macos-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage', 'all Ubuntu', 'partial page', 'legacy gh', 'paginated'])(
     'reads the dispatched SHA and every jobs page: %s', async (defect) => {
       const { f, io } = pagedWorkflowScenario(defect)
       const out = output()

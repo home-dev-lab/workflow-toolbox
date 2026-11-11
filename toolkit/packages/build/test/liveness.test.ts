@@ -125,6 +125,8 @@ async function runWatchSequence(options: WatchScenarioOptions & { waitFor: Watch
 type WatchScenarioOptions = {
   transcriptName?: string
   metaName?: string | null
+  meta?: object
+  metaMtimeMs?: number
   livenessDir?: string
   livenessRecord?: unknown
   livenessFileName?: string
@@ -139,105 +141,114 @@ type WatchScenarioOptions = {
   cwd?: string
 }
 
-async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<string> {
-  const {
-    transcriptName = 'agent-under-test.jsonl',
-    metaName = 'pilot under/test',
-    livenessDir,
-    livenessRecord,
-    livenessFileName,
-    transcriptAgeMs = 2_000,
-    transcriptRecords,
-    staleMinutes = 0,
-    transcriptAfterArm = true,
-    manualTranscript = false,
-    cwd,
-    afterArmed,
-    waitFor = /(STALE|IDLE-MID-MISSION|WAITING-ON-SPAWNER): /,
-    runForMs = 7_500,
-  } = options
+type ResolvedScenario = WatchScenarioOptions & {
+  transcriptName: string
+  metaName: string | null
+  transcriptAgeMs: number
+  staleMinutes: number
+  transcriptAfterArm: boolean
+  manualTranscript: boolean
+  waitFor: RegExp | WatchCondition | null
+  runForMs: number
+}
 
-  const root = tmpRoot('wt-liveness-watch')
+// Same semantics as destructuring defaults: only an undefined option falls back to its default.
+function resolveScenario(options: WatchScenarioOptions): ResolvedScenario {
+  const defaults = {
+    transcriptName: 'agent-under-test.jsonl',
+    metaName: 'pilot under/test' as string | null,
+    transcriptAgeMs: 2_000,
+    staleMinutes: 0,
+    transcriptAfterArm: true,
+    manualTranscript: false,
+    waitFor: /(STALE|IDLE-MID-MISSION|WAITING-ON-SPAWNER): /,
+    runForMs: 7_500,
+  }
+  const given = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined))
+  return { ...defaults, ...given } as ResolvedScenario
+}
+
+function makeScenarioDirs(root: string) {
   const home = path.join(root, 'home')
   const configDir = path.join(root, 'config')
   const projectDir = path.join(root, 'project')
-  const sessionId = 'watch-session'
-  const subagentsDir = path.join(configDir, 'projects', projectSlug(projectDir), sessionId, 'subagents')
+  const subagentsDir = path.join(configDir, 'projects', projectSlug(projectDir), 'watch-session', 'subagents')
   mkdirSync(home, { recursive: true })
   mkdirSync(subagentsDir, { recursive: true })
   mkdirSync(projectDir, { recursive: true })
+  return { home, configDir, projectDir, subagentsDir }
+}
 
-  const transcriptPath = path.join(subagentsDir, transcriptName)
-  const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json')
-  const now = Date.now()
+function writeScenarioMeta(s: ResolvedScenario, metaPath: string) {
+  if (s.meta) {
+    writeFileSync(metaPath, JSON.stringify(s.meta))
+    if (s.metaMtimeMs !== undefined) utimesSync(metaPath, s.metaMtimeMs / 1000, s.metaMtimeMs / 1000)
+  } else if (s.metaName !== null) writeFileSync(metaPath, JSON.stringify(s.metaName ? { name: s.metaName } : {}))
+}
 
-  const prepareTranscript = () => {
-    if (metaName !== null) writeFileSync(metaPath, JSON.stringify(metaName ? { name: metaName } : {}))
-    if (transcriptRecords) {
-      writeFileSync(transcriptPath, `${transcriptRecords.map((record) => JSON.stringify(record)).join('\n')}\n`)
-      const t = (now - transcriptAgeMs) / 1000
-      utimesSync(transcriptPath, t, t)
-    } else {
-      touchFile(transcriptPath, now - transcriptAgeMs)
-    }
+function writeScenarioTranscript(s: ResolvedScenario, transcriptPath: string, now: number) {
+  if (!s.transcriptRecords) {
+    touchFile(transcriptPath, now - s.transcriptAgeMs)
+    return
   }
+  writeFileSync(transcriptPath, `${s.transcriptRecords.map((record) => JSON.stringify(record)).join('\n')}\n`)
+  const t = (now - s.transcriptAgeMs) / 1000
+  utimesSync(transcriptPath, t, t)
+}
 
-  if (!manualTranscript && !transcriptAfterArm) prepareTranscript()
+function writeScenarioLiveness(s: ResolvedScenario) {
+  if (!s.livenessDir || s.livenessRecord === undefined) return
+  mkdirSync(s.livenessDir, { recursive: true })
+  const fileName = s.livenessFileName ?? `${sanitizeLivenessKey(s.metaName ?? '')}.json`
+  const body = typeof s.livenessRecord === 'string' ? s.livenessRecord : JSON.stringify(s.livenessRecord)
+  writeFileSync(path.join(s.livenessDir, fileName), body)
+}
 
-  const env = {
-    ...process.env,
-    HOME: home,
-    CLAUDE_CONFIG_DIR: configDir,
-    CLAUDE_CODE_SESSION_ID: '',
-    WT_LIVENESS_DIR: livenessDir ?? path.join(root, 'missing-liveness-dir'),
-  }
-
-  if (livenessDir && livenessRecord !== undefined) {
-    mkdirSync(livenessDir, { recursive: true })
-    const fileName = livenessFileName ?? `${sanitizeLivenessKey(metaName ?? '')}.json`
-    writeFileSync(path.join(livenessDir, fileName), typeof livenessRecord === 'string' ? livenessRecord : JSON.stringify(livenessRecord))
-  }
-
-  const child = spawn(process.execPath, [ARC_WATCH, '--project', projectDir, '--poll', '5', '--stale', String(staleMinutes)], {
+function startWatcher(s: ResolvedScenario, env: NodeJS.ProcessEnv, projectDir: string): ChildProcess {
+  const child = spawn(process.execPath, [ARC_WATCH, '--project', projectDir, '--poll', '5', '--stale', String(s.staleMinutes)], {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
-    ...(cwd ? { cwd } : {}),
+    ...(s.cwd ? { cwd: s.cwd } : {}),
   })
   spawned.push(child)
+  return child
+}
 
+function killChild(child: ChildProcess) {
+  try {
+    child.kill('SIGKILL')
+  } catch {
+    // already dead
+  }
+}
+
+async function collectWatcherOutput(child: ChildProcess, s: ResolvedScenario, onArmed: () => void): Promise<string> {
   let stdout = ''
   let armed = false
   let resolved = false
-
   const finish = (value: string, resolve: (value: string) => void) => {
     if (resolved) return
     resolved = true
-    try {
-      child.kill('SIGKILL')
-    } catch {
-      // already dead
-    }
+    killChild(child)
     if (child.exitCode !== null || child.signalCode !== null) resolve(value)
     else child.once('exit', () => resolve(value))
   }
-
   return await new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => finish(stdout, resolve), runForMs)
-    child.stdout.setEncoding('utf8')
-    child.stdout.on('data', (chunk: string) => {
+    const timer = setTimeout(() => finish(stdout, resolve), s.runForMs)
+    child.stdout!.setEncoding('utf8')
+    child.stdout!.on('data', (chunk: string) => {
       stdout += chunk
       if (!armed && stdout.includes('ARC WATCH ARMED')) {
         armed = true
-        if (!manualTranscript && transcriptAfterArm) prepareTranscript()
-        afterArmed?.({ transcriptPath, metaPath })
+        onArmed()
       }
-      if (waitFor && waitFor.test(stdout)) {
+      if (s.waitFor && s.waitFor.test(stdout)) {
         clearTimeout(timer)
         finish(stdout, resolve)
       }
     })
-    child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk: string) => {
+    child.stderr!.setEncoding('utf8')
+    child.stderr!.on('data', (chunk: string) => {
       stdout += chunk
     })
     child.on('error', (error) => {
@@ -249,6 +260,33 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
       clearTimeout(timer)
       resolve(stdout)
     })
+  })
+}
+
+async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<string> {
+  const s = resolveScenario(options)
+  const root = tmpRoot('wt-liveness-watch')
+  const { home, configDir, projectDir, subagentsDir } = makeScenarioDirs(root)
+  const transcriptPath = path.join(subagentsDir, s.transcriptName)
+  const metaPath = transcriptPath.replace(/\.jsonl$/, '.meta.json')
+  const now = Date.now()
+  const prepareTranscript = () => {
+    writeScenarioMeta(s, metaPath)
+    writeScenarioTranscript(s, transcriptPath, now)
+  }
+  if (!s.manualTranscript && !s.transcriptAfterArm) prepareTranscript()
+  const env = {
+    ...process.env,
+    HOME: home,
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_SESSION_ID: '',
+    WT_LIVENESS_DIR: s.livenessDir ?? path.join(root, 'missing-liveness-dir'),
+  }
+  writeScenarioLiveness(s)
+  const child = startWatcher(s, env, projectDir)
+  return await collectWatcherOutput(child, s, () => {
+    if (!s.manualTranscript && s.transcriptAfterArm) prepareTranscript()
+    s.afterArmed?.({ transcriptPath, metaPath })
   })
 }
 
@@ -577,6 +615,107 @@ async function caseACleanEndTurnNeverSilencesAn() {
     }],
   })
   expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
+}
+
+
+// Real residual shape: the harness marks the agent finished but the last assistant record has stop_reason null.
+const nullStopReasonRecords = () => [
+  {
+    parentUuid: 'p-1', isSidechain: true, agentId: 'a0000000000000001', type: 'assistant',
+    uuid: 'u-assistant', timestamp: '2026-10-30T12:17:09.926Z',
+    message: { role: 'assistant', type: 'message', content: [{ type: 'text', text: 'Done.' }], stop_reason: null, stop_sequence: null },
+  },
+  subagentStopAttachment('u-att-1'),
+]
+const STALE_LINE = 'STALE: watch-session/agent-under-test.jsonl'
+
+async function caseHarnessFinishedMetaKeepsAgentSilent() {
+  const out = await runWatchScenario({
+    transcriptRecords: nullStopReasonRecords(),
+    meta: { agentType: 'h-chore', finished: true },
+    waitFor: null,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).not.toContain(STALE_LINE)
+}
+
+async function caseMetaWithoutFinishedStillStale() {
+  const out = await runWatchScenario({ transcriptRecords: nullStopReasonRecords(), meta: { agentType: 'h-chore' } })
+  expect(out).toContain(STALE_LINE)
+}
+
+async function caseMetaFinishedFalseStillStale() {
+  const out = await runWatchScenario({ transcriptRecords: nullStopReasonRecords(), meta: { agentType: 'h-chore', finished: false } })
+  expect(out).toContain(STALE_LINE)
+}
+
+async function caseResumedAgentWithOldFinishedFlagStillStale() {
+  const anchorMs = Date.parse('2026-10-30T12:17:10.380Z')
+  const out = await runWatchScenario({
+    transcriptRecords: nullStopReasonRecords(),
+    meta: { agentType: 'h-chore', finished: true },
+    metaMtimeMs: anchorMs - 5_000,
+  })
+  expect(out).toContain(STALE_LINE)
+}
+
+async function caseDeclaredNotCompleteOutranksFinishedMeta() {
+  const dir = tmpRoot('wt-liveness-finished-meta-idle')
+  const out = await runWatchScenario({
+    metaName: 'pilot/finished-idle',
+    meta: { name: 'pilot/finished-idle', finished: true },
+    livenessDir: dir,
+    livenessRecord: {
+      agentId: 'pilot/finished-idle',
+      agentIdSource: 'name',
+      scope: 'card:123',
+      complete: false,
+      waitingOn: 'none',
+      worktree: null,
+      updatedAt: '2026-08-05T00:00:00.000Z',
+    },
+    transcriptRecords: nullStopReasonRecords(),
+  })
+  expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
+}
+
+async function caseFinishedMetaDoesNotSilenceAToolUseEnding() {
+  const records = [
+    {
+      ...nullStopReasonRecords()[0],
+      message: { role: 'assistant', type: 'message', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use', stop_sequence: null },
+    },
+    subagentStopAttachment('u-att-1'),
+  ]
+  const out = await runWatchScenario({ transcriptRecords: records, meta: { agentType: 'h-chore', finished: true } })
+  expect(out).toContain(STALE_LINE)
+}
+
+async function caseFinishedMetaDoesNotSilenceATrailingUserTurn() {
+  const records = [
+    ...nullStopReasonRecords(),
+    { type: 'user', isMeta: true, timestamp: '2026-10-30T12:17:10.700Z', message: { role: 'user', content: 'Stop hook feedback' } },
+  ]
+  const out = await runWatchScenario({ transcriptRecords: records, meta: { agentType: 'h-chore', finished: true } })
+  expect(out).toContain(STALE_LINE)
+}
+
+// Anchor lock: the last REAL record (R) decides, not the observer-ref heartbeat at R+10 s nor the
+// transcript file mtime (later still). Meta mtime R+1 s is after R, so the agent is finished.
+async function caseMetaFinishedAnchorIsLastRealRecord() {
+  const realMs = Date.parse('2026-10-30T12:17:09.926Z')
+  const out = await runWatchScenario({
+    transcriptRecords: [
+      nullStopReasonRecords()[0],
+      { type: 'observer-ref', timestamp: new Date(realMs + 10_000).toISOString() },
+    ],
+    meta: { agentType: 'h-chore', finished: true },
+    metaMtimeMs: realMs + 1_000,
+    transcriptAgeMs: 2_000,
+    waitFor: null,
+  })
+  expect(out).toContain('ARC WATCH ARMED')
+  expect(out).not.toContain(STALE_LINE)
 }
 
 
@@ -1082,6 +1221,22 @@ describe('wt-arc-watch liveness integration', () => {
   it('still emits STALE when only attachments trail an assistant record that requested a tool', caseStillEmitsSTALEWhenOnlyAttachmentsTrail, 12_000)
 
   it('a clean end_turn never silences an agent whose liveness file says its mission is not complete', caseACleanEndTurnNeverSilencesAn, 12_000)
+
+  it('keeps an agent silent when its meta says finished and was written after the last transcript record', caseHarnessFinishedMetaKeepsAgentSilent, 19_000)
+
+  it('still emits STALE when the meta has no finished flag', caseMetaWithoutFinishedStillStale, 12_000)
+
+  it('still emits STALE when the meta says finished:false', caseMetaFinishedFalseStillStale, 12_000)
+
+  it('still emits STALE for a resumed agent whose finished flag is older than its last record', caseResumedAgentWithOldFinishedFlagStillStale, 12_000)
+
+  it('a finished meta never silences a transcript that ends on a tool call', caseFinishedMetaDoesNotSilenceAToolUseEnding, 12_000)
+
+  it('a finished meta never silences a transcript that ends on a user turn', caseFinishedMetaDoesNotSilenceATrailingUserTurn, 12_000)
+
+  it('the finished-meta anchor is the last real record, not a heartbeat or the file mtime', caseMetaFinishedAnchorIsLastRealRecord, 19_000)
+
+  it('a finished meta never silences an agent whose liveness file says its mission is not complete', caseDeclaredNotCompleteOutranksFinishedMeta, 12_000)
 
   it('still emits for a frozen agent whose last assistant record requests a tool', caseStillEmitsForAFrozenAgentWhose, 12_000)
 

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -69,7 +69,9 @@ export function watchFixture(umbrella: boolean) {
   writeFileSync(watchEvents, '')
   writeFileSync(`${watchEvents}.polling`, '')
   writeFileSync(`${watchEvents}.subscriptions`, '')
-  return { root, workspace, dependencies, watchEvents, dispose: () => rmSync(root, { recursive: true, force: true }) }
+  // Named fallback only: the handles inside root are released by startFixture().dispose(); the
+  // retries absorb a transient Windows scanner handle, never a live tsserver.
+  return { root, workspace, dependencies, watchEvents, dispose: () => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
 }
 
 export function watchedInodes(pid: number) {
@@ -111,6 +113,21 @@ export function fixtureEnvironment(home: string) {
   }
 }
 
+const GRACEFUL_EXIT_MS = 15_000
+
+function settlesWithin(closed: Promise<void>, ms: number) {
+  let timer: NodeJS.Timeout | undefined
+  const late = new Promise<boolean>((resolve) => { timer = setTimeout(resolve, ms, false) })
+  return Promise.race([closed.then(() => true), late]).finally(() => clearTimeout(timer))
+}
+
+function killTree(child: ChildProcessWithoutNullStreams) {
+  // Windows has no process group and SIGTERM is TerminateProcess on the wrapper alone.
+  if (process.platform === 'win32') { spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); return }
+  child.kill('SIGTERM')
+  try { process.kill(-child.pid!, 'SIGTERM') } catch { /* Already closed. */ }
+}
+
 export function startFixture(fixture: ReturnType<typeof watchFixture>, tsserver: string, settings: { budget?: number } = {}) {
   const sealFile = join(fixtureDir, 'network-seal.mjs')
   const seal = pathToFileURL(sealFile).href
@@ -142,9 +159,13 @@ export function startFixture(fixture: ReturnType<typeof watchFixture>, tsserver:
       return (await wait((message) => message.params?.request_seq === seq)).params!
     },
     async warning() { await waitFor(() => stderr.includes('wt-tsls: warning:') ? {} : undefined, events, () => stderr) },
+    // The LSP exit frame makes wt-tsls stop its backend (bridge, tsserver) and exit only once that
+    // backend has closed. Signalling first is TerminateProcess on Windows: the backend is orphaned
+    // with its cwd and watch handles inside the fixture root, and removing the root fails EPERM.
     async dispose() {
-      if (child.exitCode === null) { child.stdin.end(frame({ method: 'exit' })); child.kill('SIGTERM') }
-      try { process.kill(-child.pid!, 'SIGTERM') } catch { /* Already closed. */ }
+      if (child.exitCode === null && child.signalCode === null) child.stdin.end(frame({ method: 'exit' }))
+      if (await settlesWithin(closed, GRACEFUL_EXIT_MS)) return
+      killTree(child)
       await closed
     },
   }

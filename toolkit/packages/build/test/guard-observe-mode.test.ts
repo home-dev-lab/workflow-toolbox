@@ -157,7 +157,8 @@ function liveConfigTreeFixture() {
   mkdirSync(join(rules, '.git'), { recursive: true })
   return {
     payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: root,
-      tool_input: { command: `git -C ${rules} switch another-branch` } },
+      // Git Bash, the Windows shell, reads an unquoted backslash as an escape: spell the path with `/`.
+      tool_input: { command: `git -C ${rules.split('\\').join('/')} switch another-branch` } },
     env: { CLAUDE_CONFIG_DIR: config, WT_LIVE_CONFIG_TREE_GUARD_MODE: 'warn' },
   }
 }
@@ -180,6 +181,11 @@ const cases: Array<{
   make: () => { payload: Record<string, unknown>; env?: NodeJS.ProcessEnv }
   contains?: string
 }> = [
+  {
+    hook: 'wt-stray-tool-markup-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'note.md', content: 'body\n</content>\n' } } }),
+    contains: 'stray tool-call markup',
+  },
   {
     hook: 'wt-merge-chain-guard-hook.mjs',
     make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git merge branch && pnpm test' } } }),
@@ -208,7 +214,9 @@ const cases: Array<{
   {
     hook: 'wt-missing-package-script-guard-hook.mjs',
     make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: REPO_ROOT, tool_input: { command: 'pnpm definitely-missing-script' } } }),
-    contains: '',
+    // The finding reaches the model as context (no permission decision); observe mode suppresses it.
+    // Changed from journal-only in d6b298287, for parity with the retired private copy of this guard.
+    contains: 'is not defined in the package.json',
   },
   {
     hook: 'wt-pgrep-env-dump-guard-hook.mjs',
