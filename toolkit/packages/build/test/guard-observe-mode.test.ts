@@ -157,7 +157,8 @@ function liveConfigTreeFixture() {
   mkdirSync(join(rules, '.git'), { recursive: true })
   return {
     payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: root,
-      tool_input: { command: `git -C ${rules} switch another-branch` } },
+      // Git Bash, the Windows shell, reads an unquoted backslash as an escape: spell the path with `/`.
+      tool_input: { command: `git -C ${rules.split('\\').join('/')} switch another-branch` } },
     env: { CLAUDE_CONFIG_DIR: config, WT_LIVE_CONFIG_TREE_GUARD_MODE: 'warn' },
   }
 }

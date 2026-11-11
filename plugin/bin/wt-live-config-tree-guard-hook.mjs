@@ -106,13 +106,10 @@ const MAX_PATH_CHARS = 4096
 const FS_ROOT = resolve(sep)
 // The shell's escape character (shell syntax, not a path separator).
 const SHELL_ESCAPE = '\\'
-// The platform whose path spelling the commands use.
+// The platform whose path spelling the commands use. On Windows the commands run in Git Bash,
+// which reads an unquoted backslash as an escape too: `C:\Users\x` reaches `C:Usersx`, and
+// `.cl\aude` reaches `.claude`.
 const PATH_PLATFORM = liveConfigTreeGuardPlatform()
-// On Windows an unquoted backslash before a path character is read as a separator. Git Bash drops
-// it, so such a command cannot reach the directory either way; reading it as a separator keeps
-// the verdict on the warning side for a Windows path spelled without quotes.
-const WINDOWS_BACKSLASH = PATH_PLATFORM === 'win32'
-const PATH_CHARACTER = /[\w.~-]/
 const CHECKOUT_SWITCHES = /^(?:-[bB]|--orphan|--detach|-t$|--track)/
 const CHECKOUT_PATHS_ONLY = /^(?:-p$|--patch$|--pathspec-from-file)/
 const SHORT_FLAGS = /^-[a-zA-Z]+$/
@@ -136,11 +133,10 @@ function quotedPiece(text, i) {
 }
 
 /** The text an unquoted backslash at `text[i]` leaves in the word. A backslash-newline is a line
- *  continuation; any other escaped character is literal, except a Windows path separator. */
+ *  continuation; any other escaped character is literal. */
 function escapedText(text, i) {
   const next = text[i + 1]
-  if (next === undefined || next === '\n') return ''
-  return WINDOWS_BACKSLASH && PATH_CHARACTER.test(next) ? SHELL_ESCAPE + next : next
+  return next === undefined || next === '\n' ? '' : next
 }
 
 /** One shell WORD read from `text` at offset `at`, as the shell hands it to git: quotes removed,

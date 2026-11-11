@@ -5,7 +5,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error -- plain .mjs host module without type declarations
@@ -13,6 +13,10 @@ import { nativeDrivePath } from '../../../../plugin/bin/lib/host/live-config-tre
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-live-config-tree-guard-hook.mjs')
+
+// On Windows the commands run in Git Bash, which reads an unquoted backslash as an escape: a
+// command spells a Windows path with forward slashes, the form Git Bash passes through intact.
+const gitBashPath = (p: string): string => (process.platform === 'win32' ? p.replace(/\\/g, '/') : p)
 
 const roots: string[] = []
 afterEach(() => {
@@ -36,7 +40,7 @@ function gitFixture(tag: string) {
   const home = join(root, 'home')
   const rulesDir = join(home, '.claude', 'rules')
   mkdirSync(join(rulesDir, '.git'), { recursive: true })
-  return { root, home, rulesDir, env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
+  return { root, home, rulesDir: gitBashPath(rulesDir), env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
 }
 
 /** A fixture where `<home>/.claude/rules` exists but is NOT a git working tree. */
@@ -46,7 +50,7 @@ function nonGitFixture(tag: string) {
   const home = join(root, 'home')
   const rulesDir = join(home, '.claude', 'rules')
   mkdirSync(rulesDir, { recursive: true })
-  return { root, home, rulesDir, env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
+  return { root, home, rulesDir: gitBashPath(rulesDir), env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
 }
 
 function runHook(
@@ -135,7 +139,7 @@ function registerLiveModeCases() {
     roots.push(root)
     const configDir = join(root, 'srv', 'claude-config')
     mkdirSync(join(configDir, 'rules', '.git'), { recursive: true })
-    const r = runHook(`git -C ${join(configDir, 'rules')} checkout -b work`, root, {
+    const r = runHook(`git -C ${gitBashPath(join(configDir, 'rules'))} checkout -b work`, root, {
       ...process.env,
       CLAUDE_CONFIG_DIR: configDir,
     })
@@ -148,8 +152,8 @@ describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (defa
   registerLiveModeCases()
 })
 
-/** A git rules fixture under a directory spelled `<parent>` in the command: on POSIX `a\b` is one
- *  directory literally named so, on Windows it is `a` then `b`. */
+/** A git rules fixture under `<root>/<parent>`. On POSIX a parent `a\b` is one directory literally
+ *  named so, on Windows it is `a` then `b`; either way a command spelling `a\b` unquoted names `ab`. */
 function spelledFixture(tag: string, parent: string) {
   const root = mkdtempSync(join(tmpdir(), `wt-live-tree-spelled-${tag}-`))
   roots.push(root)
@@ -161,33 +165,41 @@ function spelledFixture(tag: string, parent: string) {
 const WINDOWS_SEAM = { WT_LIVE_CONFIG_TREE_GUARD_PLATFORM: 'win32' }
 
 function registerWindowsSpellingCases() {
-  it.skipIf(process.platform === 'win32')('reads an unquoted backslash as a POSIX shell does: an escape', () => {
-    const f = spelledFixture('posix-escape', 'a\\b')
-    const r = runHook(`git -C ${f.root}/a\\b/.claude/rules switch x`, f.root, f.env)
-    expect(r.systemMessage).toBeNull()
+  it.each([['the host', {}], ['the Windows seam', WINDOWS_SEAM]])(
+    'reads an unquoted backslash as an escape, as Git Bash does, under %s', (_label, seam) => {
+      const f = spelledFixture('escape', 'a\\b')
+      const r = runHook(`git -C ${gitBashPath(f.root)}/a\\b/.claude/rules switch x`, f.root, { ...f.env, ...seam })
+      expect(r.systemMessage, 'a\\b names the directory ab: the live tree is not reached').toBeNull()
+    })
+
+  it.runIf(process.platform === 'win32')('an unquoted native Windows path does not reach the tree in Git Bash', () => {
+    const f = spelledFixture('native', 'w')
+    const r = runHook(`git -C ${join(f.root, 'w', '.claude', 'rules')} switch x`, f.root, f.env)
+    expect(r.systemMessage, 'Git Bash turns C:\\Users\\x into C:Usersx').toBeNull()
   })
 
-  it('reads an unquoted backslash before a path character as a Windows separator', () => {
-    const f = spelledFixture('win-separator', 'a\\b')
-    const r = runHook(`git -C ${f.root}/a\\b/.claude/rules switch x`, f.root, { ...f.env, ...WINDOWS_SEAM })
-    expect(r.systemMessage, 'a Windows path spelled without quotes must not go silent').toContain('LIVE CONFIG TREE')
-  })
+  it.each([['the host', {}], ['the Windows seam', WINDOWS_SEAM]])(
+    'an escaped letter inside the live path still reaches it, under %s', (_label, seam) => {
+      const f = spelledFixture('escaped-letter', 'w')
+      const r = runHook(`git -C ${gitBashPath(f.root)}/w/.cl\\aude/rules switch x`, f.root, { ...f.env, ...seam })
+      expect(r.systemMessage, '.cl\\aude is .claude once the shell drops the backslash').toContain('LIVE CONFIG TREE')
+    })
 
-  it('denies that spelling in deny mode', () => {
-    const f = spelledFixture('win-deny', 'a\\b')
+  it('denies an escaped letter in deny mode on Windows', () => {
+    const f = spelledFixture('escaped-deny', 'w')
     const env = { ...f.env, ...WINDOWS_SEAM, WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny' }
-    expect(runHook(`git -C ${f.root}/a\\b/.claude/rules reset --hard`, f.root, env).decision).toBe('deny')
+    expect(runHook(`git -C ${gitBashPath(f.root)}/w/.claude/r\\ules reset --hard`, f.root, env).decision).toBe('deny')
   })
 
-  it('reads the same spelling inside a shell -c script', () => {
-    const f = spelledFixture('win-script', 'a\\b')
-    const r = runHook(`bash -c "git -C ${f.root}/a\\b/.claude/rules reset --hard"`, f.root, { ...f.env, ...WINDOWS_SEAM })
-    expect(r.systemMessage).toContain('LIVE CONFIG TREE')
+  it('reads an escaped letter inside a shell -c script on Windows', () => {
+    const f = spelledFixture('escaped-script', 'w')
+    const command = `bash -c "git -C ${gitBashPath(f.root)}/w/.cl\\aude/rules reset --hard"`
+    expect(runHook(command, f.root, { ...f.env, ...WINDOWS_SEAM }).systemMessage).toContain('LIVE CONFIG TREE')
   })
 
   it('keeps a backslash before a blank an escape on Windows', () => {
     const f = spelledFixture('win-blank', 'a b')
-    const r = runHook(`git -C ${f.root}/a\\ b/.claude/rules switch x`, f.root, { ...f.env, ...WINDOWS_SEAM })
+    const r = runHook(`git -C ${gitBashPath(f.root)}/a\\ b/.claude/rules switch x`, f.root, { ...f.env, ...WINDOWS_SEAM })
     expect(r.systemMessage).toContain('LIVE CONFIG TREE')
   })
 
@@ -240,7 +252,7 @@ describe('wt-live-config-tree-guard-hook — does NOT block legitimate work', ()
     const f = gitFixture('other-dir')
     const otherDir = join(f.root, 'projects', 'my-repo')
     mkdirSync(otherDir, { recursive: true })
-    const r = runHook(`git -C ${otherDir} switch feature-branch`, f.root, f.env)
+    const r = runHook(`git -C ${gitBashPath(otherDir)} switch feature-branch`, f.root, f.env)
     expect(r.stdout).toBe('')
   })
 
@@ -291,8 +303,10 @@ type Verdict = 'deny' | 'warn' | 'silent'
 type Row = [string, string] | [string, string, Verdict]
 
 const PARITY_HOME = mkdtempSync(join(tmpdir(), 'wt-live-tree-parity-'))
-const home = PARITY_HOME
+const home = gitBashPath(PARITY_HOME)
 const live = join(home, '.claude', 'rules')
+// The same directory in the host's native spelling: on Windows, with backslashes.
+const liveNative = join(PARITY_HOME, '.claude', 'rules')
 mkdirSync(join(live, '.git'), { recursive: true })
 // A live tree whose path holds two adjacent spaces: collapsing them names a directory with no `.git`.
 mkdirSync(join(home, 'a  b', '.claude', 'rules', '.git'), { recursive: true })
@@ -566,7 +580,9 @@ checkRows('quote-aware option values', [
   ['quoted -C with inner spaces outside the live tree', `git -C "${home}/a  b" reset --hard`, 'silent'],
 ], '/')
 
-for (const target of [live, '~/.claude/rules', `'${live}'`, `"${live}"`]) {
+// Quoted, the native spelling reaches the tree in Git Bash too: its backslashes stay separators.
+const QUOTED_NATIVE = [`'${liveNative}'`, `"${liveNative}"`, `${home}/'.claude${sep}rules'`, `${home}/".claude${sep}rules"`]
+for (const target of [live, '~/.claude/rules', `'${live}'`, `"${live}"`, ...QUOTED_NATIVE]) {
   checkRows(`target ${target}`, ['switch x', 'checkout x', 'checkout -b x', 'reset --hard']
     .map((operation): Row => [operation, `git -C ${target} ${operation}`]))
 }
