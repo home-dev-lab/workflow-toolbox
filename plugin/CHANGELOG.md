@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.199.0] - 2026-11-11
+
 ### Added
 
 - The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
@@ -57,6 +59,31 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The pilot and pilot-orchestrator templates, and the delegation-chain skill, no longer tell a read-only critic or verifier (a type with no Write tool) to write a report file, which the spawn-capability guard refuses. Such a type is now spawned anonymously in the foreground and its final message is the report, which the spawner saves; the file-report contract stays for named spawns and types that have Write.
 - The suite-lock lane runner honours an explicit `--light` launcher prefix, preserves the real command in queued tickets, and refuses unsupported or repeated launcher flags before taking the lock.
 - The arc watch no longer reports a sub-agent as stale when the harness has marked it finished (its `finished` flag was written after the last transcript record), even if its last message did not end in a clean end-of-turn. An agent that was resumed after finishing still gets reported.
+
+### Changed
+
+- Marketplace plugin version in this release: `wt-rules-on-demand` 0.1.5 (a refusal names the one call it refuses). Update it with the plugin for the change to load.
+
+### Quality
+
+Minor release: measured on a clean checkout of the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; the baseline was not refreshed at 0.190.0 through 0.198.0). No judge total regressed against that baseline. Against 0.193.0's figures, the last release that published this section: ESLint warnings fell from 647 to 644, line coverage rose from 81.75 % to 84.57 %, branch coverage from 73.30 % to 76.55 %, duplication fell from 2.153 % to 1.869 %, longest function from 628 to 480 lines; Knip issues and dependency cycles are unchanged. On files this release touched, the biggest file grew from 1298 to 1640 lines and Knip issues from 3 to 4, both inside the unchanged totals. Coverage comes from this release tree's own test run (18349 passed, 90 skipped).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 112 | -14 |
+| Cognitive complexity | 268 -> 129 | -139 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 480 | -220 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 644 | -40 |
+| Duplication % | 2.4324 -> 1.8695 | -0.56 |
+| Knip issues | 196 -> 188 | -8 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 84.57 | +5.96 |
+| Coverage branches % | 69.76 -> 76.55 | +6.79 |
+| Coverage functions % | 80.86 -> 88.00 | +7.14 |
+| Coverage statements % | 76.50 -> 82.76 | +6.26 |
 
 ## [0.198.0] - 2026-11-08
 
