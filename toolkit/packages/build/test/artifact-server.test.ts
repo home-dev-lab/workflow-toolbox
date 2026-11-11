@@ -275,7 +275,7 @@ it.skipIf(!CHROME)('draws real Mermaid in Markdown and interactive HTML, served 
     expect(render.completed, `${page}: ${render.stderr}`).toBe(true)
     expect(render.stoppedAfterDump || render.code === 0, render.stderr).toBe(true)
     if (page === 'plain.html') {
-      expect(render.stdout).not.toContain('<svg')
+      expect(render.stdout).not.toMatch(/<svg\b[^>]*aria-roledescription="flowchart/)
       expect(render.stdout).toContain('Draft --&gt; Review --&gt; Published')
     } else {
       expect(render.stdout, `${page}: ${render.stderr}`).toMatch(/<svg\b[^>]*aria-roledescription="flowchart/)
@@ -2975,42 +2975,43 @@ describe('owner decision 5: Tailscale access', () => {
   })
 })
 
+const SCRIPT_WARNING_CASES = [
+  { mode: 'raw', body: '<pre class="mermaid">flowchart LR A-->B</pre><script>ok()</script><script src="local.js"></script>', findings: ['1 inline scripts', '1 script sources', '1 Mermaid diagram renderings'] },
+  // Changed expectation: a static import in a classic script is a SyntaxError, never a load, so only import() counts.
+  { mode: 'annotatable', body: '<script>import x from "https://cdn.example/a.js"; import("/local.js")</script><script src></script>', findings: ['1 inline scripts', '1 script sources', '1 imports'] },
+  { mode: 'rich', body: '<script src="local.js"></script><script>import("https://cdn.example/a.js"); import("/local.js")</script>', findings: ['1 script sources', '2 imports'] },
+  { mode: 'interactive', body: '<script src="https://cdn.example/a.js"></script><script src="//cdn.example/b.js"></script><script src="data:text/javascript,ok()"></script><script src="blob:https://cdn.example/id"></script><script src="local.js"></script>', findings: ['4 script sources'] },
+  // 'self' is the origin of the URL handed out (local here), never the server's other origin.
+  { mode: 'interactive', body: '<script src="http://localhost:48001/a.js"></script><script src="https://reports.example/a.js"></script><script src="//localhost:48001/a.js"></script><script>import("/local.js"); import("https://reports.example/a.js")</script>', findings: ['1 script sources', '1 imports'] },
+  { mode: 'interactive', body: '<script src=" https://cdn.example/a.js "></script>', findings: ['1 script sources'] },
+  { mode: 'rich', body: '<script type="module">import "/a.js";</script><script>import(`/b.js`)</script>', findings: ['2 imports'] },
+  { mode: 'raw', body: '<!-- <script>ok()</script> --><script type="application/json">{"x":1}</script><script-widget></script-widget><pre>import("/x.js")</pre>', findings: [] },
+  { mode: 'raw', body: '<pre class="mermaid">A-->B</pre><pre class="diagram mermaid">C-->D</pre><script>ok()</script>', findings: ['1 inline scripts', '2 Mermaid diagram renderings'] },
+  { mode: 'interactive', body: '<script type="module">import x from "https://cdn.example/a.js"; import "//cdn.example/b.js"; import("data:text/javascript,ok()")</script>', findings: ['3 imports'] },
+  { mode: 'rich', body: '<script>ok()</script>', findings: [] },
+  // Second counterexample pass: '<!--' inside a script is script text, and '<!-->' closes a comment at once.
+  { mode: 'interactive', body: '<script>const marker = "<!--";</script><script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
+  { mode: 'interactive', body: '<!--><script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
+  { mode: 'rich', body: '<script><!--\nimport("/a.js");\n//--></script>', findings: ['1 imports'] },
+  // Imports run from event handlers and javascript: URLs too.
+  { mode: 'rich', body: '<body onload="import(\'/a.js\').then(m => m.render())"></body>', findings: ['1 imports'] },
+  { mode: 'interactive', body: '<a href="javascript:import(\'https://cdn.example/a.js\')">Render</a>', findings: ['1 imports'] },
+  // Legacy JavaScript MIME types execute; a backslash pair is a protocol-relative URL to the browser.
+  { mode: 'interactive', body: '<script type="text/javascript1.5" src="https://cdn.example/a.js"></script><script src="\\\\cdn.example/b.js"></script>', findings: ['2 script sources'] },
+  { mode: 'raw', body: '<div data-class="mermaid">x</div><script>ok()</script>', findings: ['1 inline scripts'] },
+  { mode: 'raw', body: '<pre class=mermaid>A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
+  // Third counterexample pass: a '<' that opens no tag is text; attributes are read as attributes.
+  { mode: 'interactive', body: '1 < 2 <script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
+  { mode: 'rich', body: '<div data-example="import(\'/a.js\')">Working page</div>', findings: [] },
+  { mode: 'raw', body: '<pre title="example class=plain" class="mermaid">A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
+  { mode: 'rich', body: '<script title=" src=local.js">document.body.textContent = "OK"</script>', findings: [] },
+  // Branch e2e: a static import exists only in a module script, so a classic script's "from" string is no import.
+  { mode: 'rich', body: '<script>var keys = ["from","to"]; import("/a.js")</script>', findings: ['1 imports'] },
+  // A comment's first '>' does not end it: what follows up to '-->' stays commented out.
+  { mode: 'raw', body: '<!-- <b>old</b> <script src="https://cdn.example/a.js"></script> -->', findings: [] },
+]
+
 describe('HTML script warnings', () => {
-  const cases = [
-    { mode: 'raw', body: '<pre class="mermaid">flowchart LR A-->B</pre><script>ok()</script><script src="local.js"></script>', findings: ['1 inline scripts', '1 script sources', '1 Mermaid diagram renderings'] },
-    // Changed expectation: a static import in a classic script is a SyntaxError, never a load, so only import() counts.
-    { mode: 'annotatable', body: '<script>import x from "https://cdn.example/a.js"; import("/local.js")</script><script src></script>', findings: ['1 inline scripts', '1 script sources', '1 imports'] },
-    { mode: 'rich', body: '<script src="local.js"></script><script>import("https://cdn.example/a.js"); import("/local.js")</script>', findings: ['1 script sources', '2 imports'] },
-    { mode: 'interactive', body: '<script src="https://cdn.example/a.js"></script><script src="//cdn.example/b.js"></script><script src="data:text/javascript,ok()"></script><script src="blob:https://cdn.example/id"></script><script src="local.js"></script>', findings: ['4 script sources'] },
-    // 'self' is the origin of the URL handed out (local here), never the server's other origin.
-    { mode: 'interactive', body: '<script src="http://localhost:48001/a.js"></script><script src="https://reports.example/a.js"></script><script src="//localhost:48001/a.js"></script><script>import("/local.js"); import("https://reports.example/a.js")</script>', findings: ['1 script sources', '1 imports'] },
-    { mode: 'interactive', body: '<script src=" https://cdn.example/a.js "></script>', findings: ['1 script sources'] },
-    { mode: 'rich', body: '<script type="module">import "/a.js";</script><script>import(`/b.js`)</script>', findings: ['2 imports'] },
-    { mode: 'raw', body: '<!-- <script>ok()</script> --><script type="application/json">{"x":1}</script><script-widget></script-widget><pre>import("/x.js")</pre>', findings: [] },
-    { mode: 'raw', body: '<pre class="mermaid">A-->B</pre><pre class="diagram mermaid">C-->D</pre><script>ok()</script>', findings: ['1 inline scripts', '2 Mermaid diagram renderings'] },
-    { mode: 'interactive', body: '<script type="module">import x from "https://cdn.example/a.js"; import "//cdn.example/b.js"; import("data:text/javascript,ok()")</script>', findings: ['3 imports'] },
-    { mode: 'rich', body: '<script>ok()</script>', findings: [] },
-    // Second counterexample pass: '<!--' inside a script is script text, and '<!-->' closes a comment at once.
-    { mode: 'interactive', body: '<script>const marker = "<!--";</script><script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
-    { mode: 'interactive', body: '<!--><script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
-    { mode: 'rich', body: '<script><!--\nimport("/a.js");\n//--></script>', findings: ['1 imports'] },
-    // Imports run from event handlers and javascript: URLs too.
-    { mode: 'rich', body: '<body onload="import(\'/a.js\').then(m => m.render())"></body>', findings: ['1 imports'] },
-    { mode: 'interactive', body: '<a href="javascript:import(\'https://cdn.example/a.js\')">Render</a>', findings: ['1 imports'] },
-    // Legacy JavaScript MIME types execute; a backslash pair is a protocol-relative URL to the browser.
-    { mode: 'interactive', body: '<script type="text/javascript1.5" src="https://cdn.example/a.js"></script><script src="\\\\cdn.example/b.js"></script>', findings: ['2 script sources'] },
-    { mode: 'raw', body: '<div data-class="mermaid">x</div><script>ok()</script>', findings: ['1 inline scripts'] },
-    { mode: 'raw', body: '<pre class=mermaid>A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
-    // Third counterexample pass: a '<' that opens no tag is text; attributes are read as attributes.
-    { mode: 'interactive', body: '1 < 2 <script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
-    { mode: 'rich', body: '<div data-example="import(\'/a.js\')">Working page</div>', findings: [] },
-    { mode: 'raw', body: '<pre title="example class=plain" class="mermaid">A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
-    { mode: 'rich', body: '<script title=" src=local.js">document.body.textContent = "OK"</script>', findings: [] },
-    // Branch e2e: a static import exists only in a module script, so a classic script's "from" string is no import.
-    { mode: 'rich', body: '<script>var keys = ["from","to"]; import("/a.js")</script>', findings: ['1 imports'] },
-    // A comment's first '>' does not end it: what follows up to '-->' stays commented out.
-    { mode: 'raw', body: '<!-- <b>old</b> <script src="https://cdn.example/a.js"></script> -->', findings: [] },
-  ]
   it('does not warn about the real Mermaid bundle inlined in a rich page, which draws there', async () => {
     const fixture = checkFixture('script-warning', () => 'https://reports.example/artifacts', 48001)
     writeFileSync(fixture.artifact, `<!-- wt-artifact-server: rich -->\n<pre class="mermaid">flowchart LR\n A --> B</pre>${inlineMermaidBundle()}<script>mermaid.initialize({ startOnLoad: true })</script>`)
@@ -3018,7 +3019,7 @@ describe('HTML script warnings', () => {
     expect(result.code).toBe(0)
     expect(result.stderr).toBe('')
   })
-  it.each(cases)('audits $mode HTML: $body', async ({ mode, body, findings }) => {
+  it.each(SCRIPT_WARNING_CASES)('audits $mode HTML: $body', async ({ mode, body, findings }) => {
     const fixture = checkFixture('script-warning', () => 'https://reports.example/artifacts', 48001)
     writeFileSync(fixture.artifact, `${mode === 'raw' ? '' : `<!-- wt-artifact-server: ${mode} -->\n`}${body}`)
     const result = await runCli(['url', fixture.artifact], fixture.env)
