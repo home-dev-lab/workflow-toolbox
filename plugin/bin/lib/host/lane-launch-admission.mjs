@@ -1,13 +1,18 @@
 // Per-OS-user wt-lane launch admission across projects. Other scripts may acquire the same exported
 // laneLaunchAdmissionLockPath() with acquireLaneAdmissionLock(), and must hold it from
-// counting until their own opencode/codex PID is retained by countLaneProcessesReal.
+// counting until their own opencode/codex PID is retained by countLaneProcessesReal, or apply the
+// same explicit uncountable-child release policy described below.
 // Linux: ~/.local/state/wt-lane-host/launch-admission.lock; macOS: ~/Library/Application
 // Support/wt-lane-host/launch-admission.lock; Windows: %LOCALAPPDATA%/wt-lane-host/launch-admission.lock.
 // No flock dependency: the create-exclusive file claim carries PID plus birth identity.
-// Visibility: the reservation is released only once the worker has recorded its REAL lane spawn
-// (childPid) and the counter sees that pid or a descendant of it (a sandbox wrapper). The worker's
-// own preflight probes (`opencode --version`, `opencode debug skill`) are counted names too, so a
-// counted descendant of the worker alone never proves the lane is running.
+// Visibility: the recorded REAL lane spawn (childPid), or the same descendant behind its sandbox
+// wrapper, must be retained on two consecutive polls. Counted worker preflight probes beside the
+// recorded spawn never prove visibility. After 30s continuously without any named family process,
+// a recorded child releases admission with a named warning, leaving the worker
+// running. Named but lock-excluded family processes keep waiting. A grace shorter than the caller's
+// visibility window extends a late child's deadline; an explicit window no longer than grace wins.
+// Completed workers also release admission. Each launch released this way may run one lane above
+// the cap for that lane's lifetime if it becomes named later; a never-named lane is never counted.
 // Unknown-count policy: warn-and-admit under the mutex, with one NOT MEASURED line. A broken or
 // missing counter must not block every lane (the saturation hook's policy). Windows has no counter
 // here: every launch there prints `lane count NOT MEASURED` and the cap is NOT enforced.
@@ -26,6 +31,7 @@ export const LANE_LAUNCH_CAP = DEFAULT_MAX
 // Worker preflight includes three 30s probes, the 30s cache wait, sandbox socket scans
 // (10+30+90s per scan), process capture and a 60s spawn receipt. Allow startup under load.
 const VISIBILITY_MS = 900_000
+const UNCOUNTED_GRACE_MS = 30_000
 
 export function laneLaunchAdmissionLockPath({ env = process.env, home, ...options } = {}) {
   // The helper's OS user-profile home, not a project-isolated HOME, owns this mutex.
@@ -59,20 +65,67 @@ function admissionLease(options, initial) {
       if (outcome.startsWith('NOT CONFIRMED')) options.warn(`wt-lane: admission worker cleanup ${outcome}`)
     },
     async waitUntilVisible(readPid, readTerminal = () => false) {
-      if (initial.state === 'unknown') { visible = true; return }
-      const deadline = options.clock() + options.visibilityMs
+      if (visible || initial.state === 'unknown') { visible = true; return }
+      const waiting = visibilityWait(options)
       for (;;) {
         const live = visibilityObservation(options, readPid)
         if (live.state === 'unknown') { warnUnknown(live); visible = true; return }
-        if (live.visible) { visible = true; return }
+        const status = waiting.observe(live)
+        if (status.visible) { visible = true; return }
         // A completed worker cannot later launch an uncounted lane. Very short commands
         // may finish between polls; retaining their reservation would serve no purpose.
-        if (readTerminal() || (workerPid && options.workerFinished(workerPid))) { visible = true; return }
-        if (options.clock() >= deadline) throw new Error(`wt-lane: new lane was not visible to the counter within ${options.visibilityMs}ms; worker cleanup: ${cleanup()}; retry the same wt-lane command after checking its launch log`)
+        if (visibilityTerminal(readTerminal, workerPid, options)) { visible = true; return }
+        if (status.uncounted) { visible = true; options.warn(uncountedWarning(status.childPid, options.uncountedGraceMs)); return }
+        if (status.expired) throw new Error(`wt-lane: new lane was not visible to the counter within ${options.visibilityMs}ms; worker cleanup: ${cleanup()}; retry the same wt-lane command after checking its launch log`)
         await delay(options.pollMs)
       }
     },
   }
+}
+
+function visibilityTerminal(readTerminal, workerPid, options) {
+  return readTerminal() || (workerPid && options.workerFinished(workerPid))
+}
+
+function visibilityWait(options) {
+  let deadline = options.clock() + options.visibilityMs
+  const graceEnabled = options.uncountedGraceMs < options.visibilityMs
+  const child = { pid: null, childSeenAt: null, unnamedSince: null, previous: new Set() }
+  let confirmationAllowed = true
+  return {
+    observe(live) {
+      const now = options.clock()
+      const replaced = observeChild(child, live, now)
+      if (replaced && graceEnabled) deadline = Math.max(deadline, child.childSeenAt + options.uncountedGraceMs)
+      const visible = live.namedPids.some((pid) => child.previous.has(pid))
+      child.previous = new Set(live.namedPids)
+      let expired = now >= deadline
+      if (expired && !visible && live.namedPids.length > 0 && confirmationAllowed) {
+        confirmationAllowed = false
+        expired = false
+      }
+      return { visible, childPid: child.pid, expired,
+        uncounted: graceEnabled && child.unnamedSince !== null && now - child.unnamedSince >= options.uncountedGraceMs }
+    },
+  }
+}
+
+function observeChild(child, live, now) {
+  const replaced = Boolean(live.childPid && live.childPid !== child.pid)
+  if (replaced) {
+    child.pid = live.childPid
+    child.childSeenAt = now
+    child.unnamedSince = null
+    child.previous = new Set()
+  }
+  if (!live.childPid) child.previous = new Set()
+  if (!live.childPid || live.familyNamed) child.unnamedSince = null
+  else if (child.unnamedSince === null) child.unnamedSince = now
+  return replaced
+}
+
+function uncountedWarning(childPid, graceMs) {
+  return `wt-lane: lane child pid ${childPid} is not countable: no ${LANE_PROCESS_NAMES.join('/')} process in its family for ${Math.round(graceMs / 1000)}s; admission released; this lane is NOT counted against the cap of ${LANE_LAUNCH_CAP}`
 }
 
 // Returns the cleanup outcome actually observed. `ended` means the platform accepted the
@@ -100,9 +153,8 @@ function readAncestry(readProcesses) {
   } catch (error) { return { state: 'unknown', reason: error?.message ?? String(error) } }
 }
 
-function countedLaunch(pids, childPid, readProcesses) {
-  if (!childPid) return { visible: false }
-  if (pids.includes(childPid)) return { visible: true }
+function countedLaunch(pids, childPid, readProcesses, excluded) {
+  if (!childPid) return { namedPids: [], familyNamed: false }
   const family = new Set([childPid])
   const snapshot = readAncestry(readProcesses)
   if (snapshot.state === 'unknown') return snapshot
@@ -112,12 +164,16 @@ function countedLaunch(pids, childPid, readProcesses) {
     previousSize = family.size
     for (const row of rows) if (family.has(row.ppid)) family.add(row.pid)
   } while (family.size !== previousSize)
-  return { visible: pids.some((pid) => family.has(pid)) }
+  const namedPids = pids.filter((pid) => family.has(pid))
+  return { namedPids, familyNamed: namedPids.length > 0 || excluded.some(({ pid }) => family.has(pid)) }
 }
 
 function visibilityObservation(options, readPid) {
   const live = options.counter(LANE_PROCESS_NAMES)
-  return live.state === 'unknown' ? { state: 'unknown', reason: live.reason } : countedLaunch(live.pids, readPid(), options.readProcesses)
+  if (live.state === 'unknown') return { state: 'unknown', reason: live.reason }
+  const pids = live.pids
+  const childPid = readPid()
+  return { childPid, ...countedLaunch(pids, childPid, options.readProcesses, live.excluded ?? []) }
 }
 
 function releaseOnExit(claim, abort) {
@@ -140,7 +196,7 @@ function admissionOptions(options) {
   const platform = options.platform ?? process.platform
   const counter = platform === 'win32'
     ? () => ({ state: 'unknown', reason: 'pgrep is unavailable on win32' }) : countLaneProcessesReal
-  return { counter, clock: () => performance.now(), visibilityMs: VISIBILITY_MS, pollMs: 25,
+  return { counter, clock: () => performance.now(), visibilityMs: VISIBILITY_MS, uncountedGraceMs: UNCOUNTED_GRACE_MS, pollMs: 25,
     readProcesses: () => hostAdapter.readProcessSnapshot(),
     stopWorker: (pid) => hostAdapter.forceEndProcessFamily(pid),
     workerFinished,

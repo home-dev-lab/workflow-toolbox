@@ -333,6 +333,215 @@ it.skipIf(process.platform === 'win32')('reclaims the claim after an uncatchable
 })
 
 type Lease = { trackWorker: (pid: number, verify?: () => boolean) => void, waitUntilVisible: (readPid: () => number | null) => Promise<void> }
+
+type GracePoll = { child?: number | null, pids?: number[], excluded?: { pid: number }[], time?: number }
+const UNCOUNTED_WARNING = 'wt-lane: lane child pid 41 is not countable: no opencode/codex process in its family for 5s; admission released; this lane is NOT counted against the cap of 16'
+
+async function graceAdmission(observe: (poll: number) => GracePoll, concurrent = false, visibilityMs = 1_000_000,
+  behavior: { repeat?: boolean, throwingWarn?: boolean, graceMs?: number } = {}) {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const messages: string[] = []
+  const stopped: number[] = []
+  let poll = 0
+  let reads = 0
+  let launches = 0
+  let now = 0
+  let sample: GracePoll = {}
+  const options = { lockPath, clock: () => now, visibilityMs, uncountedGraceMs: behavior.graceMs ?? 5_000, pollMs: 0,
+    workerFinished: () => false, warn: (line: string) => { messages.push(line); if (behavior.throwingWarn) throw Error('warning failed') },
+    stopWorker: (pid: number) => { stopped.push(pid); return { status: 'ended' } },
+    readProcesses: () => ({ processes: [{ pid: 43, ppid: 42 }, { pid: 42, ppid: 41 }, { pid: 41, ppid: 40 }] }),
+    counter: () => {
+      if (launches) {
+        sample = observe(++poll)
+        now = sample.time ?? (poll > 20 ? 2_000_000 : poll * 1_000)
+      }
+      return { state: 'ok', count: concurrent ? 15 + Number(Boolean(sample.pids?.includes(43))) : 3,
+        pids: sample.pids ?? [900, 901, 902], excluded: sample.excluded ?? [] }
+    } }
+  const launch = async (lease: Lease) => {
+    launches++
+    lease.trackWorker(40, () => true)
+    await lease.waitUntilVisible(() => { reads++; return sample.child === undefined ? 41 : sample.child })
+    if (behavior.repeat) await lease.waitUntilVisible(() => { reads++; return 41 })
+    return 0
+  }
+  const first = withLaneLaunchAdmission(launch, options).catch((error: Error) => error.message)
+  const results = await Promise.all(concurrent ? [first, withLaneLaunchAdmission(launch, options)] : [first])
+  expect(existsSync(lockPath), 'every admission path must release its private claim').toBe(false)
+  return { results, messages, stopped, poll, reads, launches, now }
+}
+
+it('uncounted grace: releases an unnamed family promptly with one full warning and no worker stop', async () => {
+  const result = await graceAdmission(() => ({}))
+  expect(result.results, 'an uncountable live child must be admitted instead of timing out').toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'readPid must be called once per visibility poll').toBe(result.poll)
+  expect(result.now, 'the grace is measured from first sighting, not the visibility deadline').toBe(6_000)
+})
+
+it('uncounted grace: unnamed polls followed by a stable bwrap descendant release silently within grace', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll >= 3 ? [43] : [] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'the same descendant must be counted on two consecutive polls').toBe(4)
+})
+
+it('uncounted grace: a child never published still reaches the visibility timeout', async () => {
+  const result = await graceAdmission(() => ({ child: null }))
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+  expect(result.now).toBeGreaterThan(5_000)
+})
+
+it.each([41, 42])('uncounted grace: named but lock-excluded family pid %i retains the existing timeout', async (pid) => {
+  const result = await graceAdmission(() => ({ pids: [], excluded: [{ pid }] }))
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+})
+
+it('uncounted grace: a late child receives its full grace past the original visibility deadline', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 1 ? null : 41, time: 997_000 + poll * 1_000 }))
+  expect(result.results, 'first child publication must extend a nearly expired deadline').toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.now).toBe(1_004_000)
+})
+
+it('uncounted grace: grace at least as long as visibility preserves the explicit deadline without warning', async () => {
+  for (const visibilityMs of [5_000, 4_000]) {
+    const result = await graceAdmission((poll) => ({ child: poll < 3 ? null : 41 }), false, visibilityMs)
+    expect(result.results).toEqual([expect.stringContaining(`new lane was not visible to the counter within ${visibilityMs}ms`)])
+    expect(result.messages).toEqual([])
+    expect(result.stopped).toEqual([40])
+    expect(result.now).toBe(visibilityMs)
+  }
+})
+
+it.each([41, 42])('uncounted grace: a family pid %i named for one poll cannot silently release admission', async (pid) => {
+  const result = await graceAdmission((poll) => ({ pids: poll === 2 ? [pid] : [] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages, 'a transient process name must not hide an uncountable lane').toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(8)
+})
+
+it('uncounted grace: preflight longer than grace does not start the child grace early', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll < 8 ? null : 41, pids: poll >= 9 ? [43] : [] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'null child polls cannot consume the grace or confirmation').toBe(10)
+})
+
+it('uncounted grace: two launchers retain the cap while a delayed lane becomes counted within grace', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll >= 3 ? [43] : [] }), true)
+  expect(result.results.sort()).toEqual([0, 1])
+  expect(result.launches).toBe(1)
+  expect(result.messages).toEqual(['wt-lane: Refused: 16 lanes live, cap 16; wait for a lane to exit, then retry the same wt-lane command'])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(4)
+})
+
+it('uncounted grace: alternating named descendants never confirm the same pid twice', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll % 2 ? [42] : [43] }))
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+})
+
+it('uncounted grace: a replacement child gets its own full grace and warning pid', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 1 ? 41 : 42, time: poll === 1 ? 1_000 : 4_000 + poll * 1_000 }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING.replace('pid 41', 'pid 42')])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(result.poll)
+  expect(result.now, 'a replacement cannot inherit the old child grace').toBe(11_000)
+})
+
+it('uncounted grace: a stable counted descendant confirms while the direct child alternates names', async () => {
+  const result = await graceAdmission((poll) => ({ pids: poll % 2 ? [41, 42] : [42] }))
+  expect(result.results, 'the stable descendant must remain in every confirmation set').toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(2)
+})
+
+it('uncounted grace: a first counted observation at the deadline gets one confirming poll', async () => {
+  const result = await graceAdmission((poll) => poll === 1 ? { time: 0, pids: [], excluded: [{ pid: 42 }] }
+    : { pids: [42], time: 1_000_000 + (poll - 2) * 25 })
+  expect(result.results, 'a healthy lane first counted at expiry must have a confirmation poll').toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(3)
+})
+
+it('uncounted grace: an unconfirmed deadline observation gets exactly one extra poll then timeout', async () => {
+  const result = await graceAdmission((poll) => poll === 1 ? { time: 0, pids: [], excluded: [{ pid: 42 }] }
+    : { pids: poll < 5 ? [poll % 2 ? 42 : 43] : [], excluded: [{ pid: 42 }], time: 1_000_000 + (poll - 2) * 25 })
+  expect(result.results).toEqual([expect.stringContaining('new lane was not visible to the counter within 1000000ms')])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([40])
+  expect(result.reads, 'changing counted pids cannot renew the confirmation allowance').toBe(3)
+})
+
+it.each(['counted', 'excluded'])('uncounted grace: recent %s evidence resets the continuous unnamed grace', async (kind) => {
+  const result = await graceAdmission((poll) => {
+    if (poll === 1) return { time: 0, pids: [] }
+    if (poll === 2) return { time: 29_990, pids: kind === 'counted' ? [42] : [], excluded: kind === 'excluded' ? [{ pid: 42 }] : [] }
+    if (poll === 3) return { time: 30_020, pids: [] }
+    return { time: 30_030 + (poll - 4) * 25, pids: [42] }
+  }, false, 1_000_000, { graceMs: 30_000 })
+  expect(result.results).toEqual([0])
+  expect(result.messages, 'one unnamed poll after recent named evidence cannot release admission').toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(5)
+})
+
+it('uncounted grace: a null child read interrupts unnamed evidence and starts a fresh full grace', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 2 ? null : 41, time: poll === 1 ? 1_000 : 4_000 + poll * 1_000 }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.now, 'missing child evidence cannot consume the unnamed grace').toBe(12_000)
+})
+
+it('uncounted grace: changing child roots resets a shared descendant confirmation', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 1 ? 41 : 42, pids: [43] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads, 'a shared descendant cannot confirm across different child roots').toBe(3)
+})
+
+it('uncounted grace: a null child read cannot confirm the preceding counted observation', async () => {
+  const result = await graceAdmission((poll) => ({ child: poll === 2 ? null : 41, pids: [42] }))
+  expect(result.results).toEqual([0])
+  expect(result.messages).toEqual([])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(4)
+})
+
+it('uncounted grace: a second wait on the released lease returns without another warning or poll', async () => {
+  const result = await graceAdmission(() => ({}), false, 1_000_000, { repeat: true })
+  expect(result.results).toEqual([0])
+  expect(result.messages, 'the named warning belongs to the lease, not each wait invocation').toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped).toEqual([])
+  expect(result.reads).toBe(6)
+})
+
+it('uncounted grace: a throwing warning callback cannot stop an already released worker', async () => {
+  const result = await graceAdmission(() => ({}), false, 1_000_000, { throwingWarn: true })
+  expect(result.results).toEqual(['warning failed'])
+  expect(result.messages).toEqual([UNCOUNTED_WARNING])
+  expect(result.stopped, 'the worker is visible before warning delivery can throw').toEqual([])
+})
+
 // Worker 40 runs a counted preflight probe 41; its real lane spawn is 50, wrapped 50 -> 51 -> 52.
 const PREFLIGHT_TREE = { processes: [{ pid: 41, ppid: 40 }, { pid: 50, ppid: 40 }, { pid: 51, ppid: 50 }, { pid: 52, ppid: 51 }] }
 
