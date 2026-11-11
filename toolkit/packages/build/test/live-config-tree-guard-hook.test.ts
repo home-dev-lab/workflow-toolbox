@@ -27,9 +27,14 @@ afterEach(() => {
 // worked on inside a Claude Code session) — and CLAUDE_CONFIG_DIR wins over the HOME-based
 // `.claude*` heuristic. Every fixture must scrub it, or a fixture's HOME override is silently
 // ignored and the hook resolves the REAL live rules directory instead of the fixture's.
+// The same holds for the guard's own settings: a host that runs the guard in deny mode (or pins
+// its platform) exports them to every child, and a fixture that inherits them tests that host's
+// posture instead of the default one. Each row sets the mode or platform it needs.
 function withoutRealConfigDir(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const clean = { ...env }
   delete clean.CLAUDE_CONFIG_DIR
+  delete clean.WT_LIVE_CONFIG_TREE_GUARD_MODE
+  delete clean.WT_LIVE_CONFIG_TREE_GUARD_PLATFORM
   return clean
 }
 
@@ -140,7 +145,7 @@ function registerLiveModeCases() {
     const configDir = join(root, 'srv', 'claude-config')
     mkdirSync(join(configDir, 'rules', '.git'), { recursive: true })
     const r = runHook(`git -C ${gitBashPath(join(configDir, 'rules'))} checkout -b work`, root, {
-      ...process.env,
+      ...withoutRealConfigDir(process.env),
       CLAUDE_CONFIG_DIR: configDir,
     })
     expect(r.systemMessage, 'must not be silent — CLAUDE_CONFIG_DIR names this as the rules root').toBeTruthy()
