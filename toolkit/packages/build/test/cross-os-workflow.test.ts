@@ -72,7 +72,7 @@ describe('omitted descriptor history evidence', () => {
 })
 
 type Entry = { os: string; shard?: number; timeout?: number }
-type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
+type Step = { id?: string; name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
   jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number | string; steps: Step[] } }
 }
@@ -107,7 +107,7 @@ function windowsEntries(): Entry[] {
 const strip = (expression: string) => expression.trim().replace(/^\$\{\{\s*/, '').replace(/\s*\}\}$/, '')
 
 // Evaluates the `if` forms this workflow uses: `&&` of `always()`, `success()`, `!cancelled()`, `runner.os ==|!= 'X'`,
-// `matrix.shard ==|!= N`.
+// `matrix.shard ==|!= N`, `steps.<id>.outcome ==|!= 'X'`.
 // Any other form throws, so a new shape forces this evaluator to be extended rather than silently read as true.
 // An absent `if` is the implicit `success()`; `always()`, `success()` and `!cancelled()` are all true here (no earlier
 // step is failed and the run is not cancelled).
@@ -121,8 +121,18 @@ function runsOn(step: Step, entry: Entry): boolean {
     if (os) return (runnerOs(entry) === os[2]) === (os[1] === '==')
     const shard = /^matrix\.shard\s*(==|!=)\s*(\d+)$/.exec(term)
     if (shard) return ((entry.shard ?? 0) === Number(shard[2])) === (shard[1] === '==')
+    const outcome = /^steps\.([\w-]+)\.outcome\s*(==|!=)\s*'(\w+)'$/.exec(term)
+    if (outcome) return (stepOutcome(outcome[1]!, entry) === outcome[3]) === (outcome[2] === '==')
     throw new Error(`cross-os.yml step "${step.name}": unsupported if term \`${term}\` (extend runsOn in this test)`)
   })
+}
+
+// With no failed step (this evaluator's model), a step's outcome is `success` where it runs and `skipped` elsewhere.
+// Failure paths are modelled in cross-os-step-outcomes.test.ts.
+function stepOutcome(id: string, entry: Entry): 'success' | 'skipped' {
+  const target = steps.find((candidate) => candidate.id === id)
+  if (target === undefined) throw new Error(`cross-os.yml: no step has id \`${id}\``)
+  return runsOn(target, entry) ? 'success' : 'skipped'
 }
 
 // Interpolates the two `${{ }}` forms an artifact name may use; anything else throws.
@@ -616,6 +626,17 @@ describe('Ubuntu shard union checker refuses incomplete artifact downloads', () 
     const result = partitionCommand(directory)
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('Shard reports: expected')
+    // A shard whose build failed skips its suite and uploads nothing: the message names that shard and sends the
+    // reader to its job instead of reading as a coverage defect.
+    expect(result.stderr).toContain("missing ubuntu-shard-1.json: that Ubuntu shard uploaded no report (its suite did not run or its upload failed); read that shard's job")
+  })
+
+  it('names the cause when no Ubuntu shard uploaded any report', () => {
+    const { directory } = partitionFixture()
+    rmSync(directory, { recursive: true, force: true })
+    const result = partitionCommand(directory)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("Shard reports: no Ubuntu shard uploaded a report (no suite ran, or every upload failed); read the Ubuntu shard jobs")
   })
 
   it('requires exactly one coverage blob from every shard', () => {

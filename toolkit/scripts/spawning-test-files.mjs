@@ -60,6 +60,7 @@ export const spawningTestFiles = [
   'packages/build/test/commit-chain-lexer-property.test.ts',
   'packages/build/test/commit-signature-check.test.ts',
   'packages/build/test/concurrent-test-guard-hook.test.ts',
+  'packages/build/test/cross-os-step-outcomes.test.ts',
   'packages/build/test/cross-os-workflow.test.ts',
   'packages/build/test/crossos-dispatch.test.ts',
   'packages/build/test/deep-grounding.test.ts',
