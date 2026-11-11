@@ -43,6 +43,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- `wt-lane` no longer holds the machine-wide launch admission for up to 15 minutes when the lane's
+  model command never runs under a process named `opencode` or `codex` (a Node script, for example).
+  Once the lane's process family has shown no such process for 30 seconds, the launcher releases
+  admission, leaves the lane running, and warns that this lane is not counted against the lane cap.
+  A counted lane is now confirmed on two consecutive checks before admission is released.
+
 - A `wt-rules-on-demand` refusal now states on its first line that only that call was
   refused, names its tool and description when present, says that the other calls sent in
   the same message ran normally unless their own result is also a refusal, and asks to
