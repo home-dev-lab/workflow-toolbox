@@ -501,3 +501,21 @@ it('isAlive returns false on a failed signal probe without reading /proc', () =>
   expect(isAlive(4242, { platform: 'linux', probe: () => { throw errno('ESRCH') }, readStat })).toBe(false)
   expect(readStat).not.toHaveBeenCalled()
 })
+
+it('isAlive reads a dead (X) state as gone', () => {
+  expect(isAlive(4242, linuxStat(() => '4242 (node) X 1 4242'))).toBe(false)
+})
+
+it('isAlive rethrows every /proc read error other than ENOENT and ESRCH', () => {
+  for (const code of ['EPERM', 'EMFILE', 'EIO']) {
+    expect(() => isAlive(4242, linuxStat(() => { throw errno(code) })), code).toThrow(code)
+  }
+})
+
+it('isAlive never reads /proc off Linux', () => {
+  const readStat = vi.fn(() => '4242 (node) Z 1 4242')
+  for (const platform of ['darwin', 'win32']) {
+    expect(isAlive(4242, { platform, probe: () => true, readStat })).toBe(true)
+  }
+  expect(readStat).not.toHaveBeenCalled()
+})
