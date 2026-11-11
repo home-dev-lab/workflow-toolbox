@@ -43,6 +43,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- A `wt-rules-on-demand` refusal now states on its first line that only that call was
+  refused, names its tool and description when present, says that the other calls sent in
+  the same message ran normally unless their own result is also a refusal, and asks to
+  re-send exactly the refused calls.
 - A process that exits while `/proc` is being listed no longer fails the whole listing. The lane-launch
   count (`lane count NOT MEASURED: ENOENT`), the idle reader, the watcher-orphan check and the wake-floor
   scan now list plain pid names and read a vanished pid as gone, while a listing that genuinely cannot be

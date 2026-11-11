@@ -1703,6 +1703,20 @@ function* unregisteredSteps($, rules, e, loop, admission) {
   for (const rule of rules) if (rule.compliance?.kind === 'unregistered') yield safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
 }
 
+function sanitizeRefusalLabel(value, cap) {
+  if (typeof value !== 'string') return '';
+  const points = [...value.replace(/[<>"\p{Cc}\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/gu, ' ').replace(/\s+/gu, ' ').trim()];
+  return points.length > cap ? `${points.slice(0, cap - 1).join('')}…` : points.join('');
+}
+
+function refusalCallLabel(e) {
+  const input = e.input;
+  const nested = input && typeof input === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(input));
+  const description = sanitizeRefusalLabel(nested ? input.description : e.description, 80);
+  const tool = sanitizeRefusalLabel(e.tool, 128) || 'tool';
+  return description ? `${tool} "${description}"` : tool;
+}
+
 function* refusalSteps($, ctx, before, e, loop, admission) {
   // Keep pending refusals in flight until the result is returned; do not claim on failed logging/store.
   for (const rule of before) ctx.refusing.set(rule.name, (ctx.refusing.get(rule.name) ?? 0) + 1);
@@ -1712,7 +1726,7 @@ function* refusalSteps($, ctx, before, e, loop, admission) {
     const injected = inject(ctx, before, `tool.call:${e.tool}`, admission);
     yield journal($, before, loop, [], [], injected);
     yield* unregisteredSteps($, before, e, loop, admission);
-    const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
+    const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.' + ` Only this call was refused: ${refusalCallLabel(e)}. The other calls sent in the same message were not refused by this and ran normally unless their own result is also a refusal; re-send this call and every call whose own result is a refusal, nothing else.`, ...before.map(block)].join('\n\n') };
     claim(ctx, before);
     for (const pending of injected) rememberDelivery(ctx, pending.rule, pending);
     return result;
