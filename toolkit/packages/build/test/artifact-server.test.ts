@@ -2978,7 +2978,8 @@ describe('owner decision 5: Tailscale access', () => {
 describe('HTML script warnings', () => {
   const cases = [
     { mode: 'raw', body: '<pre class="mermaid">flowchart LR A-->B</pre><script>ok()</script><script src="local.js"></script>', findings: ['1 inline scripts', '1 script sources', '1 Mermaid diagram renderings'] },
-    { mode: 'annotatable', body: '<script>import x from "https://cdn.example/a.js"; import("/local.js")</script><script src></script>', findings: ['1 inline scripts', '1 script sources', '2 imports'] },
+    // Changed expectation: a static import in a classic script is a SyntaxError, never a load, so only import() counts.
+    { mode: 'annotatable', body: '<script>import x from "https://cdn.example/a.js"; import("/local.js")</script><script src></script>', findings: ['1 inline scripts', '1 script sources', '1 imports'] },
     { mode: 'rich', body: '<script src="local.js"></script><script>import("https://cdn.example/a.js"); import("/local.js")</script>', findings: ['1 script sources', '2 imports'] },
     { mode: 'interactive', body: '<script src="https://cdn.example/a.js"></script><script src="//cdn.example/b.js"></script><script src="data:text/javascript,ok()"></script><script src="blob:https://cdn.example/id"></script><script src="local.js"></script>', findings: ['4 script sources'] },
     // 'self' is the origin of the URL handed out (local here), never the server's other origin.
@@ -3005,7 +3006,18 @@ describe('HTML script warnings', () => {
     { mode: 'rich', body: '<div data-example="import(\'/a.js\')">Working page</div>', findings: [] },
     { mode: 'raw', body: '<pre title="example class=plain" class="mermaid">A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
     { mode: 'rich', body: '<script title=" src=local.js">document.body.textContent = "OK"</script>', findings: [] },
+    // Branch e2e: a static import exists only in a module script, so a classic script's "from" string is no import.
+    { mode: 'rich', body: '<script>var keys = ["from","to"]; import("/a.js")</script>', findings: ['1 imports'] },
+    // A comment's first '>' does not end it: what follows up to '-->' stays commented out.
+    { mode: 'raw', body: '<!-- <b>old</b> <script src="https://cdn.example/a.js"></script> -->', findings: [] },
   ]
+  it('does not warn about the real Mermaid bundle inlined in a rich page, which draws there', async () => {
+    const fixture = checkFixture('script-warning', () => 'https://reports.example/artifacts', 48001)
+    writeFileSync(fixture.artifact, `<!-- wt-artifact-server: rich -->\n<pre class="mermaid">flowchart LR\n A --> B</pre>${inlineMermaidBundle()}<script>mermaid.initialize({ startOnLoad: true })</script>`)
+    const result = await runCli(['url', fixture.artifact], fixture.env)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+  })
   it.each(cases)('audits $mode HTML: $body', async ({ mode, body, findings }) => {
     const fixture = checkFixture('script-warning', () => 'https://reports.example/artifacts', 48001)
     writeFileSync(fixture.artifact, `${mode === 'raw' ? '' : `<!-- wt-artifact-server: ${mode} -->\n`}${body}`)

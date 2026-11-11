@@ -57,7 +57,8 @@ function auditScript(audit, attributeText, body) {
     return
   }
   if (audit.mode === 'raw' || audit.mode === 'annotatable') addFinding(audit, 'inline scripts', body)
-  auditImports(audit, body, STATIC_IMPORT)
+  // A static import is a SyntaxError outside a module script, so only a module's text can hold one.
+  if (/^module$/i.test(attributes.get('type') ?? '')) auditImports(audit, body, STATIC_IMPORT)
   auditImports(audit, body, DYNAMIC_IMPORT)
 }
 
