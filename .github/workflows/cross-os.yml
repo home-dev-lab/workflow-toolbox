@@ -100,11 +100,28 @@ jobs:
       # The real-bubblewrap network cases of lane-sandbox.test.ts need a root-owned socat (the probe client
       # and the host side of the lane egress bridge); without it they skip with a named reason. The
       # ubuntu-26.04 image ships without socat, so install it here and keep those isolation cases running.
+      # On 2026-11-11 the Ubuntu mirrors stopped resolving on every Ubuntu runner, twice: the first install
+      # hung until the step timeout, the fallback never ran, Build was skipped and the suite ran against no
+      # dist. So every apt-get call has its own bound, and the step never gates the job: when socat stays
+      # unavailable the step says so (warning + job summary) and the suite below stops requiring socat, so
+      # only those two cases skip, with their reason; every other test keeps its signal.
       - name: Install socat for the lane sandbox network cases (Ubuntu)
+        id: socat
         if: ${{ runner.os == 'Linux' }}
-        run: sudo apt-get install -y --no-install-recommends socat || { sudo apt-get update -q && sudo apt-get install -y --no-install-recommends socat; }
+        continue-on-error: true
         shell: bash
-        timeout-minutes: 5
+        run: |
+          # The bound runs as root, inside sudo, so it can signal apt-get and every privileged child it starts.
+          apt_install() { sudo timeout --kill-after=10 90 apt-get -o DPkg::Lock::Timeout=30 install -y --no-install-recommends socat; }
+          if apt_install; then exit 0; fi
+          echo "socat: the first install failed or hung past 90 s; refreshing the package index once"
+          sudo timeout --kill-after=10 90 apt-get update -q || true
+          if apt_install; then exit 0; fi
+          note="socat could not be installed from the Ubuntu mirrors (two bounded attempts): the suite no longer requires it, so the lane-sandbox network cases of this shard, if any, skip with their named reason when no trusted socat is found"
+          echo "::warning title=socat unavailable::${note}"
+          printf '### socat unavailable\n\n%s\n' "${note}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        timeout-minutes: 6
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
       # Each macOS job captures its own third of the suite, preserving the other shards' logs if a runner freezes.
@@ -112,17 +129,21 @@ jobs:
       # Coverage thresholds are judged on the Ubuntu union below: Windows shards run coverage WITHOUT thresholds
       # (toolkit/vitest.config.mts leaves them undefined on win32), macOS runs no coverage.
       # `test:shard` does not build, so every job builds here. Measured on Windows: ~17 s.
+      # Every step that runs tests requires `steps.build.outcome == 'success'`: their `!cancelled()` (kept so a red
+      # host contract cannot hide the suite) would otherwise run them against a dist that was never built.
       - name: Build for the sharded suites
+        id: build
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
         timeout-minutes: 8
       # Partial coverage cannot judge whole-suite thresholds. Blob reports retain converted child-process
       # coverage; the dependent Ubuntu coverage job checks the actual file union and enforces the ratchets.
       - name: Test (Ubuntu shard ${{ matrix.shard }}/3)
-        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        id: ubuntu_suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Linux' }}
         shell: bash
-        # socat was installed above: its absence here is a failure, never a skip.
+        # When the socat step succeeded, socat's absence here is a failure (a resolver regression), never a skip.
         env:
-          WT_LANE_SANDBOX_REQUIRE_SOCAT: '1'
+          WT_LANE_SANDBOX_REQUIRE_SOCAT: ${{ steps.socat.outcome == 'success' && '1' || '0' }}
         run: |
           mkdir -p ci-diagnostics
           pnpm test:shard --shard=${{ matrix.shard }}/3 --coverage \
@@ -131,8 +152,9 @@ jobs:
             --outputFile.json=ci-diagnostics/ubuntu-shard-${{ matrix.shard }}.json \
             2>&1 | tee ci-diagnostics/vitest-shard-${{ matrix.shard }}-of-3.log
         timeout-minutes: 25
+      # Not after a skipped suite: there is nothing to upload, and a "no files found" error would be a second red.
       - name: Upload Ubuntu coverage shard
-        if: ${{ always() && runner.os == 'Linux' }}
+        if: ${{ always() && runner.os == 'Linux' && steps.ubuntu_suite.outcome != 'skipped' }}
         uses: actions/upload-artifact@v4
         with:
           name: ubuntu-coverage-shard-${{ matrix.shard }}
@@ -161,7 +183,7 @@ jobs:
       # The fast-run projection was 403-487 s; four shards were less balanced (the slowest projected about 619 s).
       - name: Test (macOS shard ${{ matrix.shard }}/3)
         shell: bash
-        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'macOS' }}
         env:
           WT_VITEST_MAX_WORKERS: 2
         run: |
@@ -185,7 +207,7 @@ jobs:
       # suite: 3 + 8 + 28 = 39. The shards run coverage without thresholds so the custom coverage provider's merge and
       # cleanup path stays exercised on Windows.
       - name: Test (Windows shard ${{ matrix.shard }}/3)
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && runner.os == 'Windows' }}
         shell: pwsh
         env:
           # windows-latest has 4 vCPUs; two workers avoid oversubscribing process-heavy fixtures.
@@ -203,7 +225,7 @@ jobs:
       # Run that one file alone, one worker, verbose reporter, with Node tracing every exit and uncaught
       # exception, so the artifact carries the fork's last words instead of the pool's silence.
       - name: Diagnose artifact-server fork (Windows)
-        if: ${{ always() && runner.os == 'Windows' && matrix.shard == 1 }}
+        if: ${{ always() && steps.build.outcome == 'success' && runner.os == 'Windows' && matrix.shard == 1 }}
         continue-on-error: true
         shell: pwsh
         env:

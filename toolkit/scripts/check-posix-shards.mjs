@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -71,9 +71,19 @@ function requireNames(actual, expected, label) {
   }
 }
 
+// A shard whose build failed skips its suite and uploads nothing, so a missing report names that shard and points
+// at its job rather than reading as a coverage defect.
+function requireShardReports(directory, names) {
+  if (!existsSync(directory)) throw new Error('Shard reports: no Ubuntu shard uploaded a report (no suite ran, or every upload failed); read the Ubuntu shard jobs')
+  const present = readdirSync(directory).filter((name) => /^ubuntu-shard-.*\.json$/.test(name))
+  const missing = names.filter((name) => !present.includes(name))
+  const hint = missing.length ? `; missing ${missing.join(', ')}: that Ubuntu shard uploaded no report (its suite did not run or its upload failed); read that shard's job` : ''
+  try { requireNames(present, names, 'Shard reports') } catch (error) { throw new Error(`${error.message}${hint}`) }
+}
+
 function readReports(directory, count) {
   const names = Array.from({ length: count }, (_, index) => `ubuntu-shard-${index + 1}.json`)
-  requireNames(readdirSync(directory).filter((name) => /^ubuntu-shard-.*\.json$/.test(name)), names, 'Shard reports')
+  requireShardReports(directory, names)
   return names.map((name) => {
     const report = json(resolve(directory, name))
     if (!Array.isArray(report.testResults)) throw new Error(`Missing testResults in ${name}`)
