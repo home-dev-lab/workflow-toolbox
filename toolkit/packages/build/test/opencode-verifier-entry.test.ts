@@ -10,7 +10,7 @@ import { hermeticPath } from './helpers/hermetic-path.js'
 import { isolateOpencodeAdmission, sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
-import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+import { LaneSandboxRefusal, laneUnsandboxedAtStart, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 
 isolateOpencodeAdmission()
 
@@ -313,6 +313,33 @@ async function refusesBareModelCredential() {
   }
 }
 
+// The refusal belongs to the sandbox's credential-withholding plan: an unsandboxed host withholds
+// nothing, so there the run proceeds under a launch plan that names itself unsandboxed. The plan is
+// read off the child (the stderr notice is printed once per process, so earlier tests may own it).
+async function runsUnsandboxedBareModelCredential() {
+  credentialConfig(process.env.XDG_CONFIG_HOME!)
+  vi.stubEnv('WT_LANE_SANDBOX', undefined)
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-'))
+  const child = childResult({ stdout: '{"part":{"type":"text","text":"OK"}}\n' })
+  const spawnFn = vi.fn<(bin: string, args: string[]) => typeof child>(() => child)
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' })
+  try {
+    await expect(runVerifier({ dir, id: 'bare-model-darwin', stdin: true, taskFile: null, model: 'primary', fallbackModel: null, variant: null }, {
+      binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }), skillDiscoveryVerifier: () => ({ ok: true }), readStdin: () => 'review', spawnFn,
+    })).resolves.toEqual({ code: 0, output: 'OK' })
+    expect(spawnFn).toHaveBeenCalledTimes(1)
+    expect(spawnFn.mock.calls[0]![0]).toBe('opencode')
+    expect(spawnFn.mock.calls[0]![1]).toEqual(expect.arrayContaining(['--model', 'primary']))
+    expect((child as unknown as { laneSandbox: { kind: string; line: string } }).laneSandbox).toMatchObject({
+      kind: 'none', line: expect.stringContaining('lane sandbox: none (bubblewrap sandbox is Linux-only; this host is darwin)'),
+    })
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 describe('wt-opencode-verify', () => {
   it('parses stable command arguments and builds the exact read-only opencode argv', verifiesReadOnlyArguments)
   it('refuses a successful run that denied an external-directory read', refusesExternalDirectoryDenial)
@@ -324,5 +351,7 @@ describe('wt-opencode-verify', () => {
   it('preserves the selected provider credential through effective discovery', verifiesDiscoveryProviderCredential)
   it('terminates a timed-out child and cleans up its task copy', verifiesTimeoutCleanup)
   it('retries one 429 with the fallback model and preserves the variant', verifiesFallbackVariant)
-  it('refuses a bare model with a credential file reference before spawning', refusesBareModelCredential)
+  // Only a sandboxed launch plans credential withholding; elsewhere the case below asserts the unsandboxed contract.
+  it.skipIf(laneUnsandboxedAtStart(process.env, process.platform))('refuses a bare model with a credential file reference before spawning', refusesBareModelCredential)
+  it('runs a bare model with a credential file reference unsandboxed off Linux under a plan that says so', runsUnsandboxedBareModelCredential)
 })

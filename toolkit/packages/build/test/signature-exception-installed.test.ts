@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,8 +16,8 @@ const cli = join(root, 'plugin/bin/wt-signature-exception.mjs')
 const made: string[] = []
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
-function repositoryFixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'wt-signature-install-'))
+function repositoryFixture(base = tmpdir()) {
+  const dir = mkdtempSync(join(base, 'wt-signature-install-'))
   made.push(dir)
   const f = exceptionFixture(dir)
   const local = join(dir, 'local'), bare = join(dir, 'remote.git')
@@ -49,12 +49,14 @@ function repositoryFixture() {
   return { ...f, dir, local, bare, env, A, B, call, git, commit }
 }
 
-function fixture(install = true) {
-  const f = repositoryFixture()
+function fixture(install = true, base?: string) {
+  const f = repositoryFixture(base)
   const { local, bare, B, call } = f
   const installGuard = () => call(process.execPath, [installer, '--install', '--repo', local, '--guard-remote', 'public', '--owner-keys', f.config.ownerKeysFile, '--exception-state', f.config.exceptionStateDir])
   if (install) { const r = installGuard(); if (r.status !== 0) throw Error(r.out) }
-  const statement = (ref = 'refs/heads/main', sha = B) => `workflow-toolbox signature exception v1: allow updating ${bare} ${ref} to ${sha} once, although it carries commits without an acceptable signature`
+  // The guard names a local remote by its physical path; on macOS tmpdir() is /var/... and resolves to /private/var/...
+  const destination = realpathSync(bare)
+  const statement = (ref = 'refs/heads/main', sha = B) => `workflow-toolbox signature exception v1: allow updating ${destination} ${ref} to ${sha} once, although it carries commits without an acceptable signature`
   const relay = (ref?: string, sha?: string) => { const answer = attestation(statement(ref, sha), f.owner); f.relay(answer); return answer }
   const authorize = () => writeFileSync(join(local, '.git/wt-push-authorized.json'), JSON.stringify({ maxCount: 100 }))
   const push = (ref = 'HEAD:refs/heads/main') => call('git', ['push', 'public', ref])
@@ -102,6 +104,30 @@ describe('owner exceptions through installed guard and disposable hook session',
     expect(f.git('--git-dir', f.bare, 'rev-parse', 'main')).toBe(f.B)
     expect(existsSync(join(f.config.exceptionStateDir, 'claims', `${answer.request_id}.json`))).toBe(true)
     expect(readFileSync(join(f.config.exceptionStateDir, 'exceptions.jsonl'), 'utf8')).toContain('opened')
+  })
+})
+
+describe('owner exception destination spelling', () => {
+  // Directory symlinks need a privilege on Windows runners; this case covers the macOS /var -> /private/var shape.
+  it.skipIf(process.platform === 'win32')('accepts the statement the guard announces when the remote is reached through a symlinked directory', () => {
+    const real = mkdtempSync(join(tmpdir(), 'wt-signature-real-'))
+    made.push(real)
+    const link = `${real}-link`
+    symlinkSync(real, link, 'dir')
+    made.push(link)
+    const f = fixture(true, link)
+    expect(realpathSync(f.bare)).not.toBe(f.bare)
+    f.authorize()
+    const denied = f.pre()
+    expect(denied.payload?.permissionDecision, denied.out).toBe('deny')
+    const announced = /exactly this text:\n(.+)\n/.exec(String(denied.payload?.permissionDecisionReason))?.[1]
+    expect(announced, denied.out).toBe(f.statement())
+    const answer = attestation(announced, f.owner)
+    f.relayAttestation(answer); f.authorize()
+    const pushed = f.push()
+    expect(pushed.status, pushed.out).toBe(0)
+    expect(f.git('--git-dir', f.bare, 'rev-parse', 'main')).toBe(f.B)
+    expect(existsSync(join(f.config.exceptionStateDir, 'claims', `${answer.request_id}.json`))).toBe(true)
   })
 })
 
