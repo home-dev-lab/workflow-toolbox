@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- wt-artifact-server url now warns on stderr when an HTML page holds scripts or imports its serving mode will block, naming the mode and the marker that allows them; a rendered Chromium test now proves the pinned Mermaid bundle draws diagrams in Markdown and interactive HTML and stays blocked in raw HTML
 - The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
   `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
   hook previews it only through an active pinned install. Install-time `--owner-keys` and

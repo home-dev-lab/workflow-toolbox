@@ -237,6 +237,51 @@ const EXIT_GRACE_MS = 2_000
 // fire before the runner's own timeout so a stall is reported as a render stall, not as a bare test timeout.
 const STATE_WAIT_MS = 15_000
 const SECURITY_MATRIX_TEST_BOUND_MS = STATE_WAIT_MS + RENDER_BOUND_MS + 3_000
+// Five sequential real-bundle renders each retain the existing 2 s virtual-time budget.
+const MERMAID_RENDER_TEST_BOUND_MS = STATE_WAIT_MS + 5 * (RENDER_BOUND_MS + EXIT_GRACE_MS) + 3_000
+
+// The bundle embedded in the page itself, the way the skill's copy-ready example writes it.
+function inlineMermaidBundle() {
+  const bundle = readFileSync(join(REPO_ROOT, 'plugin/skills/artifact-server/assets/mermaid/mermaid.min.js'), 'utf8')
+  return `<script>${bundle.replace(/<\/script/gi, '<\\/script')}</script>`
+}
+
+function mermaidReportHtml(interactive: boolean, inline = false) {
+  const loader = inline ? inlineMermaidBundle() : '<script src="__wt-artifact-server/mermaid.min.js"></script>'
+  return `${interactive ? '<!-- wt-artifact-server: interactive -->\n' : ''}<!doctype html><html><head><meta charset="utf-8"></head><body>
+<pre class="mermaid">flowchart LR\n Draft --> Review --> Published</pre>
+${loader}
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict' });</script>
+</body></html>`
+}
+
+it.skipIf(!CHROME)('draws real Mermaid in Markdown and interactive HTML, served or inlined, at every depth, but not raw HTML', async () => {
+  const root = temporaryDir('real-mermaid-root')
+  const stateHome = temporaryDir('real-mermaid-state')
+  mkdirSync(join(root, 'nested'))
+  writeFileSync(join(root, 'diagram.md'), '```mermaid\nflowchart LR\n Draft --> Review --> Published\n```')
+  writeFileSync(join(root, 'interactive.html'), mermaidReportHtml(true))
+  writeFileSync(join(root, 'nested', 'interactive.html'), mermaidReportHtml(true))
+  writeFileSync(join(root, 'inline.html'), mermaidReportHtml(true, true))
+  writeFileSync(join(root, 'plain.html'), mermaidReportHtml(false))
+  const reservation = await reservePort()
+  await closeServer(reservation.server)
+  spawnEnsure(temporaryDir('real-mermaid-project'), baseEnv(stateHome, {
+    WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+  }))
+  await waitForState(stateHome, (state) => state.roots.length === 1, STATE_WAIT_MS)
+  for (const page of ['diagram.md', 'interactive.html', 'nested/interactive.html', 'inline.html', 'plain.html']) {
+    const render = await renderInChrome(`http://localhost:${reservation.port}/artifacts/${page}`)
+    expect(render.completed, `${page}: ${render.stderr}`).toBe(true)
+    expect(render.stoppedAfterDump || render.code === 0, render.stderr).toBe(true)
+    if (page === 'plain.html') {
+      expect(render.stdout).not.toContain('<svg')
+      expect(render.stdout).toContain('Draft --&gt; Review --&gt; Published')
+    } else {
+      expect(render.stdout, `${page}: ${render.stderr}`).toMatch(/<svg\b[^>]*aria-roledescription="flowchart/)
+    }
+  }
+}, MERMAID_RENDER_TEST_BOUND_MS)
 
 function dumpComplete(stdout: string) {
   return stdout.trimEnd().endsWith('</html>')
@@ -2927,6 +2972,118 @@ describe('owner decision 5: Tailscale access', () => {
     expect(parseWindowsCheck('STATUS=404\r\n')).toEqual({ verdict: 'unreachable', reason: 'HTTP 404', from: 'windows' })
     expect(parseWindowsCheck('ERROR=The operation has timed out.\r\n')).toEqual({ verdict: 'unreachable', reason: 'The operation has timed out.', from: 'windows' })
     expect(parseWindowsCheck('')).toEqual({ verdict: 'unverified', reason: 'powershell.exe printed no check result' })
+  })
+})
+
+describe('HTML script warnings', () => {
+  const cases = [
+    { mode: 'raw', body: '<pre class="mermaid">flowchart LR A-->B</pre><script>ok()</script><script src="local.js"></script>', findings: ['1 inline scripts', '1 script sources', '1 Mermaid diagram renderings'] },
+    { mode: 'annotatable', body: '<script>import x from "https://cdn.example/a.js"; import("/local.js")</script><script src></script>', findings: ['1 inline scripts', '1 script sources', '2 imports'] },
+    { mode: 'rich', body: '<script src="local.js"></script><script>import("https://cdn.example/a.js"); import("/local.js")</script>', findings: ['1 script sources', '2 imports'] },
+    { mode: 'interactive', body: '<script src="https://cdn.example/a.js"></script><script src="//cdn.example/b.js"></script><script src="data:text/javascript,ok()"></script><script src="blob:https://cdn.example/id"></script><script src="local.js"></script>', findings: ['4 script sources'] },
+    // 'self' is the origin of the URL handed out (local here), never the server's other origin.
+    { mode: 'interactive', body: '<script src="http://localhost:48001/a.js"></script><script src="https://reports.example/a.js"></script><script src="//localhost:48001/a.js"></script><script>import("/local.js"); import("https://reports.example/a.js")</script>', findings: ['1 script sources', '1 imports'] },
+    { mode: 'interactive', body: '<script src=" https://cdn.example/a.js "></script>', findings: ['1 script sources'] },
+    { mode: 'rich', body: '<script type="module">import "/a.js";</script><script>import(`/b.js`)</script>', findings: ['2 imports'] },
+    { mode: 'raw', body: '<!-- <script>ok()</script> --><script type="application/json">{"x":1}</script><script-widget></script-widget><pre>import("/x.js")</pre>', findings: [] },
+    { mode: 'raw', body: '<pre class="mermaid">A-->B</pre><pre class="diagram mermaid">C-->D</pre><script>ok()</script>', findings: ['1 inline scripts', '2 Mermaid diagram renderings'] },
+    { mode: 'interactive', body: '<script type="module">import x from "https://cdn.example/a.js"; import "//cdn.example/b.js"; import("data:text/javascript,ok()")</script>', findings: ['3 imports'] },
+    { mode: 'rich', body: '<script>ok()</script>', findings: [] },
+    // Second counterexample pass: '<!--' inside a script is script text, and '<!-->' closes a comment at once.
+    { mode: 'interactive', body: '<script>const marker = "<!--";</script><script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
+    { mode: 'interactive', body: '<!--><script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
+    { mode: 'rich', body: '<script><!--\nimport("/a.js");\n//--></script>', findings: ['1 imports'] },
+    // Imports run from event handlers and javascript: URLs too.
+    { mode: 'rich', body: '<body onload="import(\'/a.js\').then(m => m.render())"></body>', findings: ['1 imports'] },
+    { mode: 'interactive', body: '<a href="javascript:import(\'https://cdn.example/a.js\')">Render</a>', findings: ['1 imports'] },
+    // Legacy JavaScript MIME types execute; a backslash pair is a protocol-relative URL to the browser.
+    { mode: 'interactive', body: '<script type="text/javascript1.5" src="https://cdn.example/a.js"></script><script src="\\\\cdn.example/b.js"></script>', findings: ['2 script sources'] },
+    { mode: 'raw', body: '<div data-class="mermaid">x</div><script>ok()</script>', findings: ['1 inline scripts'] },
+    { mode: 'raw', body: '<pre class=mermaid>A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
+    // Third counterexample pass: a '<' that opens no tag is text; attributes are read as attributes.
+    { mode: 'interactive', body: '1 < 2 <script src="https://cdn.example/a.js"></script>', findings: ['1 script sources'] },
+    { mode: 'rich', body: '<div data-example="import(\'/a.js\')">Working page</div>', findings: [] },
+    { mode: 'raw', body: '<pre title="example class=plain" class="mermaid">A-->B</pre><script>ok()</script>', findings: ['1 inline scripts', '1 Mermaid diagram renderings'] },
+    { mode: 'rich', body: '<script title=" src=local.js">document.body.textContent = "OK"</script>', findings: [] },
+  ]
+  it.each(cases)('audits $mode HTML: $body', async ({ mode, body, findings }) => {
+    const fixture = checkFixture('script-warning', () => 'https://reports.example/artifacts', 48001)
+    writeFileSync(fixture.artifact, `${mode === 'raw' ? '' : `<!-- wt-artifact-server: ${mode} -->\n`}${body}`)
+    const result = await runCli(['url', fixture.artifact], fixture.env)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
+    expect(result.stderr.trim().split('\n').filter(Boolean)).toHaveLength(findings.length)
+    for (const finding of findings) {
+      expect(result.stderr).toContain(`plan.html is served in ${mode} mode; its CSP blocks ${finding}`)
+      expect(result.stderr).toContain('<!-- wt-artifact-server: interactive -->')
+    }
+    if (mode === 'interactive' && findings.length) expect(result.stderr).toContain('Self-host scripts under a registered root')
+  })
+})
+
+describe('HTML script warnings output channels', () => {
+  it('audits uppercase .HTM targets too', async () => {
+    const fixture = checkFixture('script-htm', () => null, 48001)
+    const file = join(fixture.artifact, '..', 'plan.HTM')
+    writeFileSync(file, '<script>ok()</script>')
+    const result = await runCli(['url', file], fixture.env)
+    expect(result.stderr).toContain('plan.HTM is served in raw mode; its CSP blocks 1 inline scripts')
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.HTM\n')
+    expect(result.code).toBe(0)
+  })
+
+  it.each(['md', 'txt'])('never warns for a .%s target containing scripts', async (extension) => {
+    const fixture = checkFixture('script-non-html', () => null, 48001)
+    const file = join(fixture.artifact, '..', `text.${extension}`)
+    writeFileSync(file, '<script>ok()</script>')
+    const result = await runCli(['url', file], fixture.env)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe(`http://localhost:48001/reports/text.${extension}\n`)
+    expect(result.code).toBe(0)
+  })
+
+  it('keeps a failing check exit code when script warnings are printed', async () => {
+    const { server, port } = await answeringServer()
+    await closeServer(server)
+    const fixture = checkFixture('script-warning-unreachable', () => null, port)
+    writeFileSync(fixture.artifact, '<script>ok()</script>')
+    const result = await runCli(['url', fixture.artifact, '--check'], fixture.env)
+    expect(result.stderr).toMatch(/^warning: plan.html is served in raw mode;[^\n]+\ncheck: unreachable /)
+    expect(result.code).toBe(4)
+  })
+
+  it('writes script warnings before the check line without changing its result', async () => {
+    const { server, port } = await answeringServer()
+    try {
+      const fixture = checkFixture('script-warning-check', () => null, port)
+      writeFileSync(fixture.artifact, '<script>ok()</script>')
+      const result = await runCli(['url', fixture.artifact, '--check'], fixture.env)
+      expect(result.stderr).toMatch(/^warning: plan.html is served in raw mode;[^\n]+\ncheck: reachable \(HTTP 200, from local\)\n$/)
+      expect(result.stdout).toBe(`http://localhost:${port}/reports/plan.html\n`)
+      expect(result.code).toBe(0)
+    } finally { await closeServer(server) }
+  })
+})
+
+describe('HTML script warnings bundle remedy', () => {
+  it('serves the real pinned bundle through the document-relative reserved URL at every depth', async () => {
+    const root = temporaryDir('bundle-remedy-root')
+    const stateHome = temporaryDir('bundle-remedy-state')
+    writeFileSync(join(root, 'interactive.html'), mermaidReportHtml(true))
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    spawnEnsure(temporaryDir('bundle-remedy-project'), baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+    }))
+    await waitForState(stateHome, (state) => state.roots.length === 1)
+    const page = await fetch(`http://localhost:${reservation.port}/artifacts/interactive.html`)
+    expect.soft(page.headers.get('content-security-policy')).toContain("script-src 'self' 'unsafe-inline'")
+    const expected = readFileSync(join(REPO_ROOT, 'plugin/skills/artifact-server/assets/mermaid/mermaid.min.js'))
+    for (const directory of ['', 'nested/', 'nested/deeper/']) {
+      const response = await fetch(`http://localhost:${reservation.port}/artifacts/${directory}__wt-artifact-server/mermaid.min.js`)
+      expect(response.status).toBe(200)
+      expect(Buffer.from(await response.arrayBuffer()).equals(expected)).toBe(true)
+    }
   })
 })
 

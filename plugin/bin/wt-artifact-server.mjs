@@ -35,6 +35,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
+import { blockedScriptFindings, htmlModeOf, scriptWarning } from './lib/artifact-script-audit.mjs'
 import { closeMarkdownFence, markdownFenceTag, markdownScripts, MERMAID_FILE } from './lib/artifact-mermaid.mjs'
 import { artifactMermaidRouteIndex, artifactMermaidRouteMatches, readArtifactAsset } from './lib/host/artifact-assets.mjs'
 import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
@@ -242,7 +243,7 @@ function fileContentType(file) {
 const HTML_MODE_CSP = new Map([['rich', RICH_CSP], ['annotatable', ANNOTATABLE_CSP], ['interactive', INTERACTIVE_CSP]])
 
 function htmlCsp(file) {
-  const mode = /^\s*<!--\s*wt-artifact-server:\s*(rich|annotatable|interactive)\s*-->/i.exec(file.toString('utf8', 0, 256))?.[1].toLowerCase()
+  const mode = htmlModeOf(file.toString('utf8', 0, 256))
   return HTML_MODE_CSP.get(mode) ?? RAW_CSP
 }
 
@@ -623,6 +624,19 @@ function liveDecision(status) { return status === 'unknown' ? 'unknown-keep-live
 
 const URL_FLAGS = new Set(['--remote', '--check'])
 
+// CSP 'self' is the origin of the document's own URL, so only the URL handed out counts as same-origin.
+async function warnBlockedScripts(file, url) {
+  if (!/\.html?$/i.test(file)) return
+  try {
+    const bytes = await readArtifactAsset(file)
+    const mode = htmlModeOf(bytes.toString('utf8', 0, 256))
+    const allowedOrigins = [new URL(url).origin]
+    for (const finding of blockedScriptFindings(bytes.toString('utf8'), mode, { allowedOrigins })) {
+      process.stderr.write(`${scriptWarning(path.basename(file), mode, finding)}\n`)
+    }
+  } catch { /* Unreadable pages must not change URL resolution or its exit code. */ }
+}
+
 async function urlCommand(args) {
   const remote = args.includes('--remote')
   const positionals = args.filter((value) => !URL_FLAGS.has(value))
@@ -637,6 +651,7 @@ async function urlCommand(args) {
   const result = artifactUrlResult(path.resolve(argument), { remote })
   if (result.url === null) { process.stderr.write(`${result.reason}\n`); process.exitCode = 3; return }
   process.stdout.write(`${result.url}\n`)
+  await warnBlockedScripts(path.resolve(argument), result.url)
   if (!args.includes('--check')) return
   const check = await checkArtifactUrl(result.url, { remote, via: result.via })
   process.stderr.write(`${formatArtifactCheck(check)}\n`)
