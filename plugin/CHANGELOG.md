@@ -24,22 +24,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   The guard journal now keeps `toolUseId` evidence values up to 128 characters and `kinds` up
   to 64 for every guard using those keys; `wt-suite-lock-bypass-guard-hook.mjs` already
   recorded `toolUseId` and was truncating it at 24 characters, which broke its transcript lookup.
-- Suite-lock host clients can park and resume a ticket within a bounded window using
-  `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
-  shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.
-- wt-loaded-version lists every live Claude Code session of the current user, on every profile, with the version of a named plugin that its server processes actually load (read from each process's module path), and exits 0 when all load --expect, 1 when one is stale, 2 when it cannot judge (a process unreadable, no session visible without --allow-none, or a platform without /proc)
-- Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
-  to bound verification work. It prioritizes the most severe critiques and reports
-  every critique beyond the cap as not verified, with its reason and a count.
-  Omitting the argument keeps verification uncapped. A cap larger than the critique
-  count verifies everything.
-- Behaviour change: Independent analysis now validates its top-level arguments like the
-  other composition examples. An argument it does not recognise (for example
-  `verifierType`) used to be silently ignored; it now fails before any agent runs, with
-  an error naming the argument.
-- Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
-  an explicit JSON output, and throttled report-only session/prompt hooks. Reports
-  never archive, move, purge or delete worktrees; apply remains unavailable.
 
 ### Fixed
 
@@ -73,6 +57,31 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The pilot and pilot-orchestrator templates, and the delegation-chain skill, no longer tell a read-only critic or verifier (a type with no Write tool) to write a report file, which the spawn-capability guard refuses. Such a type is now spawned anonymously in the foreground and its final message is the report, which the spawner saves; the file-report contract stays for named spawns and types that have Write.
 - The suite-lock lane runner honours an explicit `--light` launcher prefix, preserves the real command in queued tickets, and refuses unsupported or repeated launcher flags before taking the lock.
 - The arc watch no longer reports a sub-agent as stale when the harness has marked it finished (its `finished` flag was written after the last transcript record), even if its last message did not end in a clean end-of-turn. An agent that was resumed after finishing still gets reported.
+
+## [0.198.0] - 2026-11-08
+
+### Added
+
+- Suite-lock host clients can park and resume a ticket within a bounded window using
+  `--park-dir`, `--park-s` and `--park-owner-pid`; optional `--yield-to-parked` preserves
+  shared queue ordering while ordinary gates continue, with private outcomes and parked status rows.
+- wt-loaded-version lists every live Claude Code session of the current user, on every profile, with the version of a named plugin that its server processes actually load (read from each process's module path), and exits 0 when all load --expect, 1 when one is stale, 2 when it cannot judge (a process unreadable, no session visible without --allow-none, or a platform without /proc)
+- Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
+  to bound verification work. It prioritizes the most severe critiques and reports
+  every critique beyond the cap as not verified, with its reason and a count.
+  Omitting the argument keeps verification uncapped. A cap larger than the critique
+  count verifies everything.
+- Behaviour change: Independent analysis now validates its top-level arguments like the
+  other composition examples. An argument it does not recognise (for example
+  `verifierType`) used to be silently ignored; it now fails before any agent runs, with
+  an error naming the argument.
+- Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
+  an explicit JSON output, and throttled report-only session/prompt hooks. Reports
+  never archive, move, purge or delete worktrees; apply remains unavailable.
+- Artifact-server HTML can opt into scripts and browser annotation tools with a first-content `<!-- wt-artifact-server: interactive -->` marker within 256 bytes. Existing raw, rich, and annotatable policies are unchanged. Markdown `mermaid` fences render escaped diagram source with a reserved local Mermaid asset and a hash-pinned initializer; Markdown without diagrams remains script-free. Mermaid 11.17.2 asset placeholders include installation instructions for network-restricted checkouts.
+
+### Fixed
+
 - Adopt refresh no longer fails on Windows when another process holds the rule file open at the moment it publishes (for example a second refresh running at the same time): it retries the replacement briefly, stops as soon as the file already holds the new text, and still skips a file that someone changed in the meantime.
 - Worktree sweep discovers enclosing and bare worktree registries without a local `.git`, reports failed discovery as unknown, and retains differently cased index-lock filenames as activity evidence.
 - Worktree sweep shares parent-only native path identity across registry and index-lock checks, keeps unmatched registrations, and reports incomplete outside counts as unknown.
@@ -108,13 +117,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   Direct background-worker apply refusal is now regression-tested on a populated project.
 - Adopt now installs new at-act rules in on-demand directories with their trigger head and stamp, and repairs existing headless managed copies with a head-only write that preserves their bodies.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
-- Added regression tests for the secret guard's streaming mask; no behaviour change.
-### Added
-
-- Artifact-server HTML can opt into scripts and browser annotation tools with a first-content `<!-- wt-artifact-server: interactive -->` marker within 256 bytes. Existing raw, rich, and annotatable policies are unchanged. Markdown `mermaid` fences render escaped diagram source with a reserved local Mermaid asset and a hash-pinned initializer; Markdown without diagrams remains script-free. Mermaid 11.17.2 asset placeholders include installation instructions for network-restricted checkouts.
-
-### Fixed
-
+- Added regression tests for the secret guard's streaming mask.
+- The secret guard (`wt-secret-guard` 0.1.8) now locates where a detected value ends (quotes, brackets, line ends) before it applies the outbound reference exemption, and key scrubbing uses the same boundaries; raw keys are handled in more spellings. Installed copies update with the version bump.
+- Linux lane sandboxes find and mask sockets under the bound paths, and refuse to start when that socket scan cannot complete instead of starting without the mask.
+- Cross-OS result collection refuses a run whose identity (event, branch, commit) does not match the requested merge before it writes any card.
 - Ground-truth at-act guidance rides alongside verification commands and Agent results; every SendMessage at-act rule, including delegation ladder, routing, addressing, and proportionate verification, skips exact raw-agent-id messages while retaining named recipients and near-miss ids; concurrent-session worktree guidance skips list/prune while retaining add/remove/move and the existing reset, rebase, and merge triggers.
 - Plugin-launched opencode children no longer load `~/.claude/CLAUDE.md` automatically (an `instructions` entry you add to your own opencode config still applies); project `CLAUDE.md` files are loaded through config `instructions`. Repositories with both `AGENTS.md` and `CLAUDE.md` now load both. Nested sub-directory `CLAUDE.md` files are no longer attached on file reads.
 - Every `wt-lane.mjs` launch, including script callers, now counts live opencode/codex lanes under a machine-shared admission lock and refuses at 16 before starting a worker. The exported `laneLaunchAdmissionLockPath()` names `~/.local/state/wt-lane-host/launch-admission.lock` on Linux, `~/Library/Application Support/wt-lane-host/launch-admission.lock` on macOS and `%LOCALAPPDATA%/wt-lane-host/launch-admission.lock` on Windows; other scripts may take the same lock with the exported admission helpers. The OS user's profile home keeps project-isolated `HOME` and per-worktree state overrides from splitting admission. The lock stays held until the worker has recorded its real lane spawn and the counter sees that process or a descendant of it (preflight `opencode` probes never count), or until its worker finishes; a visibility timeout force-stops only the worker this launch spawned, after verifying its identity, and its error states the cleanup outcome observed. An acquisition timeout names the lock file, its owner pid and the manual remedy. An unavailable count, including a `pgrep` that does not answer within 5 seconds (it is then killed, in the lane saturation hook too), explicitly warns `lane count NOT MEASURED` and admits under the lock, so a broken or hung counter never blocks every lane; a process returned under both lane names counts once. Failing to remove the lock's temporary staging link is reported and never loses a claim already taken; Windows has no counter, so there the cap is not enforced and every launch prints `NOT MEASURED`. A launcher killed with SIGKILL between its worker spawn and that lane being counted can let one extra lane past the cap. Because a launcher can now outlive a short lane, the SDK pilot lifecycle reads the launcher's output through the descriptors it opened rather than by path, so a lane whose worker removes the brief cleanup directory before its launcher exits no longer leaves the lifecycle waiting forever, and an unreadable launcher output, or a failure closing either output file, now fails the launch instead of hanging it, and both files are always closed or attempted.
