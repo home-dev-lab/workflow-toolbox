@@ -27,6 +27,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The live-config-tree guard now folds letter case on Windows and macOS, so a git command spelling the live rules directory as .Claude/Rules (or CLAUDE_CONFIG_DIR in another case) is warned or denied like .claude/rules.
 - `wt-lane` no longer holds the machine-wide launch admission for up to 15 minutes when the lane's
   model command never runs under a process named `opencode` or `codex` (a Node script, for example).
   Once the lane's process family has shown no such process for 30 seconds, the launcher releases

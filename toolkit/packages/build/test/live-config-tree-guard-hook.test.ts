@@ -3,13 +3,13 @@
 // REAL hook as a child process against isolated fixture paths, never the real ~/.claude.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error -- plain .mjs host module without type declarations
-import { nativeDrivePath } from '../../../../plugin/bin/lib/host/live-config-tree-host.mjs'
+import { foldsPathCase, nativeDrivePath } from '../../../../plugin/bin/lib/host/live-config-tree-host.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-live-config-tree-guard-hook.mjs')
@@ -155,6 +155,76 @@ function registerLiveModeCases() {
 describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (default warn posture)', () => {
   registerLiveWarningCases()
   registerLiveModeCases()
+})
+
+const caseSeam = (platform: string) => ({ WT_LIVE_CONFIG_TREE_GUARD_PLATFORM: platform })
+const FOLDING_PLATFORMS = [['win32'], ['darwin']]
+
+/** A git rules directory spelled `<root>/<parts...>` literally, so it exists on a case-sensitive
+ *  volume too: the injected platform alone decides whether the guard folds case. */
+function literalCaseFixture(tag: string, ...parts: string[]) {
+  const root = mkdtempSync(join(tmpdir(), `wt-live-tree-case-${tag}-`))
+  roots.push(root)
+  mkdirSync(join(root, ...parts, '.git'), { recursive: true })
+  const home = join(root, 'home')
+  return { root, env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
+}
+
+/** Does the temporary directory's volume fold case? Probed once, on a real directory. */
+function tmpFoldsCase(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), 'wt-live-tree-case-probe-'))
+  try {
+    mkdirSync(join(probe, 'lower'))
+    return existsSync(join(probe, 'LOWER'))
+  } finally {
+    rmSync(probe, { recursive: true, force: true })
+  }
+}
+const CASE_INSENSITIVE_HOST = (process.platform === 'win32' || process.platform === 'darwin') && tmpFoldsCase()
+
+describe('wt-live-config-tree-guard-hook — case-insensitive filesystems', () => {
+  it('folds case on win32 and darwin only', () => {
+    expect(foldsPathCase('win32')).toBe(true)
+    expect(foldsPathCase('darwin')).toBe(true)
+    expect(foldsPathCase('linux')).toBe(false)
+  })
+
+  it.each(FOLDING_PLATFORMS)('reads a .Claude/Rules spelling as the live rules dir under the %s seam', (platform) => {
+    const f = literalCaseFixture('segment', 'home', '.Claude', 'Rules')
+    const r = runHook(`git -C ${gitBashPath(f.root)}/home/.Claude/Rules switch x`, f.root, { ...f.env, ...caseSeam(platform) })
+    expect(r.systemMessage).toContain('LIVE CONFIG TREE')
+  })
+
+  // One capital per row, so each row isolates one comparison: the parent segment, then the last one.
+  it.each([['.Claude', 'rules'], ['.claude', 'Rules']])('keeps %s/%s case-sensitive under the linux seam', (parent, last) => {
+    const f = literalCaseFixture('segment-linux', 'home', parent, last)
+    const r = runHook(`git -C ${gitBashPath(f.root)}/home/${parent}/${last} switch x`, f.root, { ...f.env, ...caseSeam('linux') })
+    expect(r.status).toBe(0)
+    expect(r.systemMessage).toBeNull()
+  })
+
+  it.each(FOLDING_PLATFORMS)('matches CLAUDE_CONFIG_DIR whatever its case under the %s seam', (platform) => {
+    const f = literalCaseFixture('configdir', 'CFG', 'RULES')
+    const env = { ...f.env, ...caseSeam(platform), CLAUDE_CONFIG_DIR: join(f.root, 'cfg'), WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny' }
+    expect(runHook(`git -C ${gitBashPath(f.root)}/CFG/RULES reset --hard`, f.root, env).decision).toBe('deny')
+  })
+
+  // A lowercase `rules` passes the last-segment check, so only the CLAUDE_CONFIG_DIR equality decides.
+  it('keeps the CLAUDE_CONFIG_DIR comparison case-sensitive under the linux seam', () => {
+    const f = literalCaseFixture('configdir-linux', 'CFG', 'rules')
+    const env = { ...f.env, ...caseSeam('linux'), CLAUDE_CONFIG_DIR: join(f.root, 'cfg'), WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny' }
+    const r = runHook(`git -C ${gitBashPath(f.root)}/CFG/rules reset --hard`, f.root, env)
+    expect(r.status).toBe(0)
+    expect(r.decision).toBeNull()
+  })
+
+  it.runIf(CASE_INSENSITIVE_HOST)('denies git -C ~/.Claude/Rules reset --hard on a case-insensitive volume', () => {
+    const f = gitFixture('case-e2e')
+    const env: NodeJS.ProcessEnv = { ...f.env, WT_LIVE_CONFIG_TREE_GUARD_MODE: 'deny' }
+    delete env.WT_LIVE_CONFIG_TREE_GUARD_PLATFORM
+    expect(existsSync(join(f.home, '.Claude', 'Rules', '.git')), 'the volume folds case').toBe(true)
+    expect(runHook('git -C ~/.Claude/Rules reset --hard', f.root, env).decision).toBe('deny')
+  })
 })
 
 /** A git rules fixture under `<root>/<parent>`. On POSIX a parent `a\b` is one directory literally
