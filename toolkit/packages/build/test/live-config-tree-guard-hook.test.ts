@@ -206,7 +206,7 @@ function registerWindowsSpellingCases() {
   it.runIf(process.platform === 'win32')('resolves a Git Bash drive path (/c/...) to its drive', () => {
     const f = spelledFixture('msys', 'm')
     const native = join(f.root, 'm', '.claude', 'rules')
-    const msys = `/${native[0].toLowerCase()}${native.slice(2).replace(/\\/g, '/')}`
+    const msys = `/${native.charAt(0).toLowerCase()}${native.slice(2).replace(/\\/g, '/')}`
     expect(runHook(`git -C ${msys} switch x`, f.root, f.env).systemMessage).toContain('LIVE CONFIG TREE')
   })
 }
@@ -247,7 +247,9 @@ describe('wt-live-config-tree-guard-hook — does NOT block legitimate work', ()
     const r = runHook(`git -C ${f.rulesDir} checkout -- some-rule.md`, f.root, f.env)
     expect(r.stdout).toBe('')
   })
+})
 
+describe('wt-live-config-tree-guard-hook — does NOT block legitimate work elsewhere', () => {
   it('never touches a git command targeting an unrelated project worktree', () => {
     const f = gitFixture('other-dir')
     const otherDir = join(f.root, 'projects', 'my-repo')
