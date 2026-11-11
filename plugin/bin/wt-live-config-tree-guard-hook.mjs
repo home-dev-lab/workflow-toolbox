@@ -48,7 +48,7 @@ import { existsSync, readFileSync, writeSync } from 'node:fs'
 import { isAbsolute, posix, resolve, sep } from 'node:path'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 import { homeDirectory } from './lib/host/home-directory.mjs'
-import { liveConfigTreeGuardPlatform, nativeDrivePath } from './lib/host/live-config-tree-host.mjs'
+import { foldsPathCase, liveConfigTreeGuardPlatform, nativeDrivePath } from './lib/host/live-config-tree-host.mjs'
 
 const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
 
@@ -57,17 +57,24 @@ const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
  *  than a file path. */
 function isLiveRulesDir(dirPath) {
   if (!dirPath) return false
-  const segments = dirPath.split(sep).filter(Boolean)
+  const spelled = comparablePath(dirPath)
+  const segments = spelled.split(sep).filter(Boolean)
   if (segments[segments.length - 1] !== 'rules') return false
   const parent = segments[segments.length - 2]
   if (parent && CLAUDE_DIR_SEGMENT.test(parent)) return true
   const configDir = process.env.CLAUDE_CONFIG_DIR
   if (!configDir) return false
   try {
-    return resolve(configDir, 'rules') === dirPath
+    return comparablePath(resolve(configDir, 'rules')) === spelled
   } catch {
     return false
   }
+}
+
+/** `path` as the filesystem compares it: case-folded where the platform opens `.Claude/Rules` as
+ *  `.claude/rules` (Windows, default macOS), unchanged elsewhere. */
+function comparablePath(path) {
+  return foldsPathCase(PATH_PLATFORM) ? path.toLowerCase() : path
 }
 
 /** Only a directory that both (a) matches the live-rules definition above AND (b) is
