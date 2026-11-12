@@ -7,6 +7,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Suite-lock queue ranking now combines declared priority, bounded light bypass,
+  job size and completed project turns. `run --size S|M|L --project NAME` declares
+  work; short exclusive jobs gain one level unless that project's latest short job overran
+  ten minutes. Commands that started and ended, by exit or signal, consume project
+  turns unless parked, lost or refused. Exclusive, non-release S leases exceeding
+  ten minutes withhold the bonus even when interrupted, reclaimed or force-released;
+  the penalty persists until that project's next S job. Host operators can set project
+  precedence for up to seven days. Waiting lines,
+  status and the journal explain the computed rank. Mixed-version queues retain
+  the exact legacy order until older tickets drain.
 - The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
   `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
   hook previews it only through an active pinned install. Install-time `--owner-keys` and
@@ -26,6 +36,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   recorded `toolUseId` and was truncating it at 24 characters, which broke its transcript lookup.
 
 ### Fixed
+
+- Count every started command's project turn, including light jobs, release-priority
+  jobs, and commands exiting 75. Keep S-bonus history exclusive and non-release;
+  order equal-rank lights by project turn. Read damaged rank state conservatively
+  without blocking admission, and recover abandoned S durations using boot-relative
+  time when the holder's boot identity matches.
 
 - The secret guard's refusals no longer print what they refuse. The outbound check now walks a tool input once (string values, object keys, numbers, CONCEALED objects), and every tool-call refusal is redacted at one final step against the current findings and the held values; a key prints only when it is a plain identifier. The guard now also refuses a native CONCEALED object, a held value used as an object key, and a held value sent as a JSON number (exact decimal comparison, so a held `1e-400` does not refuse `0`). Very deep or wide inputs no longer throw. An input over 1,000,000 nodes or 64 Mi characters is refused with an empty refusal text, because text the guard did not inspect could match any wording.
 - The live-config-tree guard now folds letter case on Windows and macOS, so a git command spelling the live rules directory as .Claude/Rules (or CLAUDE_CONFIG_DIR in another case) is warned or denied like .claude/rules.

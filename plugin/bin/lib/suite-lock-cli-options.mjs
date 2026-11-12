@@ -1,5 +1,22 @@
 import { parseStaticFlag, staticLaneEnabled, staticRunCommand } from './suite-lock-static.mjs'
 import { parseParkOptions, parkRunFields, parkStaticRun } from './suite-lock-park.mjs'
+import { parseSuiteLockProject, parseSuiteLockSize, suiteLockRankOptions } from './suite-lock-priority.mjs'
+
+function rankFlags(flags, env) {
+  const options = {}
+  for (const name of ['size', 'project']) {
+    const index = flags.indexOf(`--${name}`)
+    if (index >= 0) {
+      if (flags[index + 1] === undefined) throw new Error(`--${name} requires a value`)
+      options[name] = flags.splice(index, 2)[1]
+    }
+  }
+  if (Object.keys(options).length === 0) return options
+  const environment = env()
+  if (environment.WT_SUITE_LOCK_BROKER?.trim()) return suiteLockRankOptions(options, environment)
+  for (const name of Object.keys(options)) options[name] = name === 'size' ? parseSuiteLockSize(options[name]) : parseSuiteLockProject(options[name])
+  return options
+}
 
 export function parseSuiteRunOptions(args, dependencies) {
   const { parseSeconds, parsePriority, waitSeconds, defaultStaleS } = dependencies
@@ -14,11 +31,12 @@ export function parseSuiteRunOptions(args, dependencies) {
   const light = lightIndex >= 0
   if (light) flags.splice(lightIndex, 1)
   const priority = parsePriority(flags)
+  const metadata = rankFlags(flags, () => dependencies.env ?? process.env)
   const park = parseParkOptions(flags, () => dependencies.env)
   if (priority === 'release' && light) throw new Error('release priority cannot be combined with light')
   const staticRun = parkStaticRun(park, () => priority !== 'release' && (explicitStatic || (staticLaneEnabled(dependencies.env) && staticRunCommand(command))))
   if (flags.length > 0) throw new Error(`unknown argument: ${flags[0]}`)
-  return { command, waitS, staleS, light, priority, staticRun, ...parkRunFields(park) }
+  return { command, waitS, staleS, light, priority, staticRun, ...metadata, ...parkRunFields(park) }
 }
 
 export async function cliInheritedLease(hasLease) {

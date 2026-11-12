@@ -196,7 +196,7 @@ export function readLightCounter(root) {
 const COUNTER_READ_ATTEMPTS = 4
 const COUNTER_READ_PAUSE_MS = 10
 
-function readCounterText(file, read) {
+export function readCounterText(file, read = readFileSync) {
   const pause = new Int32Array(new SharedArrayBuffer(4))
   for (let attempt = 1; ; attempt += 1) {
     try { return read(file, 'utf8') } catch (error) {
