@@ -109,6 +109,12 @@ function findingsIn(value) {
     consumeUnit(found, unit, options);
     if (budget.exhausted) { found.push({ kind: 'inspection-budget', value: '', secret: '' }); break; }
   }
+  return reduceFindings(found);
+}
+
+// Presentation deduplication keeps one finding per kind:value, but every raw spelling
+// (including a discarded finding's secret) stays in sensitiveValues for redaction.
+export function reduceFindings(found) {
   const sensitiveValues = new Set();
   const unique = new Map();
   for (const item of found) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { classifyOutbound, describeFindings, base64Utf8 } from './outbound-tools.js';
+import { classifyOutbound, describeFindings, base64Utf8, reduceFindings } from './outbound-tools.js';
 import { tokenize, testState, testVaultSnapshot, testRestoreVault } from './token-vault.js';
 import { config, configure } from './config.js';
 import { planOwnerChannel } from './owner-channel.js';
@@ -182,6 +182,19 @@ async function redactionLocks(check) {
     const dropped = ['Zq81', 'Lm', 'Pw', 'x3'].join('');
     const survivors = Object.defineProperty([], 'sensitiveValues', { value: new Set([dropped]) });
     assert.equal(redactDiagnostic(`at ${dropped} end`, survivors).includes(dropped), false, 'deduplicated secret printed');
+  });
+  await check('A6 reduction keeps a discarded finding secret in sensitiveValues', async () => {
+    const { redactDiagnostic } = await redaction();
+    const kept = ['Kp', '4r', 'Vt', '9q'].join(''); const lost = ['Nw', '2h', 'Js', '6d'].join('');
+    const reduced = reduceFindings([
+      { kind: 'op-json-concealed', value: 'SHARED-PRESENTATION', secret: kept },
+      { kind: 'op-json-concealed', value: 'SHARED-PRESENTATION', secret: lost },
+    ]);
+    assert.equal(reduced.length, 1, 'fixture must collide on kind:value');
+    for (const secret of [kept, lost]) {
+      assert.equal(reduced.sensitiveValues.has(secret), true, 'a colliding secret is missing from sensitiveValues');
+      assert.equal(redactDiagnostic(`at ${secret} end`, reduced).includes(secret), false, 'a colliding secret printed');
+    }
   });
 }
 
