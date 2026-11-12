@@ -266,6 +266,16 @@ describe('shipped private plugins', () => {
     }
     expect(hits).toEqual([])
   })
+
+  // On Windows a file URL's pathname is `/D:/a/...`: spawning it resolved to `D:\D:\a\...` (MODULE_NOT_FOUND) and a
+  // main-module guard comparing it with process.argv[1] never matched. fileURLToPath gives the platform path.
+  it('derives file paths from import.meta.url with fileURLToPath, never URL.pathname', () => {
+    const hits: string[] = []
+    for (const plugin of PLUGINS) for (const file of files(join(REPO_ROOT, 'plugins', plugin))) {
+      if (/import\.meta\.url\)\.pathname/.test(readFileSync(file, 'utf8'))) hits.push(relative(REPO_ROOT, file))
+    }
+    expect(hits).toEqual([])
+  })
 })
 
 // The plugins' command-hook binaries carry their own node:test locks; run them where they live so each
