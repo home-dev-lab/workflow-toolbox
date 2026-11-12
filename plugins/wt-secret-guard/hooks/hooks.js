@@ -156,16 +156,11 @@ async function refuseRawOutbound($, event) {
 
 const denialFindings = new WeakMap();
 
-// All tool-call routes, including early grammar and execution refusals, finish here.
-function finalizedRegistration(on) {
-  return (event, ...args) => {
-    if (event !== 'tool.call') return on(event, ...args);
-    const handler = args.pop();
-    return on(event, ...args, async ($, input, next) => {
-      const result = await handler($, input, next);
-      return finalizeDenial(result, await findingsForDenial(result, input));
-    });
-  };
+// All tool-call routes, including early grammar and execution refusals, finish here: every tool.call hook in
+// register() passes its handler's result through finalizedResult(). The host validator refuses a wrapper
+// around `on` and a $ handed to a function it cannot see, so each hook calls its handler itself.
+async function finalizedResult(result, input) {
+  return finalizeDenial(result, await findingsForDenial(result, input));
 }
 
 async function findingsForDenial(result, input) {
@@ -228,36 +223,37 @@ async function submitPrompt($, event, next) {
   return { drop: 'wt-secret-guard handled a release request; see the guard line above.' };
 }
 
+async function guardedBash($, event, next) {
+  const grammar = releaseGrammarRefusal(event);
+  if (grammar) return grammar;
+  const audit = journalHost($);
+  const references = referenceHost($);
+  const originalCommand = typeof event.command === 'string' ? event.command : '';
+  // The raw-input check does not see the token spans the rewrite CONSUMES: each is replaced by the value it
+  // was issued for before bash runs, so its spelling never reaches bash - even when a held value later took
+  // that spelling (Astra at fff75e45: such a token was refused as raw input although it rehydrates). A token
+  // anywhere else (a heredoc body, a comment) is written as-is, and is checked exactly as before.
+  const plan = originalCommand ? planReferences(originalCommand, { tokens: knownTokens() }) : null;
+  let checked = originalCommand;
+  for (const occurrence of plan?.ok ? plan.occurrences.filter((entry) => entry.form === 'token') : []) {
+    checked = `${checked.slice(0, occurrence.start)}${' '.repeat(occurrence.end - occurrence.start)}${checked.slice(occurrence.end)}`;
+  }
+  const refusal = await refuseRawOutbound($, checked === originalCommand ? event : { ...event, command: checked });
+  if (refusal) return refusal;
+  const execute = (originalEvent) => executeBash($, next, audit, references, originalCommand, originalEvent);
+  if (!config().secretFileReadWarnings) {
+    await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
+    return execute(event);
+  }
+  return applySecretReadGuard(audit, event, execute, verdictForBash(originalCommand), 'bash');
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on, options) => {
-  on = finalizedRegistration(on);
   configure(options);
   on('session.receive', scrubInbound);
   on('prompt.attachment', warnHookAttachment);
-  on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
-    const grammar = releaseGrammarRefusal(event);
-    if (grammar) return grammar;
-    const audit = journalHost($);
-    const references = referenceHost($);
-    const originalCommand = typeof event.command === 'string' ? event.command : '';
-    // The raw-input check does not see the token spans the rewrite CONSUMES: each is replaced by the value it
-    // was issued for before bash runs, so its spelling never reaches bash - even when a held value later took
-    // that spelling (Astra at fff75e45: such a token was refused as raw input although it rehydrates). A token
-    // anywhere else (a heredoc body, a comment) is written as-is, and is checked exactly as before.
-    const plan = originalCommand ? planReferences(originalCommand, { tokens: knownTokens() }) : null;
-    let checked = originalCommand;
-    for (const occurrence of plan?.ok ? plan.occurrences.filter((entry) => entry.form === 'token') : []) {
-      checked = `${checked.slice(0, occurrence.start)}${' '.repeat(occurrence.end - occurrence.start)}${checked.slice(occurrence.end)}`;
-    }
-    const refusal = await refuseRawOutbound($, checked === originalCommand ? event : { ...event, command: checked });
-    if (refusal) return refusal;
-    const execute = (originalEvent) => executeBash($, next, audit, references, originalCommand, originalEvent);
-    if (!config().secretFileReadWarnings) {
-      await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
-      return execute(event);
-    }
-    return applySecretReadGuard(audit, event, execute, verdictForBash(originalCommand), 'bash');
-  });
+  on('tool.call', { tool: 'Bash' }, async ($, event, next) => finalizedResult(await guardedBash($, event, next), event));
   registerOtherHooks(on);
 };
 
@@ -279,19 +275,19 @@ async function executeBash($, next, audit, references, originalCommand, original
 }
 
 function registerOtherHooks(on) {
-  on('tool.call', { tool: 'Read' }, ($, event, next) => measuredRead($, event, next, 'read'));
-  on('tool.call', { tool: 'NotebookRead' }, ($, event, next) => measuredRead($, event, next, 'notebook-read'));
-  on('tool.call', { tool: 'Write' }, guardedOutbound);
-  on('tool.call', { tool: 'Edit' }, guardedOutbound);
-  on('tool.call', { tool: 'NotebookEdit' }, guardedOutbound);
-  on('tool.call', { tool: 'WebFetch' }, guardedOutbound);
-  on('tool.call', { tool: 'WebSearch' }, guardedOutbound);
-  on('tool.call', { tool: 'Agent' }, guardedOutbound);
-  on('tool.call', { tool: 'Task' }, guardedOutbound);
-  on('tool.call', { tool: 'Grep' }, scrubToolResult);
-  on('tool.call', { tool: 'Glob' }, scrubToolResult);
-  on('tool.call', { tool: /^mcp__/ }, guardedOutbound);
-  on('tool.call', { tool: /.*/ }, async ($, event, next) => releaseGrammarRefusal(event) ?? next(event));
+  on('tool.call', { tool: 'Read' }, async ($, event, next) => finalizedResult(await measuredRead($, event, next, 'read'), event));
+  on('tool.call', { tool: 'NotebookRead' }, async ($, event, next) => finalizedResult(await measuredRead($, event, next, 'notebook-read'), event));
+  on('tool.call', { tool: 'Write' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'Edit' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'NotebookEdit' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'WebFetch' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'WebSearch' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'Agent' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'Task' }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: 'Grep' }, async ($, event, next) => finalizedResult(await scrubToolResult($, event, next), event));
+  on('tool.call', { tool: 'Glob' }, async ($, event, next) => finalizedResult(await scrubToolResult($, event, next), event));
+  on('tool.call', { tool: /^mcp__/ }, async ($, event, next) => finalizedResult(await guardedOutbound($, event, next), event));
+  on('tool.call', { tool: /.*/ }, async ($, event, next) => finalizedResult(releaseGrammarRefusal(event) ?? await next(event), event));
   on('turn.step', async function* ($, event, next) {
     const correlation = event.turnId ?? event.index;
     const stream = maskTurnStep(event, next, REDACTION_NOTE, () => appendEvent(journalHost($), { surface: 'assistant', action: 'masked', dedupeKey: correlation ? `assistant:${correlation}` : undefined }));
