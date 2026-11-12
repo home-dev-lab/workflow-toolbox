@@ -30,7 +30,7 @@ function advisoryWrite(write) {
 }
 
 export function suiteLockReleaseOutcome(lease, outcome, now = Date.now()) {
-  const elapsed = Math.max(0, now - Date.parse(lease.holder.startedAt))
+  const elapsed = Math.max(0, Number.isFinite(lease.startedMonotonic) ? performance.now() - lease.startedMonotonic : now - Date.parse(lease.holder.startedAt))
   const heldMs = Number.isFinite(outcome.heldMs) && outcome.heldMs >= 0 ? outcome.heldMs : elapsed
   const served = outcome.served === true && outcome.exit !== 75 && !outcome.lost && !outcome.yielded
   return { ...outcome, heldMs, served }
@@ -41,7 +41,7 @@ export function recordSuiteLockService(lease, outcome) {
   const { holder, root } = lease
   if (lease.staticDomain) return
   try {
-    if (holder.light) return
+    if (holder.light || holder.priority === 'release') return
     const project = normalizeSuiteLockProject(holder.project)
     if (outcome.served && holder.priority !== 'release') advisoryWrite(() => stampProjectTurn(root, project))
     if (holder.size === 'S' && (outcome.served || outcome.heldMs > 600_000)) advisoryWrite(() => publish(stateFile(root, 'size-history', project), {
@@ -54,11 +54,21 @@ export function recordSuiteLockService(lease, outcome) {
 function stampProjectTurn(root, project) {
   // Recovery may enumerate at release, never on the acquisition poll path. Read the
   // high-water mark before pruning so a restarted counter cannot reuse a stale turn.
-  let highest = safeSequence(readJson(path.join(root, 'turn-seq'))?.sequence)
-  for (const entry of entries(root, 'project-turns', true)) highest = Math.max(highest, safeSequence(entry.turn))
+  const counter = readJson(path.join(root, 'turn-seq'))?.sequence
+  let highest = safeSequence(counter)
+  const recovery = !Number.isSafeInteger(counter) || counter < 0
+  for (const entry of entries(root, 'project-turns', recovery)) highest = Math.max(highest, safeSequence(entry.turn))
   const sequence = highest + 1
   publish(path.join(root, 'turn-seq'), { sequence })
   publish(stateFile(root, 'project-turns', project), { project, turn: sequence })
+}
+
+/** Death/reclaim timing is a conservative wall-clock upper bound, never service. */
+export function recordAbandonedSuiteLock(root, holder, options = {}) {
+  try {
+    const heldMs = (options.now?.() ?? Date.now()) - Date.parse(holder?.startedAt)
+    if (heldMs > 600_000) recordSuiteLockService({ root, holder, staticDomain: options.staticDomain || path.basename(root) === 'static-lane' }, { heldMs, served: false })
+  } catch (error) { warn(error) }
 }
 
 export function setSuiteLockPrecedence(root, entry) {

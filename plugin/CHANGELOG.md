@@ -10,8 +10,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Suite-lock queue ranking now combines declared priority, bounded light bypass,
   job size and completed project turns. `run --size S|M|L --project NAME` declares
   work; short exclusive jobs gain one level unless that project's latest short job overran
-  ten minutes. Only completed commands consume project turns. An S lease exceeding
-  ten minutes withholds the bonus even if interrupted. Host operators can set project
+  ten minutes. Commands that started and ended, by exit or signal, consume project
+  turns unless parked, lost or refused. Exclusive, non-release S leases exceeding
+  ten minutes withhold the bonus even when interrupted, reclaimed or force-released;
+  the penalty persists until that project's next S job. Host operators can set project
   precedence for up to seven days. Waiting lines,
   status and the journal explain the computed rank. Mixed-version queues retain
   the exact legacy order until older tickets drain.

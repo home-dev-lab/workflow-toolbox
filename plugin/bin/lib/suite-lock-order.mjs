@@ -4,7 +4,7 @@ import { LIGHT_BYPASS_MAX_GRANTS } from './suite-lock-legacy-order.mjs'
 import { displayText } from './suite-lock-display.mjs'
 import { compareKeys, normalizeSuiteLockProject, ticketPassable } from './suite-lock-rank-common.mjs'
 
-export const SUITE_LOCK_ORDER_VERSION = 3
+export const SUITE_LOCK_ORDER_VERSION = 4
 
 function tierFor(record, project, precedence, now) {
   if (record.priority === 'release') return 0
@@ -36,7 +36,7 @@ function rankFacts(record, context) {
     light: record.light === true, passable, project, projectTurn }
 }
 
-/** Pure v3 key: all clients rank the same ticket against the same shared snapshot. */
+/** Pure rank facts; the block merge below enforces project turns and bounded light passes. */
 export function rankSuiteLockTicket({ number, record }, context) {
   const reason = rankFacts(record, context)
   const lane = reason.light || !reason.passable ? 0 : 1
@@ -54,22 +54,28 @@ function legacyReason(ticket) {
   return { declared: record.level, rankLevel: ticket.effectiveLevel, project, size, sizeBonus: false, line }
 }
 
-// Preserve each light's ticket-number slot. Only exhausted exclusives within the same
-// tier and level exchange slots, using a permutation derived entirely from this snapshot.
-function alternateExhausted(ranked) {
+function mergeRankBlock(tickets) {
+  const exclusive = tickets.filter((ticket) => !ticket.reason.light)
+    .sort((a, b) => a.reason.projectTurn - b.reason.projectTurn || a.number - b.number)
+  const lights = tickets.filter((ticket) => ticket.reason.light).sort((a, b) => a.number - b.number)
+  const ordered = []
+  while (exclusive.length || lights.length) {
+    const blocked = lights.length && exclusive.some((ticket) => !ticket.reason.passable && ticket.number < lights[0].number)
+    ordered.push(lights.length && !blocked ? lights.shift() : exclusive.shift())
+  }
+  return ordered
+}
+
+// Each tier/level is independent. All exclusives share project-turn order; a light
+// may pass them only while no earlier exhausted exclusive remains in this snapshot.
+function mergeRankBlocks(ranked) {
   const groups = new Map()
-  for (const [index, ticket] of ranked.entries()) {
-    if (ticket.key[2] !== 0 || ticket.reason.light) continue
+  for (const ticket of ranked) {
     const group = `${ticket.key[0]}:${ticket.key[1]}`
-    if (!groups.has(group)) groups.set(group, { slots: [], tickets: [] })
-    groups.get(group).slots.push(index)
-    groups.get(group).tickets.push(ticket)
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group).push(ticket)
   }
-  for (const { slots, tickets } of groups.values()) {
-    tickets.sort((a, b) => a.reason.projectTurn - b.reason.projectTurn || a.number - b.number)
-    slots.forEach((slot, index) => { ranked[slot] = tickets[index] })
-  }
-  return ranked
+  return [...groups.values()].flatMap(mergeRankBlock)
 }
 
 export function orderSuiteLockTickets(tickets, counter, now, p0Counter, context = {}) {
@@ -80,5 +86,5 @@ export function orderSuiteLockTickets(tickets, counter, now, p0Counter, context 
   const snapshot = { ...context, lightCounter: context.lightCounter ?? counter, now }
   const ranked = tickets.map((ticket) => ({ ...ticket, ...rankSuiteLockTicket(ticket, snapshot) }))
   ranked.sort(compareKeys)
-  return { order: 'levels', levelOrder: 'rank-v3', tickets: alternateExhausted(ranked) }
+  return { order: 'levels', levelOrder: 'rank-v4', tickets: mergeRankBlocks(ranked) }
 }

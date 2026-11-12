@@ -4,6 +4,7 @@ import path from 'node:path'
 import { orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
+import { ticketIsStale } from './host/suite-lock-liveness.mjs'
 
 export function journalCommand(argv) {
   const args = Array.isArray(argv) ? argv : []
@@ -33,9 +34,13 @@ function journalRequest(root, ticket, record, priority, options, light) {
 }
 
 function requestRankFields(root, ticket, record, options) {
+  try { return readRequestRankFields(root, ticket, record, options) } catch { return {} }
+}
+
+function readRequestRankFields(root, ticket, record, options) {
   if (options.staticDomain) return {}
   const now = options.now?.() ?? Date.now()
-  const tickets = readQueueSnapshot(path.join(root, 'queue.d'), now).filter((entry) => entry.number !== ticket).map((entry) => ({ number: entry.number, record: entry.holder }))
+  const tickets = readQueueSnapshot(path.join(root, 'queue.d'), now).filter((entry) => entry.number !== ticket && !ticketIsStale(entry, options)).map((entry) => ({ number: entry.number, record: entry.holder }))
   tickets.push({ number: ticket, record })
   const ordered = orderSuiteLockTickets(tickets, readLightCounter(root), now, readP0Counter(root), readSuiteLockRankState(root, tickets))
   const { reason } = ordered.tickets.find((entry) => entry.number === ticket)

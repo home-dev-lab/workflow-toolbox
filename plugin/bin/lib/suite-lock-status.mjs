@@ -44,7 +44,7 @@ export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0C
   const live = tickets.filter((ticket) => !ticket.stale)
   const ordered = orderSuiteLockTickets(live, counter, now, p0Counter, rankState)
   const stale = tickets.filter((ticket) => ticket.stale).sort((left, right) => left.number - right.number)
-    .map((ticket) => ordered.levelOrder === 'rank-v3' && numericLevel(ticket.record?.level)
+    .map((ticket) => ordered.levelOrder === 'rank-v4' && numericLevel(ticket.record?.level)
       ? { ...ticket, ...rankSuiteLockTicket(ticket, { ...rankState, lightCounter: counter, now }) } : ticket)
   const ageMs = current.held ? waitedMilliseconds(current.holder?.startedAt, now) : null
   const longHoldBoundS = suiteLockLongHoldSeconds(env)

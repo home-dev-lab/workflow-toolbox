@@ -3,6 +3,7 @@ import { displayText } from './suite-lock-display.mjs'
 import { numericLevel, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
+import { ticketIsStale } from './host/suite-lock-liveness.mjs'
 import { readHostPlatform } from './host/platform.mjs'
 import { takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
 import { claimParkedTicket, consumeParkAsides, createParkedFile, listParkedFiles, newParkNonce, parkClaimPresent, parkEnvironment, parkFile, readParkJson, readParkRequest, recoverParkAsides, removeParkClaim, removeParkedInstance, removeParkPrivate, validateParkDirectory, watchParkWait, writeParkPrivate } from './host/suite-lock-park-files.mjs'
@@ -154,11 +155,12 @@ function parkSuiteLease(lease, context, reason, now = Date.now()) {
 
 function parkedAhead(lease, context, entries, now = Date.now()) {
   if (!context?.yieldToParked) return false
-  const waiters = readQueueSnapshot(lease.queueDir, now).map((entry) => ({ number: entry.number, record: entry.holder }))
+  const waiters = readQueueSnapshot(lease.queueDir, now).filter((entry) => entry.number !== lease.ticket && !ticketIsStale(entry)).map((entry) => ({ number: entry.number, record: entry.holder }))
   const numbers = new Set([lease.ticket, ...waiters.map((entry) => entry.number)])
   const parked = entries.filter((entry) => !numbers.has(entry.number)).map((entry) => ({ number: entry.number, record: entry.park.record }))
   const tickets = [...waiters, ...parked, { number: lease.ticket, record: lease.record }]
-  const ordered = orderSuiteLockTickets(tickets, readLightCounter(lease.root), now, readP0Counter(lease.root), readSuiteLockRankState(lease.root, tickets)).tickets
+  const counter = lease.lightCounterBeforeGrant ?? readLightCounter(lease.root)
+  const ordered = orderSuiteLockTickets(tickets, counter, now, readP0Counter(lease.root), readSuiteLockRankState(lease.root, tickets)).tickets
   const ahead = ordered.slice(0, ordered.findIndex((entry) => entry.number === lease.ticket))
   return ahead.some((entry) => parked.some((other) => other.number === entry.number))
 }

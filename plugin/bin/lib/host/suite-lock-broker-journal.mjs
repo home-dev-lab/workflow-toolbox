@@ -8,6 +8,7 @@ function observeHoldBound(socket, state) {
   const write = socket.write
   socket.write = function (chunk, ...args) {
     const text = String(chunk)
+    if (text.startsWith('granted ')) state.startedMonotonic = performance.now()
     if (text.startsWith('granted ') && state.staticDomain) chunk = text.replace('granted ', 'granted static:')
     if (text.startsWith('error hold bound:')) {
       state.expired = true
@@ -28,7 +29,7 @@ export function observeBrokerJournalSocket(socket, handlers) {
     try {
       const message = JSON.parse(state.text.slice(0, state.text.indexOf('\n')))
       // Duration stays host-measured (grant to release): a sandboxed client's own timing is not trusted for S history.
-      if (Number.isInteger(message.exit) && !state.expired) state.outcome = { exit: message.exit, served: message.served === true }
+      if (Number.isInteger(message.exit) && !state.expired) state.outcome = { exit: message.exit, served: message.served !== false && message.exit !== 75 }
     } catch { /* An invalid terminal message remains a lost lease. */ }
   })
   callbacks.set(handlers.onWait, state)
@@ -50,5 +51,8 @@ export async function acquireBrokerJournalLease(options) {
 }
 
 export function releaseBrokerJournalLease(lease) {
-  return releaseSuiteLock(lease, leases.get(lease)?.outcome ?? { lost: true, reason: 'broker shutdown' })
+  const state = leases.get(lease)
+  const outcome = state?.outcome ?? { lost: true, reason: 'broker shutdown' }
+  const heldMs = Number.isFinite(state?.startedMonotonic) ? Math.max(0, performance.now() - state.startedMonotonic) : undefined
+  return releaseSuiteLock(lease, { ...outcome, heldMs })
 }

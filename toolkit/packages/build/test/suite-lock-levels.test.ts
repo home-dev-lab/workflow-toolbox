@@ -96,10 +96,10 @@ describe('card levels and exact mixed-version ordering', () => {
 })
 
 function registerDeclaredLevelOrdering() {
-  it('v3 keeps declared P2 after hours while mixed snapshots retain legacy aging', () => {
+  it('v4 keeps declared P2 after hours while mixed snapshots retain legacy aging', () => {
     const root = temp(); const now = Date.now()
-    seed(root, { level: 2, levelOrderVersion: 3, startedAt: new Date(now - 3 * 3600_000).toISOString() })
-    seed(root, { level: 1, levelOrderVersion: 3 })
+    seed(root, { level: 2, levelOrderVersion: 4, startedAt: new Date(now - 3 * 3600_000).toISOString() })
+    seed(root, { level: 1, levelOrderVersion: 4 })
     expect(lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now }).queue.map((entry: { number: number }) => entry.number)).toEqual([2, 1])
   })
   it('C1 serves a later P0 before two P2 tickets, then P2 FIFO', async () => {
@@ -375,7 +375,7 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass): 
     try {
       await waitFor(() => records(root).length === 1)
       const ticket = JSON.parse(readFileSync(join(root, 'queue.d', records(root)[0]!), 'utf8'))
-      expect(ticket).toMatchObject({ level: 1, levelOrderVersion: 3 }); expect(ticket).not.toHaveProperty('p0GrantsAtQueue'); expect(ticket).not.toHaveProperty('p0GrantsGeneration')
+      expect(ticket).toMatchObject({ level: 1, levelOrderVersion: 4 }); expect(ticket).not.toHaveProperty('p0GrantsAtQueue'); expect(ticket).not.toHaveProperty('p0GrantsGeneration')
     } finally { lock.releaseSuiteLock(holder) }
     lock.releaseSuiteLock(await pending)
   })

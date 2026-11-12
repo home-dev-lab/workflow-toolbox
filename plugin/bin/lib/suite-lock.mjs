@@ -1,15 +1,14 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { pidAlive } from './artifact-server.mjs'
+import { foreignNamespaceStale, pidProvesGone, platformOf, ticketIsStale, TICKET_SILENCE_MS } from './host/suite-lock-liveness.mjs'
 import { suiteLockDir } from './host/suite-lock-dir.mjs'
-import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
-import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
+import { currentPidNamespace, processStartTime } from './host/pid-namespace.mjs'
 import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside } from './host/suite-lock-queue.mjs'
 import { connectSuiteLockBroker } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
 import { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
-import { readSuiteLockRankState, recordSuiteLockService, suiteLockReleaseOutcome } from './host/suite-lock-rank-state.mjs'
+import { readSuiteLockRankState, recordAbandonedSuiteLock, recordSuiteLockService, suiteLockReleaseOutcome } from './host/suite-lock-rank-state.mjs'
 import { normalizeSuiteLockProject } from './suite-lock-rank-common.mjs'
 import { observeSuiteQueuePlace, suiteQueueAdvanced } from './suite-lock-progress.mjs'
 import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
@@ -86,38 +85,6 @@ export function readSuiteLockStatus(options = {}) {
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
 }
 
-// A holder recorded in ANOTHER PID namespace cannot be judged by its PID number, which is
-// namespace-local. Whether I am the one inside a sandbox is read MECHANICALLY from the user
-// namespace map (insideChildUserNamespace), never from an environment variable a child could lose
-// (M4). Returns true (stale), false (live), or null (not a foreign-namespace case → fall through).
-function foreignNamespaceStale(lock, options) {
-  const namespace = options.pidNamespace ?? currentPidNamespace()
-  const holderNamespace = lock.holder.pidNamespace ?? null
-  const iAmSandboxed = options.insideSandbox ?? insideChildUserNamespace()
-  const foreign = namespace !== null && holderNamespace !== null && holderNamespace !== namespace
-  if (!foreign && !(iAmSandboxed && holderNamespace === null)) return null
-  if (iAmSandboxed) {
-    // A sandbox cannot disprove a host holder's liveness by age; its host-side broker
-    // or another host observer must reclaim it on positive death evidence.
-    return false
-  }
-  // On the host, the holder's namespace is visible and empties when its sandbox ends. Reclaim only
-  // when that namespace has NO processes; a reused inode that is populated reads as live.
-  return (options.namespaceHasProcesses ?? pidNamespaceHasProcesses)(holderNamespace) === false
-}
-
-const platformOf = (options) => options.platform ?? process.platform
-
-// Positive proof, from the PID alone, that the recorded process is gone: the PID is dead, or it is a
-// DIFFERENT process (PID reuse: the recorded start time no longer matches; only on the host, where
-// /proc start times are comparable).
-function pidProvesGone(holder, options) {
-  if (!pidAlive(holder.pid)) return true
-  if (platformOf(options) === 'win32' || !Number.isFinite(holder.startTime)) return false
-  const start = (options.processStartTime ?? processStartTime)(holder.pid)
-  return start !== null && start !== holder.startTime
-}
-
 const parkOwnerJudge = (options) => (owner) => foreignNamespaceStale({ holder: owner }, options) ?? pidProvesGone(owner, options)
 export const parkAttemptIsGone = (holder) => parkOwnerJudge({})(holder)
 
@@ -170,7 +137,6 @@ export function formatSuiteLockHolder(holder) {
 // takes a numbered ticket in queue.d (file layer: host/suite-lock-queue.mjs) and only the LOWEST live
 // ticket may try to take the lock. A ticket is judged by the SAME rule as the holder (holderIsStale:
 // pid, start time, pid namespace), its age read as the time since its last heartbeat.
-const UNREADABLE_TICKET_GRACE_MS = 10_000
 // The head of the queue polls fast: the hand-over after a release takes a tenth of a second, and a
 // launcher from an older release, which takes no ticket and polls every two seconds, rarely gets in first.
 const HEAD_OF_QUEUE_POLL_MS = 100
@@ -181,15 +147,7 @@ const HEAD_OF_QUEUE_POLL_MS = 100
 // populated namespace suggests; no caller's --wait-s/--stale-s can shorten that. Proof: the holder's
 // own namespace and PID evidence (foreignNamespaceStale with no age branch, pidProvesGone). A waiter
 // that was merely suspended puts its record back under the same number.
-const TICKET_SILENCE_MS = 120_000
 const TICKET_HEARTBEAT_MAX_MS = TICKET_SILENCE_MS / 4
-
-function ticketIsStale(ticket, options) {
-  if (!Number.isSafeInteger(ticket.holder?.pid) || ticket.holder.pid <= 0) return ticket.ageMs >= UNREADABLE_TICKET_GRACE_MS
-  if (ticket.ageMs >= TICKET_SILENCE_MS) return true
-  const foreign = foreignNamespaceStale(ticket, options)
-  return foreign ?? pidProvesGone(ticket.holder, options)
-}
 
 // Light runs (a typecheck, a lint, one test file) go before exclusive tickets queued EARLIER than
 // them: a 20-second run no longer waits behind every full suite queued before it. Only the ORDER
@@ -282,6 +240,7 @@ function removeJudgedInstance(lockDir, judged, options) {
   options.afterLockAside?.()
   if (aside === null) return true
   if (sameInstance(readHolderIn(aside), judged)) {
+    recordAbandonedSuiteLock(path.dirname(lockDir), judged, options)
     discardDirectory(aside)
     return true
   }
@@ -380,16 +339,17 @@ async function retryTransient(operation, pauseMs) {
 // Ordering/light-counter failures give back the provisional lease before the outer transient retry.
 function confirmAdmission(state, holder, place, options) {
   const { root, queueDir, ticket, record } = state
-  const lease = { ...suiteLeaseWithPark(state, holder, options.park), staticDomain: options.staticDomain }
+  const lease = { ...suiteLeaseWithPark(state, holder, options.park), staticDomain: options.staticDomain, startedMonotonic: performance.now() }
   try {
     assertParkClaim(state)
-    const confirmed = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
+    const lightCounterBeforeGrant = readLightCounter(root)
+    const confirmed = queuePlace(queueDir, ticket, record, lightCounterBeforeGrant, options)
     if (confirmed.ahead > 0) {
       releaseSuiteLock(lease, { served: false })
       options.afterHandBack?.()
       return { again: true, place }
     }
-    if (record.light === true) recordLightGrant(root)
+    if (record.light === true) { lease.lightCounterBeforeGrant = lightCounterBeforeGrant; recordLightGrant(root) }
     throwIfAborted(options.signal)
     // A count that cannot be written resets the P0 counter; only a failed reset fails the admission (lease handed back).
     if (record.level === 0 && record.priority !== 'release') recordP0Grant(root, options.p0GrantSeams)
@@ -692,6 +652,7 @@ export function operatorReleaseSuiteLock(options = {}) {
   const current = readSuiteLock(options)
   if (!current.held) return { released: false, reason: 'free', holder: null }
   if (options.force) {
+    recordAbandonedSuiteLock(current.root, current.holder, options)
     rmSync(current.lockDir, { recursive: true, force: true })
     return { released: true, reason: 'forced', holder: current.holder }
   }

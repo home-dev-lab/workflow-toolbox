@@ -1,4 +1,5 @@
 import childProcess, { spawn, spawnSync } from 'node:child_process'
+import net from 'node:net'
 import fs, { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { createHash } from 'node:crypto'
@@ -18,6 +19,7 @@ const state = await load('host/suite-lock-rank-state').catch(() => ({}))
 const queue = await load('host/suite-lock-queue')
 const park = await load('suite-lock-park')
 const status = await load('suite-lock-status')
+const pidNamespace = (await load('host/pid-namespace')).currentPidNamespace()
 const legacyOrder = await load('suite-lock-legacy-order').catch(() => order)
 const toolkit = process.env.WT_RANK_TEST_TOOLKIT ?? resolve(import.meta.dirname, '../../..')
 const roots: string[] = []
@@ -26,7 +28,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const now = Date.parse('2026-01-01T12:00:00Z')
 const counter = { generation: 'light', grants: 0 }
 const context = (extra = {}) => ({ lightCounter: counter, now, turns: {}, history: {}, precedence: {}, ...extra })
-const ticket = (number: number, fields = {}) => ({ number, record: { level: 2, levelOrderVersion: 3,
+const ticket = (number: number, fields = {}) => ({ number, record: { level: 2, levelOrderVersion: 4,
   project: 'alpha', size: 'L', startedAt: new Date(now).toISOString(), lightGrantsAtQueue: 0,
   lightGrantsGeneration: 'light', ...fields } })
 const rank = (entry: ReturnType<typeof ticket>, extra = {}) => order.rankSuiteLockTicket(entry, context(extra))
@@ -36,6 +38,181 @@ const cli = (root: string, args: string[], extra = {}) => spawnSync(process.exec
 const readState = (root: string, projects = ['alpha', 'beta']) => state.readSuiteLockRankState(root, projects.map((project, i) => ticket(i, { project })))
 const statePath = (root: string, kind: string, project: string) => join(root, kind, createHash('sha256').update(project).digest('hex').slice(0, 16) + '.json')
 const events = (root: string) => readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+
+describe('round three adversarial regressions', () => {
+  registerAbandonedHistory()
+  registerMonotonicAndRecovery()
+  registerSafePrune()
+  registerRawBroker()
+  registerSnapshotSafety()
+})
+
+function abandonedHolder(root: string, fields = {}) {
+  mkdirSync(join(root, 'lock.d'), { recursive: true })
+  const holder = { ...ticket(1).record, pid: 2147483647, pidNamespace, leaseId: 'abandoned-instance', startedAt: new Date(Date.now() - 660_000).toISOString(), size: 'S', ...fields }
+  writeFileSync(join(root, 'lock.d/holder.json'), JSON.stringify(holder))
+  return holder
+}
+
+function registerAbandonedHistory() {
+  it.each(['waiter', 'stale operator', 'force'])('an abandoned S overrun is recorded without a turn by %s reclaim', async (route) => {
+    const root = temp(); abandonedHolder(root)
+    if (route === 'waiter') {
+      const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'beta' })
+      lock.releaseSuiteLock(lease)
+    } else if (route === 'force') expect(cli(root, ['release', '--force']).status).toBe(0)
+    else expect(lock.operatorReleaseSuiteLock({ root }).released).toBe(true)
+    expect(readState(root)).toMatchObject({ turns: {}, history: { alpha: { size: 'S', overran: true } } })
+    expect(readState(root).history.alpha.heldMs).toBeGreaterThanOrEqual(660_000)
+  })
+  it.each([{ light: true }, { size: 'M' }, { priority: 'release' }, { startedAt: new Date(Date.now() - 1000).toISOString() }])('reclaim excludes ineligible history %j', (fields) => {
+    const root = temp(); abandonedHolder(root, fields)
+    expect(lock.operatorReleaseSuiteLock({ root, force: true }).released).toBe(true)
+    expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
+  })
+  it('reclaim confirms the judged instance before recording history and advisory failure never blocks removal', () => {
+    const root = temp(); abandonedHolder(root)
+    expect(lock.operatorReleaseSuiteLock({ root, beforeReclaimRemoval: () => abandonedHolder(root, { leaseId: 'replacement', startedAt: new Date().toISOString(), pid: process.pid }) }).released).toBe(false)
+    expect(readState(root).history).toEqual({})
+    abandonedHolder(root); writeFileSync(join(root, 'size-history'), 'unwritable directory')
+    expect(lock.operatorReleaseSuiteLock({ root }).released).toBe(true)
+    expect(existsSync(join(root, 'lock.d'))).toBe(false)
+  })
+  it('static-domain abandoned S never writes history', () => {
+    const root = temp(); const staticRoot = join(root, 'static-lane'); abandonedHolder(staticRoot)
+    expect(lock.operatorReleaseSuiteLock({ root: staticRoot, staticDomain: true }).released).toBe(true)
+    expect(readState(staticRoot)).toEqual({ turns: {}, history: {}, precedence: {} })
+  })
+}
+
+function registerMonotonicAndRecovery() {
+  it('library leases measure monotonic duration and old leases fall back to wall time', async () => {
+    const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S' })
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3600_000)
+    try { lock.releaseSuiteLock(lease, { served: true }); expect(readState(root).history.alpha.overran).toBe(false); expect(readState(root).history.alpha.heldMs).toBeLessThan(10_000) }
+    finally { clock.mockRestore() }
+    const old = { holder: { startedAt: new Date(now - 1234).toISOString() } }
+    expect(state.suiteLockReleaseOutcome(old, {}, now).heldMs).toBe(1234)
+  })
+  it('a valid turn sequence skips unreadable entries while missing sequence recovery stays strict', async () => {
+    const root = temp(); mkdirSync(join(root, 'project-turns')); writeFileSync(statePath(root, 'project-turns', 'bad'), 'invalid JSON')
+    writeFileSync(join(root, 'turn-seq'), JSON.stringify({ sequence: 93 }))
+    const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha' }); lock.releaseSuiteLock(lease, { served: true })
+    expect(readState(root).turns).toEqual({ alpha: 94 })
+    rmSync(join(root, 'turn-seq'))
+    const next = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'beta' }); lock.releaseSuiteLock(next, { served: true })
+    expect(readState(root).turns).toEqual({ alpha: 94 })
+  })
+  it('every pre-v4 ticket keeps the exact legacy order', () => {
+    expect(order.SUITE_LOCK_ORDER_VERSION).toBe(4)
+    for (const version of [undefined, 1, 2, 3]) {
+      const entries = [ticket(1, { levelOrderVersion: version }), ticket(2, { project: 'beta', size: 'S' })]
+      const actual = order.orderSuiteLockTickets(entries, counter, now)
+      const expected = legacyOrder.orderSuiteLockTickets(entries, counter, now)
+      expect(actual.levelOrder).toBe(expected.levelOrder)
+      expect(actual.tickets.map(({ number, key }: { number: number; key: number[] }) => [number, key])).toEqual(expected.tickets.map(({ number, key }: { number: number; key: number[] }) => [number, key]))
+    }
+  })
+}
+
+async function prune(root: string) { const files = await load('host/suite-lock-rank-files'); files.pruneSuiteLockRankState(root) }
+function registerSafePrune() {
+  it('thirty day maintenance preserves an outstanding S overrun penalty', async () => {
+    const root = temp(); mkdirSync(join(root, 'size-history')); const file = statePath(root, 'size-history', 'alpha')
+    writeFileSync(file, JSON.stringify({ project: 'alpha', size: 'S', heldMs: 660_000, overran: true }))
+    const old = new Date(Date.now() - 31 * 86400_000); utimesSync(file, old, old)
+    await prune(root)
+    expect(readState(root).history.alpha?.overran, 'overrun penalty has no thirty day expiry').toBe(true)
+  })
+  it('prune never deletes unreadable or invalid precedence', async () => {
+    const root = temp(); mkdirSync(join(root, 'precedence'))
+    for (const content of ['invalid JSON', JSON.stringify({ project: 'alpha', until: null }), JSON.stringify({ project: 'alpha', until: 'invalid' })]) {
+      const file = statePath(root, 'precedence', 'alpha'); writeFileSync(file, content); await prune(root)
+      expect(existsSync(file), 'unreadable precedence must survive pruning').toBe(true)
+      expect(readFileSync(file, 'utf8')).toBe(content)
+    }
+  })
+  it.each([false, true])('prune preserves concurrent precedence renewal moved=%s', async (afterMove) => {
+    const root = temp(); state.setSuiteLockPrecedence(root, { project: 'alpha', until: new Date(Date.now() - 1).toISOString() })
+    const file = statePath(root, 'precedence', 'alpha'); const renewed = { project: 'alpha', until: new Date(Date.now() + 60_000).toISOString() }
+    const original = fs.renameSync; let injected = false
+    fs.renameSync = ((from, to) => {
+      if (String(from) === file && !injected) { injected = true; if (!afterMove) writeFileSync(file, JSON.stringify(renewed)); original(from, to); if (afterMove) state.setSuiteLockPrecedence(root, renewed); return }
+      return original(from, to)
+    }) as typeof fs.renameSync; syncBuiltinESMExports()
+    try { await prune(root); expect(injected, 'expired precedence is isolated before removal').toBe(true); expect(existsSync(file), 'concurrent renewal must survive pruning').toBe(true); expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(renewed) }
+    finally { fs.renameSync = original; syncBuiltinESMExports() }
+  })
+}
+
+async function rawBroker(root: string, message: object, grant?: () => void) {
+  const address = suiteBrokerAddress(root); const { createSuiteLockBroker } = await load('host/lane-suite-lock-broker')
+  const broker = createSuiteLockBroker({ root, env: envFor(root, { WT_SUITE_LOCK_PROJECT: 'alpha', WT_SUITE_LOCK_SIZE: 'S' }) })
+  const fixture = suiteBrokerFixture(broker); await fixture.listen(address)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.createConnection(address); let text = ''; let sent = false
+      socket.once('connect', () => socket.write(JSON.stringify({ argv: ['node', 'covered-job'], waitS: 1 }) + '\n'))
+      socket.on('data', (chunk) => { text += chunk; if (!sent && /(?:^|\n)granted /.test(text)) { sent = true; grant?.(); socket.end(JSON.stringify(message) + '\n') } })
+      socket.once('error', reject); socket.once('close', () => sent ? resolve() : reject(new Error(text)))
+    })
+  } finally { broker.releaseAll(); await fixture.close() }
+}
+
+function registerRawBroker() {
+  it.each([{ exit: 0 }, { exit: 17 }, { exit: 0, served: false }, { exit: 75 }])('broker terminal outcome defaults to served with explicit opt outs %j', async (message) => {
+    const root = temp(); await rawBroker(root, message)
+    expect(readState(root).turns).toEqual(message.exit === 75 || ('served' in message && message.served === false) ? {} : { alpha: 1 })
+  })
+  it('broker ignores forged heldMs in raw terminal JSON after ten host monotonic minutes', async () => {
+    const root = temp(); let clock: ReturnType<typeof vi.spyOn> | undefined
+    try {
+      await rawBroker(root, { exit: 0, served: true, heldMs: 1 }, () => { clock = vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 600_001) })
+      expect(readState(root).history.alpha, 'sandbox timing must never clear a real host overrun').toMatchObject({ overran: true })
+      expect(readState(root).history.alpha.heldMs).toBeGreaterThanOrEqual(600_001)
+    } finally { clock?.mockRestore() }
+  })
+  it.each([{ WT_SUITE_LOCK_PROJECT: 'bad\nproject' }, { WT_SUITE_LOCK_SIZE: 'invalid' }])('broker refuses invalid host metadata before listening %j', (env) => {
+    const root = temp(); const address = suiteBrokerAddress(root)
+    const result = spawnSync(process.execPath, [join(plugin, 'bin/lib/host/lane-suite-lock-broker.mjs'), '--socket', address, '--parent', String(process.pid), '--root', root], { env: envFor(root, env), encoding: 'utf8', timeout: 5000 })
+    expect(result.status, result.stderr).toBe(2)
+    expect(result.stderr).toContain('refused to start')
+    expect(existsSync(address)).toBe(false)
+  })
+}
+
+function registerSnapshotSafety() {
+  it('a light holder yield check excludes its own light grant', async () => {
+    const root = temp(); const c = queue.ensureLightCounter(root)
+    writeFileSync(join(root, 'light-grants'), JSON.stringify({ ...c, grants: 7 }))
+    const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', priority: 'P2', light: true, park: undefined })
+    const record = { ...ticket(2, { light: true }).record, pid: process.pid }
+    const parked = { ...ticket(1).record, project: 'beta', lightGrantsGeneration: c.generation }
+    expect(park.shouldYieldParkLease({ ...lease, queueDir: join(root, 'queue.d'), ticket: 2, record }, { yieldToParked: true }, () => [{ number: 1, park: { record: parked } }]), 'own grant cannot exhaust the parked exclusive').toBe(false)
+    lock.releaseSuiteLock(lease)
+  })
+  it('yield and journal snapshots discard stale tickets using the acquisition predicate', async () => {
+    const root = temp(); const c = queue.ensureLightCounter(root)
+    queue.takeTicket(join(root, 'queue.d'), { ...ticket(1, { levelOrderVersion: 2 }).record, pid: 2147483647, pidNamespace })
+    const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S' })
+    expect(events(root)[0]).toMatchObject({ levelOrder: 'rank-v4', sizeBonus: true })
+    queue.takeTicket(join(root, 'queue.d'), { ...ticket(2, { levelOrderVersion: 2 }).record, pid: 2147483647, pidNamespace })
+    const record = { ...ticket(2, { light: true }).record, pid: process.pid }
+    const parked = { ...ticket(1).record, lightGrantsGeneration: c.generation, lightGrantsAtQueue: c.grants }
+    expect(park.shouldYieldParkLease({ ...lease, queueDir: join(root, 'queue.d'), ticket: 4, record }, { yieldToParked: true }, () => [{ number: 1, park: { record: parked } }])).toBe(false)
+    lock.releaseSuiteLock(lease)
+  })
+  it('a rank snapshot failure preserves request grant and release journal events', async () => {
+    const journal = await load('suite-lock-journal'); const root = temp(); const original = fs.readdirSync
+    fs.readdirSync = (() => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }) }) as typeof fs.readdirSync; syncBuiltinESMExports()
+    try {
+      const context = journal.suiteJournalRequest(root, 1, { ...ticket(1).record, pid: process.pid, leaseId: 'journal-fixture' }, 'P2', {}, false)
+      expect(context, 'rank diagnostics cannot suppress a lease lifecycle').toBeDefined()
+      journal.suiteJournalEvent(context, 'grant'); journal.suiteJournalEvent(context, 'release', { served: false })
+      expect(events(root).map((entry) => entry.event)).toEqual(['request', 'grant', 'release'])
+    } finally { fs.readdirSync = original; syncBuiltinESMExports() }
+  })
+}
 
 describe('round two release and ranking contracts', () => {
   registerCompletionContracts()
@@ -48,6 +225,7 @@ describe('round two release and ranking contracts', () => {
 })
 
 function registerCompletionContracts() {
+  registerSignalCompletion()
   it('library release defaults to not served and preserves a previous S overrun', async () => {
     const root = temp()
     const first = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S' })
@@ -75,13 +253,23 @@ function registerCompletionContracts() {
   })
   it('CLI history records command runtime rather than grant-to-release elapsed time', () => {
     const root = temp()
-    const script = `import cp from 'node:child_process';import {syncBuiltinESMExports} from 'node:module';const spawn=cp.spawn;cp.spawn=function(...args){const child=spawn(...args);const now=Date.now;Date.now=()=>now()+3600000;return child};syncBuiltinESMExports();const {runSuiteLockCli}=await import(${JSON.stringify(pathToFileURL(join(plugin, 'bin/wt-suite-lock.mjs')).href)});process.exitCode=await runSuiteLockCli(['run','--size','S','--project','alpha','--',process.execPath,'-e','setTimeout(()=>{},120)'])`
-    expect(spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: envFor(root), encoding: 'utf8' }).status).toBe(0)
+    const script = `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const write=fs.writeSync;const mono=performance.now.bind(performance);const wall=Date.now;let gap=false;fs.writeSync=function(...args){const result=Reflect.apply(write,this,args);if(String(args[1]).includes('"event":"grant"')){Object.defineProperty(performance,'now',{configurable:true,value:()=>mono()+3600000});Date.now=()=>wall()+3600000;gap=true}return result};syncBuiltinESMExports();const {runSuiteLockCli}=await import(${JSON.stringify(pathToFileURL(join(plugin, 'bin/wt-suite-lock.mjs')).href)});process.exitCode=await runSuiteLockCli(['run','--size','S','--project','alpha','--',process.execPath,'-e','setTimeout(()=>{},120)']);process.stdout.write('gap='+Number(gap))`
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: envFor(root), encoding: 'utf8' })
+    expect(result.status).toBe(0); expect(result.stdout).toBe('gap=1')
     const history = readState(root).history.alpha
     expect(history.heldMs).toBeGreaterThanOrEqual(120)
     expect(history.heldMs).toBeLessThan(10_000)
     expect(history.overran).toBe(false)
     expect(readState(root).turns.alpha).toBe(1)
+  })
+}
+
+function registerSignalCompletion() {
+  it('a started command ended by signal consumes its turn and the changelog states it', () => {
+    const root = temp(); const result = cli(root, ['run', '--project', 'alpha', '--', process.execPath, '-e', 'process.kill(process.pid,"SIGTERM")'])
+    expect(result.status).toBe(143)
+    expect(readState(root).turns).toEqual({ alpha: 1 })
+    expect(readFileSync(join(plugin, 'CHANGELOG.md'), 'utf8')).toContain('Commands that started and ended, by exit or signal, consume project')
   })
 }
 
@@ -107,17 +295,8 @@ function registerCompletionCallers() {
 }
 
 function registerExhaustedOrder() {
-  it('exhausted exclusives alternate projects while every interleaved light keeps its slot', () => {
-    const entries = [ticket(1), ticket(2), ticket(3), ticket(4, { project: 'beta' })]
-    const extra = { lightCounter: { ...counter, grants: 8 }, turns: { alpha: 10, beta: 3 } }
-    expect(numbers(entries, extra)).toEqual([4, 1, 2, 3])
-    for (let index = 0; index <= entries.length; index++) {
-      const interleaved = entries.map((entry) => ({ ...entry, number: entry.number * 2 }))
-      interleaved.push(ticket(index * 2 + 1, { light: true }))
-      const expected = [8, 2, 4, 6]; expected.splice(index, 0, index * 2 + 1)
-      expect(numbers(interleaved.reverse(), extra)).toEqual(expected)
-    }
-  })
+  registerMergeFamily()
+  registerMergeCounterexamples()
   it('light S earns no bonus and cannot pass an exhausted P2 exclusive', () => {
     expect(numbers([ticket(1), ticket(2, { light: true, size: 'S' })], { lightCounter: { ...counter, grants: 8 } })).toEqual([1, 2])
     expect(rank(ticket(2, { light: true, size: 'S' })).reason).toMatchObject({ sizeBonus: false, rankLevel: 2 })
@@ -133,8 +312,46 @@ function registerExhaustedOrder() {
   registerLegacyDiagnostics()
 }
 
+function registerMergeFamily() {
+  it('block merge preserves light bounds project turns and FIFO across snapshot families', () => {
+    for (const turns of [{ alpha: 10, beta: 3 }, { alpha: 3, beta: 10 }, { alpha: 0, beta: 0 }]) {
+      for (let mask = 0; mask < 8; mask++) {
+        const exclusive = [1, 3, 5].map((number, index) => ticket(number, { project: index === 1 ? 'beta' : 'alpha', lightGrantsAtQueue: mask & (1 << index) ? 3 : 0 }))
+        const entries = [...exclusive, ticket(2, { light: true }), ticket(4, { light: true })]
+        const extra = { lightCounter: { ...counter, grants: 8 }, turns }
+        const result = numbers(entries, extra)
+        expect(numbers([...entries].reverse(), extra)).toEqual(result)
+        expect(result.filter((n: number) => n % 2 === 0)).toEqual([2, 4])
+        const expectedExclusive = [...exclusive].sort((a, b) => turns[a.record.project as keyof typeof turns] - turns[b.record.project as keyof typeof turns] || a.number - b.number).map((entry) => entry.number)
+        expect(result.filter((n: number) => n % 2 === 1)).toEqual(expectedExclusive)
+        for (const entry of exclusive.filter((entry) => entry.record.lightGrantsAtQueue === 0)) {
+          for (const light of [2, 4].filter((n) => n > entry.number)) expect(result.indexOf(entry.number)).toBeLessThan(result.indexOf(light))
+        }
+      }
+    }
+  })
+}
+
+function registerMergeCounterexamples() {
+  it('exhausted exclusives alternate projects without a ninth light pass', () => {
+    const entries = [ticket(2), ticket(4), ticket(6), ticket(8, { project: 'beta' })]
+    const extra = { lightCounter: { ...counter, grants: 8 }, turns: { alpha: 10, beta: 3 } }
+    for (const lightNumber of [1, 3, 5, 7, 9]) {
+      const expected = lightNumber === 1 ? [1, 8, 2, 4, 6] : [8, 2, ...[4, 6].filter((n) => n < lightNumber), lightNumber, ...[4, 6].filter((n) => n >= lightNumber)]
+      expect(numbers([...entries, ticket(lightNumber, { light: true })].reverse(), extra), `light #${lightNumber} cannot pass an earlier exhausted exclusive`).toEqual(expected)
+    }
+  })
+  it('fresh and exhausted exclusives share project turns and within-project FIFO', () => {
+    const extra = { lightCounter: { ...counter, grants: 8 }, turns: { alpha: 10, beta: 3 } }
+    const entries = [ticket(1), ticket(2), ticket(3, { project: 'beta', lightGrantsAtQueue: 3 })]
+    expect(numbers(entries, extra), 'fresh beta precedes exhausted alpha').toEqual([3, 1, 2])
+    expect(numbers([ticket(1), ticket(2, { lightGrantsAtQueue: 3 }), ticket(3, { light: true })], extra)).toEqual([1, 3, 2])
+    expect(numbers([ticket(1), ticket(2, { light: true }), ticket(3, { light: true })])).toEqual([2, 3, 1])
+  })
+}
+
 function registerLegacyDiagnostics() {
-  it('mixed snapshots expose legacy order without v3 bonus or tier in every diagnostic', async () => {
+  it('mixed snapshots expose legacy order without current bonus or tier in every diagnostic', async () => {
     const root = temp(); const env = envFor(root)
     const held = await lock.acquireSuiteLock({ root, env })
     const c = queue.ensureLightCounter(root)
@@ -310,33 +527,33 @@ function registerBrokerCompletion() {
     expect(readState(root).history.alpha).toMatchObject({ project: 'alpha', size: 'S', heldMs, overran: false })
     expect(events(root).at(-1)).toMatchObject({ served: true, exit: 17 })
   })
-  it('broker measures S duration on the host, never from the sandboxed client report', async () => {
+  it('broker measures S duration monotonically on the host despite a wall clock step', async () => {
     const root = temp(); let clock: ReturnType<typeof vi.spyOn> | undefined
     try {
       const exit = await brokerRun(root, [process.execPath, '-e', 'setTimeout(()=>process.exit(0),300)'], 5, () => {
-        const started = Date.parse(JSON.parse(readFileSync(join(root, 'lock.d/holder.json'), 'utf8')).startedAt)
-        clock = vi.spyOn(Date, 'now').mockReturnValue(started + 600_001)
+        clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 3600_000)
       })
       expect(exit).toBe(0)
-      expect(readState(root)).toMatchObject({ turns: { alpha: 1 }, history: { alpha: { size: 'S', heldMs: 600_001, overran: true } } })
+      expect(readState(root)).toMatchObject({ turns: { alpha: 1 }, history: { alpha: { size: 'S', overran: false } } })
+      expect(readState(root).history.alpha.heldMs).toBeLessThan(10_000)
     } finally { clock?.mockRestore() }
   })
   it('broker hold-limit loss records a long S overrun without serving a turn', async () => {
     const root = temp(); let clock: ReturnType<typeof vi.spyOn> | undefined
     try {
       const exit = await brokerRun(root, [process.execPath, '-e', 'setInterval(()=>{},1000)'], 0.3, () => {
-        const started = Date.parse(JSON.parse(readFileSync(join(root, 'lock.d/holder.json'), 'utf8')).startedAt)
-        clock = vi.spyOn(Date, 'now').mockReturnValue(started + 600_001)
+        clock = vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 600_001)
       })
       expect(exit).toBe(75)
-      expect(readState(root)).toMatchObject({ turns: {}, history: { alpha: { size: 'S', heldMs: 600_001, overran: true } } })
-      expect(events(root).at(-1)).toMatchObject({ served: false, lost: true, heldMs: 600_001 })
+      expect(readState(root)).toMatchObject({ turns: {}, history: { alpha: { size: 'S', overran: true } } })
+      expect(readState(root).history.alpha.heldMs).toBeGreaterThanOrEqual(600_001)
+      expect(events(root).at(-1)).toMatchObject({ served: false, lost: true })
     } finally { clock?.mockRestore() }
   })
 }
 
 it('malformed order-version markers keep legacy ordering', () => {
-  expect(order.orderSuiteLockTickets([ticket(1, { levelOrderVersion: '3' })], counter, now).levelOrder, 'malformed version marker retains exact legacy mode').toBe('legacy')
+  expect(order.orderSuiteLockTickets([ticket(1, { levelOrderVersion: '4' })], counter, now).levelOrder, 'malformed version marker retains exact legacy mode').toBe('legacy')
 })
 
 describe('one queue ranking policy', () => {
@@ -346,7 +563,7 @@ describe('one queue ranking policy', () => {
 })
 
 function registerRankPriority() {
-  it('row 1 removes level aging from v3', () => {
+  it('row 1 removes level aging from v4', () => {
     expect(numbers([ticket(1, { startedAt: new Date(now - 3 * 3600_000).toISOString() }), ticket(2, { level: 1 })]), 'old P2 stays behind fresh P1').toEqual([2, 1])
   })
   it('row 2 bounds light bypass even across projects', () => {
@@ -420,6 +637,7 @@ describe('rank state and rollover', () => {
 function registerRollover() {
   it('retains exactly the develop key on independent golden mixed-version snapshots', () => {
     const golden = JSON.parse(readFileSync(resolve(import.meta.dirname, 'fixtures/suite-lock-order-golden.json'), 'utf8'))
+    expect(golden.source).toEqual({ generator: 'toolkit/scripts/generate-suite-lock-order-golden.mjs', upstreamCommit: '77635d4d2' })
     for (const vector of golden.rollover) {
       for (const implementation of [legacyOrder, order]) {
         const result = implementation.orderSuiteLockTickets(vector.tickets, vector.counter, golden.now, vector.p0Counter)
@@ -469,10 +687,10 @@ function registerServiceExclusions() {
     expect(existsSync(join(root, 'static-lane', 'project-turns'))).toBe(false)
     expect(existsSync(join(root, 'static-lane', 'size-history'))).toBe(false)
   })
-  it('release priority consumes no project turn but any exclusive S overrun is recorded', async () => {
+  it.each([12, 600_001])('release priority writes neither project turn nor S history heldMs=%i', async (heldMs) => {
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S', priority: 'release' })
-    lock.releaseSuiteLock(lease, { served: true, heldMs: 600_001 })
-    expect(readState(root)).toMatchObject({ turns: {}, history: { alpha: { size: 'S', heldMs: 600_001, overran: true } } })
+    lock.releaseSuiteLock(lease, { served: true, heldMs })
+    expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
   })
 }
 

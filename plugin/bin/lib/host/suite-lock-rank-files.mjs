@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { readCounterText } from './suite-lock-queue.mjs'
 
@@ -32,13 +32,35 @@ export function publishRankJson(file, value) {
   } finally { rmSync(temporary, { force: true }) }
 }
 
+function expiredPrecedence(entry, now) {
+  const until = typeof entry?.until === 'string' ? Date.parse(entry.until) : NaN
+  return Number.isFinite(until) && until < now
+}
+
+function prunePrecedence(file, now) {
+  if (!expiredPrecedence(readRankJson(file), now)) return
+  const aside = `${file}.${process.pid}.${randomUUID()}.prune`
+  renameSync(file, aside)
+  if (!expiredPrecedence(readRankJson(aside), now)) {
+    // A renewal can win before the rename. Restore it without overwriting a
+    // second publication at the original name; unexpected errors retain the aside.
+    try { linkSync(aside, file) } catch (error) { if (error?.code !== 'EEXIST') throw error }
+  }
+  rmSync(aside, { force: true })
+}
+
+function pruneOldRankFile(file, kind, now) {
+  if (kind === 'size-history' && readRankJson(file)?.overran === true) return
+  if (statSync(file).mtimeMs < now - 30 * 86400_000) rmSync(file, { force: true })
+}
+
 /** Release-time maintenance only; polling never enumerates rank-state directories. */
 export function pruneSuiteLockRankState(root, now = Date.now()) {
   for (const kind of ['project-turns', 'size-history', 'precedence']) {
     for (const file of rankFiles(root, kind)) {
       try {
-        const expired = kind === 'precedence' ? !(Date.parse(readRankJson(file)?.until) > now) : statSync(file).mtimeMs < now - 30 * 86400_000
-        if (expired) rmSync(file, { force: true })
+        if (kind === 'precedence') prunePrecedence(file, now)
+        else pruneOldRankFile(file, kind, now)
       } catch { /* Maintenance is advisory, including a concurrent operator publication. */ }
     }
   }
