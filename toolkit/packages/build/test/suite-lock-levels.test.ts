@@ -89,6 +89,19 @@ function seed(root: string, fields: Record<string, unknown> = {}) {
 }
 
 describe('card levels and exact mixed-version ordering', () => {
+  registerDeclaredLevelOrdering()
+  registerLegacyLevelAging()
+  registerLegacyP0Traffic()
+  registerHistoricalClients()
+})
+
+function registerDeclaredLevelOrdering() {
+  it('v4 keeps declared P2 after hours while mixed snapshots retain legacy aging', () => {
+    const root = temp(); const now = Date.now()
+    seed(root, { level: 2, levelOrderVersion: 4, startedAt: new Date(now - 3 * 3600_000).toISOString() })
+    seed(root, { level: 1, levelOrderVersion: 4 })
+    expect(lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now }).queue.map((entry: { number: number }) => entry.number)).toEqual([2, 1])
+  })
   it('C1 serves a later P0 before two P2 tickets, then P2 FIFO', async () => {
     const result = await service(temp(), [{ name: 'P2a', priority: 'P2' }, { name: 'P2b', priority: 'P2' }, { name: 'P0', priority: 'P0' }])
     expect(result.order, 'P0 queued after two P2 must be served first').toEqual(['P0', 'P2a', 'P2b'])
@@ -98,6 +111,9 @@ describe('card levels and exact mixed-version ordering', () => {
     expect(result.order).toEqual(['R', 'P0a', 'P0b'])
     expect(result.levels, 'release and P0 holders always record numeric level zero').toEqual([0, 0, 0])
   })
+}
+
+function registerLegacyLevelAging() {
   it.each([29, 31, 61])('C3 ages P2 with an injected clock after %i minutes', async (minutes) => {
     const root = temp(); const now = Date.parse('2026-01-01T12:00:00Z')
     seed(root, { level: 2, startedAt: new Date(now - minutes * 60_000).toISOString() })
@@ -123,6 +139,9 @@ describe('card levels and exact mixed-version ordering', () => {
     expect(queue[0].number, 'earlier aged P0 exclusive must precede later aged P1 exclusive').toBe(earlier)
     expect(queue.findIndex((entry: { number: number }) => entry.number === later)).toBeGreaterThan(0)
   })
+}
+
+function registerLegacyP0Traffic() {
   it('F1 serves P0 within bounded admissions under replenished aged P1 traffic', () => {
     const now = Date.now(); const counter = { generation: 'same', grants: 0 }
     const record = (level: number, startedAt: number) => ({ level, startedAt: new Date(startedAt).toISOString(), lightGrantsAtQueue: 0, lightGrantsGeneration: 'same' })
@@ -136,6 +155,9 @@ describe('card levels and exact mixed-version ordering', () => {
     }
     expect(admitted, 'P0 must acquire within bounded admissions despite replenished aged P1 exclusives').toBe(true)
   })
+}
+
+function registerHistoricalClients() {
   it('C4 actual develop exclusive and new light P0 both acquire, with develop light ordering', async ({ skip }) => {
     const base = await baseSuiteLock(temp(), 'preLevels')
     if (!base.client) { skip(base.unavailable); return }
@@ -159,7 +181,7 @@ describe('card levels and exact mixed-version ordering', () => {
     expect(result.peak).toBe(1)
     expect(result.order.slice().sort()).toEqual(['P0', 'P1-L', 'P2', 'R', 'old'].sort())
   })
-})
+}
 
 // Tickets a bounded-P0 client writes: the order-version marker, plus the P0 counter at queue time for P1/P2.
 function seedBounded(root: string, fields: Record<string, unknown> = {}) {
@@ -290,7 +312,7 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass): 
     const root = temp(); const now = Date.now()
     seedBounded(root, { level: 1, startedAt: minutesAgo(now, 90) })
     const budgeted = cli(root, ['status'])
-    expect(budgeted.status).toBe(0); expect(budgeted.stdout).toContain('1. P1 exclusive'); expect(budgeted.stdout).not.toContain('declared')
+    expect(budgeted.status).toBe(0); expect(budgeted.stdout).toContain('1. P1 exclusive'); expect(budgeted.stdout).toContain('declared P1, size L bonus inactive in legacy order')
     expect(budgeted.stdout).not.toContain('legacy level order')
     expect(JSON.parse(cli(root, ['status', '--json']).stdout)).toMatchObject({ order: 'levels', levelOrder: 'bounded-p0', queue: [{ level: 1, effectiveLevel: 1 }] })
     grantP0(root, 16); const counter = readFileSync(join(root, 'p0-grants'), 'utf8')
@@ -353,7 +375,7 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass): 
     try {
       await waitFor(() => records(root).length === 1)
       const ticket = JSON.parse(readFileSync(join(root, 'queue.d', records(root)[0]!), 'utf8'))
-      expect(ticket).toMatchObject({ level: 1, levelOrderVersion: 2 }); expect(ticket).not.toHaveProperty('p0GrantsAtQueue'); expect(ticket).not.toHaveProperty('p0GrantsGeneration')
+      expect(ticket).toMatchObject({ level: 1, levelOrderVersion: 4 }); expect(ticket).not.toHaveProperty('p0GrantsAtQueue'); expect(ticket).not.toHaveProperty('p0GrantsGeneration')
     } finally { lock.releaseSuiteLock(holder) }
     lock.releaseSuiteLock(await pending)
   })

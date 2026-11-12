@@ -74,6 +74,25 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
 }
 
 describe('suite lock library', () => {
+  registerLibraryJournal()
+  registerLibraryBasics()
+  registerLibraryReclaim()
+  registerLibraryPublication()
+  registerLibraryIdentity()
+})
+
+function registerLibraryJournal() {
+  it('records declared metadata and served duration in the lease journal', async () => {
+    const root = tempRoot('rank-journal')
+    const lease = await acquireSuiteLock({ root, project: 'alpha', size: 'M' })
+    releaseSuiteLock(lease, { served: true, exit: 0, heldMs: 123.456 })
+    const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(events[0]).toMatchObject({ project: 'alpha', size: 'M', tier: 2 })
+    expect(events[2]).toMatchObject({ served: true, heldMs: 123.456 })
+  })
+}
+
+function registerLibraryBasics() {
   it('recognizes a matching marker while held, and refuses it once the holder is gone', async () => {
     const root = tempRoot('inherited-identity')
     const lease = await acquireSuiteLock({ root })
@@ -90,10 +109,13 @@ describe('suite lock library', () => {
     expect(readSuiteLock({ root }).holder).toEqual({
       leaseId: expect.any(String),
       level: 1,
+      project: expect.any(String), size: 'L',
       pid: process.pid,
       argv: ['pnpm', 'test'],
       cwd: process.cwd(),
       startedAt: expect.any(String),
+      startedUptimeMs: expect.any(Number),
+      bootId: process.platform === 'linux' ? expect.stringMatching(/^[a-f0-9-]+$/) : null,
       platform: process.platform,
       pidNamespace: process.platform === 'linux' ? expect.stringMatching(/^pid:\[\d+\]$/) : null,
       startTime: process.platform === 'linux' ? expect.any(Number) : null,
@@ -106,7 +128,9 @@ describe('suite lock library', () => {
     const second = await secondPromise
     expect(releaseSuiteLock(second)).toBe(true)
   })
+}
 
+function registerLibraryReclaim() {
   it('reclaims a holder whose pid is dead', async () => {
     const root = tempRoot('stale')
     const lock = join(root, 'lock.d')
@@ -133,7 +157,9 @@ describe('suite lock library', () => {
     await expect(acquireSuiteLock({ root, waitS: 0.2, staleS: 0.2, pollMs: 5 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     expect(existsSync(join(root, 'lock.d'))).toBe(true)
   })
+}
 
+function registerLibraryPublication() {
   it('does not delete a replacement holder that wins the publication race', async () => {
     const root = tempRoot('publish-replaced')
     const lockDir = join(root, 'lock.d')
@@ -160,7 +186,9 @@ describe('suite lock library', () => {
       expect(existsSync(join(root, 'lock.d'))).toBe(false)
     }
   })
+}
 
+function registerLibraryIdentity() {
   it('uses leaseId so a late release cannot remove a same-millisecond replacement', async () => {
     const root = tempRoot('lease-id')
     const startedAt = '2026-09-27T00:00:00.000Z'
@@ -178,7 +206,7 @@ describe('suite lock library', () => {
     expect(output).not.toMatch(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u)
     expect(output).toContain('...)')
   })
-})
+}
 
 describe('suite lock default environment', () => {
   it.each(['holder shape', 'status display'])('keeps the default %s at P1 under ambient P0 and other lock settings', async (scenario) => {

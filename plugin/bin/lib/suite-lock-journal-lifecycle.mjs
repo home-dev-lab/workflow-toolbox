@@ -4,6 +4,8 @@ import { createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
 import { suiteJournalEvent, suiteJournalRequest } from './suite-lock-journal.mjs'
 import { staticLaneEnabled, staticLockOptions } from './suite-lock-static.mjs'
 import { staticWaitDeadline } from './suite-lock-static-deadline.mjs'
+import { suiteLockRankOptions } from './suite-lock-priority.mjs'
+import { suiteLockBootClock } from './host/platform.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -35,10 +37,10 @@ export function takeJournalTicket(queueDir, record, resumedNumber) {
 
 function journalAcquisition(options, domain, covered, inherit) {
   const env = options.env ?? process.env
-  const staticOptions = staticLockOptions(domain, options)
   const staticRequest = options.static === true && options.priority !== 'release' && staticLaneEnabled(env)
-  const id = options.static ? covered(env, domain, staticRequest) : null
+  const id = covered(env, domain, options.static ? staticRequest : undefined)
   if (id) return { lease: inherit(options, domain, id) }
+  const staticOptions = staticLockOptions(domain, options)
   if (staticOptions) options = staticOptions
   else if (options.static) options = { ...options, light: options.priority !== 'release' }
   return { options }
@@ -53,12 +55,14 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   const prepared = journalAcquisition(options, domain, covered, inherit)
   if (prepared.lease) return prepared.lease
   options = prepared.options
+  const metadata = suiteLockRankOptions(options, options.env ?? process.env)
+  options = { ...options, project: metadata.project, size: metadata.size }
   const context = { started: performance.now() }
   const deadline = staticWaitDeadline(options)
   try {
     const lease = await acquire({ ...deadline.options, [CONTEXT]: context })
     if (lease.inherited || lease.broker) return lease
-    suiteJournalEvent(context.journal, 'grant')
+    suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel })
     return { ...lease, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)
@@ -67,10 +71,15 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   } finally { deadline.close() }
 }
 
-export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString() })
+function holderBootStart() {
+  const { uptimeMs, bootId } = suiteLockBootClock()
+  return { startedUptimeMs: uptimeMs, bootId }
+}
+
+export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString(), ...holderBootStart() })
 
 export function finishBrokerLease(lease, outcome) {
   lease.markReleased?.()
-  if (!lease.socket.destroyed) lease.socket.end(`${JSON.stringify({ exit: outcome.exit ?? 0 })}\n`)
+  if (!lease.socket.destroyed) lease.socket.end(`${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`)
   return true
 }
