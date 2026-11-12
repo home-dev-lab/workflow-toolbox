@@ -266,7 +266,9 @@ describe('shipped private plugins', () => {
     }
     expect(hits).toEqual([])
   })
+})
 
+describe('shipped private plugin path derivation', () => {
   // On Windows a file URL's pathname is `/D:/a/...`: spawning it resolved to `D:\D:\a\...` (MODULE_NOT_FOUND) and a
   // main-module guard comparing it with process.argv[1] never matched. fileURLToPath gives the platform path.
   it('derives file paths from import.meta.url with fileURLToPath, never URL.pathname', () => {
