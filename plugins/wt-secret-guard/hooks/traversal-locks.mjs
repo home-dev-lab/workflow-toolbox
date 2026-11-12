@@ -183,6 +183,10 @@ async function redactionLocks(check) {
     const survivors = Object.defineProperty([], 'sensitiveValues', { value: new Set([dropped]) });
     assert.equal(redactDiagnostic(`at ${dropped} end`, survivors).includes(dropped), false, 'deduplicated secret printed');
   });
+}
+
+// Presentation deduplication must keep every colliding secret for redaction.
+async function reductionLocks(check) {
   await check('A6 reduction keeps a discarded finding secret in sensitiveValues', async () => {
     const { redactDiagnostic } = await redaction();
     const kept = ['Kp', '4r', 'Vt', '9q'].join(''); const lost = ['Nw', '2h', 'Js', '6d'].join('');
@@ -299,6 +303,7 @@ export async function runTraversalLocks(f) {
   await structuralLocks(check);
   await encodingLocks(check);
   await redactionLocks(check);
+  await reductionLocks(check);
   await numericLocks(check);
   await boundsLocks(check);
   await contractLocks(check);
