@@ -41,14 +41,16 @@ function* children(value, key, pathRef) {
   }
 }
 
-export function* walkOutbound(value) {
-  let nodes = 1;
-  let text = 0;
+export const inspectionBudget = () => ({ nodes: 0, text: 0, exhausted: false });
+
+export function* walkOutbound(value, budget = inspectionBudget()) {
+  budget.nodes += 1;
   for (const unit of children(value, '', null)) {
-    if (unit.kind === 'node') nodes += 1;
-    else if (unit.kind !== 'concealed') text += unit.text.length;
-    const projectedText = unit.kind === 'concealed' ? text + unit.text.length : text;
-    if (nodes > INSPECTION_NODES || projectedText > INSPECTION_TEXT) {
+    if (unit.kind === 'node') budget.nodes += 1;
+    else if (unit.kind !== 'concealed') budget.text += unit.text.length;
+    const projectedText = unit.kind === 'concealed' ? budget.text + unit.text.length : budget.text;
+    if (budget.exhausted || budget.nodes > INSPECTION_NODES || projectedText > INSPECTION_TEXT) {
+      budget.exhausted = true;
       yield { kind: 'inspection-budget', text: '', key: '', pathRef: null };
       return;
     }

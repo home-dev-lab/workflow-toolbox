@@ -163,9 +163,18 @@ function finalizedRegistration(on) {
     const handler = args.pop();
     return on(event, ...args, async ($, input, next) => {
       const result = await handler($, input, next);
-      return finalizeDenial(result, denialFindings.get(result));
+      return finalizeDenial(result, await findingsForDenial(result, input));
     });
   };
+}
+
+async function findingsForDenial(result, input) {
+  if (!result || result.deny === undefined || result.deny === '') return [];
+  const collected = denialFindings.get(result);
+  if (collected) return collected;
+  // Early grammar/execution routes have no classification evidence. Inspect the
+  // complete original event with the same bounded classifier before printing.
+  return (await classifyOutbound({}, { tool: 'mcp__guard__diagnostic', payload: input })).findings;
 }
 
 async function guardedOutbound($, event, next) {

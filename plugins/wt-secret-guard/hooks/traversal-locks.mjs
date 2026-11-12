@@ -6,6 +6,7 @@ import { tokenize, testState, testVaultSnapshot, testRestoreVault } from './toke
 import { config, configure } from './config.js';
 import { planOwnerChannel } from './owner-channel.js';
 import { rows, objectRows } from './fixtures/value-boundary-rows.mjs';
+import { runBudgetRefusalLocks } from './budget-refusal-locks.mjs';
 
 const send = (payload) => ({ tool: 'mcp__fixture__send', payload });
 const secret = () => ['Q7m9', 'Ab12'].join('');
@@ -174,6 +175,13 @@ async function redactionLocks(check) {
     const text = redactDiagnostic('FAKE"Q7m9 FAKE\\Q7m9', found);
     assert.equal(text.includes('FAKE"Q7m9'), false);
     assert.equal(text.includes('FAKE\\Q7m9'), false);
+    // The classifier records every raw secret before presentation deduplication...
+    assert.equal(found.sensitiveValues?.has('FAKE"Q7m9'), true, 'raw secret missing from pre-deduplication set');
+    assert.equal(found.sensitiveValues?.has('FAKE\\Q7m9'), true, 'raw secret missing from pre-deduplication set');
+    // ...and redaction honours a recorded secret that no surviving finding carries (a deduplicated one).
+    const dropped = ['Zq81', 'Lm', 'Pw', 'x3'].join('');
+    const survivors = Object.defineProperty([], 'sensitiveValues', { value: new Set([dropped]) });
+    assert.equal(redactDiagnostic(`at ${dropped} end`, survivors).includes(dropped), false, 'deduplicated secret printed');
   });
 }
 
@@ -282,6 +290,7 @@ export async function runTraversalLocks(f) {
   await boundsLocks(check);
   await contractLocks(check);
   await hookLocks(check, f.$ ? f : null);
+  await runBudgetRefusalLocks(f);
 }
 
 async function childCase(name) {

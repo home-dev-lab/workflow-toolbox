@@ -3,7 +3,7 @@ import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
 import { isIssuedToken, knownTokens, replacementFor } from './token-vault.js';
 import { boundaryFindings, isContextual, referenceProof } from './value-boundary.js';
-import { walkOutbound, materializePath, TRUNCATED_PATH } from './outbound-traversal.js';
+import { walkOutbound, inspectionBudget, materializePath, TRUNCATED_PATH } from './outbound-traversal.js';
 import { numericEquals } from './decimal-equality.js';
 import { base64Utf8, HELD_VALUE_FLOOR, standsAlone } from './diagnostic-values.js';
 import { diagnosticSensitiveSet, plainDiagnosticKey, redactDiagnostic } from './diagnostic-redaction.js';
@@ -33,25 +33,30 @@ function withoutReferences(value) { return value.replace(REFERENCE, (reference) 
 
 function pushDetectedFindings(found, value, key, path, options) {
   const candidate = withoutReferences(value);
-  const baseDirect = detections(candidate);
+  const baseDirect = detections(candidate, '', undefined, options);
+  if (options.inspectionBudget.exhausted) {
+    for (const item of baseDirect) found.push({ ...item, path });
+    return;
+  }
   // Only exact Route S spellings cancel frozen contextual findings.
   // Independent detector evidence survives; raw-only matches never add findings.
   const direct = baseDirect.filter((item) => !isContextual(item.kind)).map((item) => {
     const start = candidate.indexOf(item.value);
     return start < 0 ? { ...item, path } : { ...item, value: value.slice(start, start + item.value.length), path, index: start };
   });
-  for (const item of boundaryFindings(value)) direct.push({ ...item, path });
+  for (const item of boundaryFindings(value, options)) direct.push({ ...item, path });
   for (const item of direct) found.push(item);
   for (const item of optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses })) found.push(item);
-  if (key) pushKeyFindings(found, { value, key, path, candidate, baseDirect });
+  if (key) pushKeyFindings(found, { value, key, path, candidate, baseDirect }, options);
 }
 
-function pushKeyFindings(found, { value, key, path, candidate, baseDirect }) {
-  const keyEvidence = detections(key, '', undefined, { prose: false });
-  for (const item of detections(`${key}: ${candidate}`, '', undefined, { prose: false })) {
+function pushKeyFindings(found, { value, key, path, candidate, baseDirect }, options) {
+  const detectorOptions = { ...options, prose: false };
+  const keyEvidence = detections(key, '', undefined, detectorOptions);
+  for (const item of detections(`${key}: ${candidate}`, '', undefined, detectorOptions)) {
     if (baseDirect.some(({ value: directValue }) => directValue === item.value)) continue;
     // A match in the object key is evidence independent of the decoded child.
-    const inKey = detections(`${key}: `, '', undefined, { prose: false }).some((entry) => entry.kind === item.kind && entry.value === item.value);
+    const inKey = detections(`${key}: `, '', undefined, detectorOptions).some((entry) => entry.kind === item.kind && entry.value === item.value);
     if (inKey) {
       const origins = keyEvidence.filter((entry) => entry.kind === item.kind);
       if (!origins.length) origins.push({ kind: item.kind, value: key });
@@ -93,17 +98,22 @@ function pushStringFindings(found, value, key, path, options) {
 }
 
 function findingsIn(value) {
-  const options = config();
+  const budget = inspectionBudget();
+  const options = { ...config(), inspectionBudget: budget };
   const found = [];
-  for (const unit of walkOutbound(value)) {
-    if (unit.kind === 'inspection-budget') return [{ kind: 'inspection-budget', value: '', secret: '' }];
+  for (const unit of walkOutbound(value, budget)) {
+    if (unit.kind === 'inspection-budget') {
+      found.push({ kind: 'inspection-budget', value: '', secret: '' });
+      break;
+    }
     consumeUnit(found, unit, options);
+    if (budget.exhausted) { found.push({ kind: 'inspection-budget', value: '', secret: '' }); break; }
   }
   const sensitiveValues = new Set();
   const unique = new Map();
   for (const item of found) {
     sensitiveValues.add(item.value); sensitiveValues.add(item.secret);
-    if (item.value) unique.set(`${item.kind}:${item.value}`, finishFinding(item));
+    if (item.value || item.kind === 'inspection-budget') unique.set(`${item.kind}:${item.value}`, finishFinding(item));
   }
   return Object.defineProperty([...unique.values()], 'sensitiveValues', { value: sensitiveValues });
 }
@@ -112,11 +122,11 @@ function consumeUnit(found, unit, options) {
   const { text, key, pathRef } = unit;
   if (unit.kind === 'number') return pushNumericFindings(found, unit);
   if (unit.kind === 'concealed') {
-    for (const item of detections(JSON.stringify({ type: 'CONCEALED', value: text }))) found.push({ ...item, path: pathRef });
+    for (const item of detections(JSON.stringify({ type: 'CONCEALED', value: text }), '', undefined, options)) found.push({ ...item, path: pathRef });
   } else if (unit.kind === 'key') {
     pushStringFindings(found, text, '', pathRef, options);
     // Reference blanking is for values; raw key-alone evidence remains independent.
-    for (const item of detections(text, '', undefined, { prose: false })) found.push({ ...item, path: pathRef, index: text.indexOf(item.value) });
+    for (const item of detections(text, '', undefined, { ...options, prose: false })) found.push({ ...item, path: pathRef, index: text.indexOf(item.value) });
   } else pushStringFindings(found, text, key, pathRef, options);
 }
 
