@@ -85,7 +85,7 @@ function registerLibraryJournal() {
   it('records declared metadata and served duration in the lease journal', async () => {
     const root = tempRoot('rank-journal')
     const lease = await acquireSuiteLock({ root, project: 'alpha', size: 'M' })
-    releaseSuiteLock(lease, { exit: 0, heldMs: 123.456 })
+    releaseSuiteLock(lease, { served: true, exit: 0, heldMs: 123.456 })
     const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(events[0]).toMatchObject({ project: 'alpha', size: 'M', tier: 2 })
     expect(events[2]).toMatchObject({ served: true, heldMs: 123.456 })
@@ -109,7 +109,7 @@ function registerLibraryBasics() {
     expect(readSuiteLock({ root }).holder).toEqual({
       leaseId: expect.any(String),
       level: 1,
-      project: expect.any(String), size: 'L', sizeBonus: false,
+      project: expect.any(String), size: 'L',
       pid: process.pid,
       argv: ['pnpm', 'test'],
       cwd: process.cwd(),

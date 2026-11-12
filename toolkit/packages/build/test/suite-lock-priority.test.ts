@@ -56,7 +56,7 @@ const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
 function waiter(root: string, name: string, order: string[], options: Record<string, unknown> = {}) {
   return acquireSuiteLock({ root, env: isolatedEnv(root), pollMs: 20, waitS: 30, argv: [name], ...options }).then((lease: { holder: unknown }) => {
     order.push(name)
-    releaseSuiteLock(lease)
+    releaseSuiteLock(lease, { served: true })
   })
 }
 

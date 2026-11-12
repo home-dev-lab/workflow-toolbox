@@ -9,8 +9,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 - Suite-lock queue ranking now combines declared priority, bounded light bypass,
   job size and completed project turns. `run --size S|M|L --project NAME` declares
-  work; short jobs gain one level unless that project's latest short job overran
-  ten minutes. Host operators can set expiring project precedence. Waiting lines,
+  work; short exclusive jobs gain one level unless that project's latest short job overran
+  ten minutes. Only completed commands consume project turns. An S lease exceeding
+  ten minutes withholds the bonus even if interrupted. Host operators can set project
+  precedence for up to seven days. Waiting lines,
   status and the journal explain the computed rank. Mixed-version queues retain
   the exact legacy order until older tickets drain.
 - The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium

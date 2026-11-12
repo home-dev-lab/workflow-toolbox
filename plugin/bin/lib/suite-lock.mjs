@@ -10,6 +10,7 @@ import { displayArgv } from './suite-lock-display.mjs'
 import { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
 import { readSuiteLockRankState, recordSuiteLockService, suiteLockReleaseOutcome } from './host/suite-lock-rank-state.mjs'
+import { normalizeSuiteLockProject } from './suite-lock-rank-common.mjs'
 import { observeSuiteQueuePlace, suiteQueueAdvanced } from './suite-lock-progress.mjs'
 import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
 import { requestBrokerLease } from './suite-lock-broker-client.mjs'
@@ -79,7 +80,7 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root))
+  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
   snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
@@ -221,7 +222,7 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
     }
     live.push({ number, record: ticket.holder })
   }
-  const rankState = options.staticDomain ? {} : readSuiteLockRankState(path.dirname(queueDir))
+  const rankState = options.staticDomain ? {} : readSuiteLockRankState(path.dirname(queueDir), live)
   const ordered = orderSuiteLockTickets(live, counter, now, readP0Counter(path.dirname(queueDir)), rankState).tickets
   const ranked = ordered.find((ticket) => ticket.number === mine)
   const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
@@ -340,7 +341,7 @@ function waiterRecord(options, counter, priority, p0Fields) {
     ...(priority === 'release' ? { priority: 'release' } : {}),
     ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
     levelOrderVersion: options.staticDomain ? BOUNDED_P0_ORDER_VERSION : SUITE_LOCK_ORDER_VERSION,
-    project: options.project, size: options.size, sizeBonus: options.size === 'S',
+    project: normalizeSuiteLockProject(options.project), size: options.size,
     ...p0Fields,
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
@@ -608,7 +609,7 @@ function requestBrokerSuiteLock(socketPath, options) {
     waiterBudget, isOlderBrokerRefusal, staleS: DEFAULT_SUITE_LOCK_STALE_S })
 }
 
-export function releaseSuiteLock(lease, outcome = { exit: 0 }) {
+export function releaseSuiteLock(lease, outcome = {}) {
   if (lease?.inherited) return true
   if (lease?.broker) {
     return finishBrokerLease(lease, outcome)

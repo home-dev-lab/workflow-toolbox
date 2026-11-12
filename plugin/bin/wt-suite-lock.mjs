@@ -41,7 +41,7 @@ const USAGE = `Usage:
   WT_SUITE_LOCK_PRIORITY declares P0, P1 (non-lane default), or P2 (routine lane default).
   A lane's host launcher sets its level with wt-lane --lock-priority P0|P1|P2 or WT_SUITE_LOCK_PRIORITY
   in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
-  V3 has no level aging: size S gains one level unless the project's last S exceeded 10 minutes; M/L gain none (default L).
+  V3 has no level aging: exclusive size S gains one level unless the project's last S exceeded 10 minutes; M/L gain none (default L).
   WT_SUITE_LOCK_SIZE and WT_SUITE_LOCK_PROJECT supply defaults; explicit options win. Equal ranks alternate projects.
   Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
@@ -120,7 +120,11 @@ async function runLeasedCommand(command, lease, requested) {
     return exit
   } finally {
     stopWarning()
-    try { requested.attempt.outcome = finishParkRun(lease, requested.park, yielded) } finally { releaseSuiteLock(lease, { exit, served: !yielded && timing.heldMs !== undefined, heldMs: timing.heldMs }) }
+    let completed = false
+    try {
+      requested.attempt.outcome = finishParkRun(lease, requested.park, yielded)
+      completed = requested.attempt.outcome === 'not-parked\n' && !yielded && timing.heldMs !== undefined
+    } finally { releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs }) }
   }
 }
 
@@ -230,7 +234,7 @@ export async function runSuiteLockCliEntrypoint(argv = process.argv.slice(2)) {
     return await runSuiteLockCli(argv)
   } catch (error) {
     process.stderr.write(`wt-suite-lock: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`)
-    return 2
+    return error.exitCode === 64 ? 64 : 2
   }
 }
 

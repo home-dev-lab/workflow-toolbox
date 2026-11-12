@@ -1,5 +1,7 @@
 import { displayArgv } from './suite-lock-display.mjs'
 import { defaultSuiteLockProject } from './host/suite-lock-project.mjs'
+import { parseSuiteLockProject } from './suite-lock-rank-common.mjs'
+export { parseSuiteLockProject } from './suite-lock-rank-common.mjs'
 
 export function parseSuiteLockPriority(value) {
   if (value === 'release') return value
@@ -55,11 +57,6 @@ export function suiteLockLightHoldSeconds(env = process.env) {
 export function parseSuiteLockSize(value) {
   if (['S', 'M', 'L'].includes(value)) return value
   throw new Error('suite lock size must be S, M or L')
-}
-
-export function parseSuiteLockProject(value) {
-  if (typeof value === 'string' && value.trim() && value.length <= 120 && !/[\p{Cc}\p{Cf}]/u.test(value)) return value
-  throw new Error('suite lock project must be a nonempty name of at most 120 characters without controls')
 }
 
 let warnedSandboxRank = false

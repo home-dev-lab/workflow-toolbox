@@ -216,10 +216,10 @@ export default tseslint.config(
     },
   },
   {
-    files: ['plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence}.mjs',
-      '../plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence}.mjs',
-      'plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project}.mjs',
-      '../plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project}.mjs'],
+    files: ['plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common}.mjs',
+      '../plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common}.mjs',
+      'plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files}.mjs',
+      '../plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files}.mjs'],
     rules: {
       complexity: ['error', 10],
       'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],

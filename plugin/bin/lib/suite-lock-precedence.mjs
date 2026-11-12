@@ -1,24 +1,37 @@
-import { parseSuiteLockProject } from './suite-lock-priority.mjs'
+import { parseSuiteLockProject, validSuiteLockName } from './suite-lock-rank-common.mjs'
 import { clearSuiteLockPrecedence, listSuiteLockPrecedence, setSuiteLockPrecedence } from './host/suite-lock-rank-state.mjs'
 import { appendSuiteLockJournal } from './host/suite-lock-journal-append.mjs'
 
-function parseFlags(args) {
-  const result = {}
-  for (let index = 0; index < args.length; index += 2) {
-    const name = args[index]
-    if (!['--project', '--until', '--source'].includes(name) || !args[index + 1] || name in result) throw new Error('precedence accepts --project, --until and --source once each')
-    result[name] = args[index + 1]
+const USAGE = 'use precedence set --project P --until ISO --source ID, clear --project P, or list'
+
+function parseUntil(value, now) {
+  const until = Date.parse(value)
+  if (typeof value !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/.test(value)
+    || !Number.isFinite(until) || until <= now || until > now + 7 * 86400_000) {
+    throw new Error('--until requires a future ISO timestamp with explicit timezone, at most seven days ahead')
   }
-  return result
+  return new Date(until).toISOString()
 }
 
-function precedenceEntry(flags) {
-  const project = parseSuiteLockProject(flags['--project'])
-  const until = flags['--until']
-  const source = flags['--source']
-  if (!until || !Number.isFinite(Date.parse(until)) || !/^\d{4}-\d\d-\d\dT/.test(until)) throw new Error('--until requires an ISO timestamp')
-  if (!source || source.length > 120 || /[\p{Cc}\p{Cf}]/u.test(source)) throw new Error('--source requires a short identifier without controls')
-  return { project, until: new Date(until).toISOString(), source }
+function parseSource(value) {
+  if (!validSuiteLockName(value)) throw new Error('--source requires a short identifier without controls')
+  return value.trim()
+}
+
+function parseFlags(args, action, now) {
+  const result = {}
+  const parsers = { '--project': parseSuiteLockProject, '--until': (value) => parseUntil(value, now), '--source': parseSource }
+  for (let index = 0; index < args.length; index += 2) {
+    const name = args[index]
+    if (!Object.hasOwn(parsers, name) || name in result || (action === 'clear' && name !== '--project')) throw new Error(USAGE)
+    result[name] = parsers[name](args[index + 1])
+  }
+  for (const name of action === 'set' ? Object.keys(parsers) : ['--project']) if (!(name in result)) parsers[name](undefined)
+  return entryFromFlags(result)
+}
+
+function entryFromFlags(result) {
+  return { project: result['--project'], until: result['--until'] ?? null, source: result['--source'] ?? null }
 }
 
 export function suiteLockPrecedenceCli(args, root, env = process.env) {
@@ -28,12 +41,10 @@ export function suiteLockPrecedenceCli(args, root, env = process.env) {
     process.stdout.write(`${JSON.stringify(listSuiteLockPrecedence(root))}\n`)
     return 0
   }
-  const flags = parseFlags(argsFlags)
-  const project = parseSuiteLockProject(flags['--project'])
-  let entry
-  if (action === 'set') { entry = precedenceEntry(flags); setSuiteLockPrecedence(root, entry) }
-  else if (action === 'clear' && Object.keys(flags).length === 1) { entry = { project, until: null, source: null }; clearSuiteLockPrecedence(root, project) }
-  else throw new Error('use precedence set --project P --until ISO --source ID, clear --project P, or list')
+  if (!['set', 'clear'].includes(action)) throw new Error(USAGE)
+  const entry = parseFlags(argsFlags, action, Date.now())
+  if (action === 'set') setSuiteLockPrecedence(root, entry)
+  else clearSuiteLockPrecedence(root, entry.project)
   appendSuiteLockJournal(root, { event: 'precedence', action, ...entry, ts: new Date().toISOString() })
   return 0
 }

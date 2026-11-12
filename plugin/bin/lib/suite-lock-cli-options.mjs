@@ -1,6 +1,6 @@
 import { parseStaticFlag, staticLaneEnabled, staticRunCommand } from './suite-lock-static.mjs'
 import { parseParkOptions, parkRunFields, parkStaticRun } from './suite-lock-park.mjs'
-import { suiteLockRankOptions } from './suite-lock-priority.mjs'
+import { parseSuiteLockProject, parseSuiteLockSize, suiteLockRankOptions } from './suite-lock-priority.mjs'
 
 function rankFlags(flags, env) {
   const options = {}
@@ -11,7 +11,11 @@ function rankFlags(flags, env) {
       options[name] = flags.splice(index, 2)[1]
     }
   }
-  return Object.keys(options).length === 0 ? options : suiteLockRankOptions(options, env())
+  if (Object.keys(options).length === 0) return options
+  const environment = env()
+  if (environment.WT_SUITE_LOCK_BROKER?.trim()) return suiteLockRankOptions(options, environment)
+  for (const name of Object.keys(options)) options[name] = name === 'size' ? parseSuiteLockSize(options[name]) : parseSuiteLockProject(options[name])
+  return options
 }
 
 export function parseSuiteRunOptions(args, dependencies) {

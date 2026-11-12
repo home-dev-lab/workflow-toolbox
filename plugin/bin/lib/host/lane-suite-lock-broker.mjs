@@ -259,13 +259,12 @@ function main() {
     '--root': (value) => { options.root = String(value ?? '') },
     '--run-id': (value) => { options.runId = String(value ?? '') },
   })
-  let maxHoldS
-  try { maxHoldS = laneSuiteLockMaxHoldSeconds(process.env) } catch (error) {
+  let server
+  try { server = createSuiteLockBroker({ label: options.label, maxHoldS: laneSuiteLockMaxHoldSeconds(process.env), root: options.root, runId: options.runId }) } catch (error) {
     // Refused before listening: no socket, no readiness marker, so the launch refuses the lane.
     process.stderr.write(`workflow-toolbox: lane suite-lock broker refused to start: ${error.message}\n`)
     process.exit(2)
   }
-  const server = createSuiteLockBroker({ label: options.label, maxHoldS, root: options.root, runId: options.runId })
   process.on('message', (message) => {
     if (message?.cancelTimeoutRunId && process.connected) {
       process.send({ requestId: message.requestId, verdict: server.cancelTimeout(message.cancelTimeoutRunId) })

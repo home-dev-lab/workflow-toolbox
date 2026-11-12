@@ -3,6 +3,7 @@ import { displayText } from './suite-lock-display.mjs'
 import { numericLevel, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
+import { readHostPlatform } from './host/platform.mjs'
 import { takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
 import { claimParkedTicket, consumeParkAsides, createParkedFile, listParkedFiles, newParkNonce, parkClaimPresent, parkEnvironment, parkFile, readParkJson, readParkRequest, recoverParkAsides, removeParkClaim, removeParkedInstance, removeParkPrivate, validateParkDirectory, watchParkWait, writeParkPrivate } from './host/suite-lock-park-files.mjs'
 
@@ -156,7 +157,8 @@ function parkedAhead(lease, context, entries, now = Date.now()) {
   const waiters = readQueueSnapshot(lease.queueDir, now).map((entry) => ({ number: entry.number, record: entry.holder }))
   const numbers = new Set([lease.ticket, ...waiters.map((entry) => entry.number)])
   const parked = entries.filter((entry) => !numbers.has(entry.number)).map((entry) => ({ number: entry.number, record: entry.park.record }))
-  const ordered = orderSuiteLockTickets([...waiters, ...parked, { number: lease.ticket, record: lease.record }], readLightCounter(lease.root), now, readP0Counter(lease.root), readSuiteLockRankState(lease.root)).tickets
+  const tickets = [...waiters, ...parked, { number: lease.ticket, record: lease.record }]
+  const ordered = orderSuiteLockTickets(tickets, readLightCounter(lease.root), now, readP0Counter(lease.root), readSuiteLockRankState(lease.root, tickets)).tickets
   const ahead = ordered.slice(0, ordered.findIndex((entry) => entry.number === lease.ticket))
   return ahead.some((entry) => parked.some((other) => other.number === entry.number))
 }
@@ -202,8 +204,10 @@ async function acquireWithParkWait(acquire, options, context) {
 
 export const parkChildEnvironment = (context) => context ? { WT_SUITE_LOCK_PARK_REQUEST: path.join(context.directory, 'request') } : undefined
 
-export function spawnParkEnvironment(marker, extra, env) {
+export function spawnParkEnvironment(marker, extra, env, platform = readHostPlatform()) {
   const commandEnv = { ...env, ...extra, ...(marker ? { WT_SUITE_LEASE: marker } : {}) }
-  delete commandEnv.WT_SUITE_LOCK_SIZE
+  for (const key of Object.keys(commandEnv)) {
+    if ((platform === 'win32' ? key.toUpperCase() : key) === 'WT_SUITE_LOCK_SIZE') delete commandEnv[key]
+  }
   return { env: commandEnv }
 }

@@ -36,10 +36,10 @@ export function takeJournalTicket(queueDir, record, resumedNumber) {
 
 function journalAcquisition(options, domain, covered, inherit) {
   const env = options.env ?? process.env
-  const staticOptions = staticLockOptions(domain, options)
   const staticRequest = options.static === true && options.priority !== 'release' && staticLaneEnabled(env)
-  const id = options.static ? covered(env, domain, staticRequest) : null
+  const id = covered(env, domain, options.static ? staticRequest : undefined)
   if (id) return { lease: inherit(options, domain, id) }
+  const staticOptions = staticLockOptions(domain, options)
   if (staticOptions) options = staticOptions
   else if (options.static) options = { ...options, light: options.priority !== 'release' }
   return { options }
@@ -51,11 +51,11 @@ function journalWaitFailure(context, failure) {
 }
 
 export async function acquireJournalLease(acquire, options, domain, covered, inherit) {
-  const metadata = suiteLockRankOptions(options, options.env ?? process.env)
-  options = { ...options, project: metadata.project, size: metadata.size }
   const prepared = journalAcquisition(options, domain, covered, inherit)
   if (prepared.lease) return prepared.lease
   options = prepared.options
+  const metadata = suiteLockRankOptions(options, options.env ?? process.env)
+  options = { ...options, project: metadata.project, size: metadata.size }
   const context = { started: performance.now() }
   const deadline = staticWaitDeadline(options)
   try {
@@ -74,6 +74,6 @@ export const journalHolder = (record, options, now) => ({ ...record, startedAt: 
 
 export function finishBrokerLease(lease, outcome) {
   lease.markReleased?.()
-  if (!lease.socket.destroyed) lease.socket.end(`${JSON.stringify({ exit: outcome.exit ?? 0 })}\n`)
+  if (!lease.socket.destroyed) lease.socket.end(`${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`)
   return true
 }

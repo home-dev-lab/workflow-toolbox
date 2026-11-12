@@ -1,7 +1,9 @@
 import { appendSuiteLockJournal, suiteJournalLines, warnSuiteLockJournal } from './host/suite-lock-journal-append.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
-import { rankSuiteLockTicket } from './suite-lock-order.mjs'
+import path from 'node:path'
+import { orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
+import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 
 export function journalCommand(argv) {
   const args = Array.isArray(argv) ? argv : []
@@ -32,8 +34,12 @@ function journalRequest(root, ticket, record, priority, options, light) {
 
 function requestRankFields(root, ticket, record, options) {
   if (options.staticDomain) return {}
-  const { reason } = rankSuiteLockTicket({ number: ticket, record }, { ...readSuiteLockRankState(root), now: options.now?.() ?? Date.now() })
-  return { tier: reason.tier, sizeBonus: reason.sizeBonus }
+  const now = options.now?.() ?? Date.now()
+  const tickets = readQueueSnapshot(path.join(root, 'queue.d'), now).filter((entry) => entry.number !== ticket).map((entry) => ({ number: entry.number, record: entry.holder }))
+  tickets.push({ number: ticket, record })
+  const ordered = orderSuiteLockTickets(tickets, readLightCounter(root), now, readP0Counter(root), readSuiteLockRankState(root, tickets))
+  const { reason } = ordered.tickets.find((entry) => entry.number === ticket)
+  return { levelOrder: ordered.levelOrder, ...(reason.tier === undefined ? {} : { tier: reason.tier }), sizeBonus: reason.sizeBonus }
 }
 
 const journalLight = (options, light) => light === undefined ? options.light === true : light

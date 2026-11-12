@@ -1,5 +1,5 @@
 import { displayArgv, displayText } from './suite-lock-display.mjs'
-import { effectiveLevel, numericLevel, orderSuiteLockTickets, waitedMilliseconds } from './suite-lock-order.mjs'
+import { effectiveLevel, numericLevel, orderSuiteLockTickets, rankSuiteLockTicket, waitedMilliseconds } from './suite-lock-order.mjs'
 import { suiteLockLightHoldSeconds, suiteLockLongHoldSeconds } from './suite-lock-priority.mjs'
 
 const finite = (value) => Number.isFinite(value) ? value : null
@@ -44,6 +44,8 @@ export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0C
   const live = tickets.filter((ticket) => !ticket.stale)
   const ordered = orderSuiteLockTickets(live, counter, now, p0Counter, rankState)
   const stale = tickets.filter((ticket) => ticket.stale).sort((left, right) => left.number - right.number)
+    .map((ticket) => ordered.levelOrder === 'rank-v3' && numericLevel(ticket.record?.level)
+      ? { ...ticket, ...rankSuiteLockTicket(ticket, { ...rankState, lightCounter: counter, now }) } : ticket)
   const ageMs = current.held ? waitedMilliseconds(current.holder?.startedAt, now) : null
   const longHoldBoundS = suiteLockLongHoldSeconds(env)
   const lightHoldBoundS = suiteLockLightHoldSeconds(env)
@@ -94,6 +96,7 @@ function lightHoldLine(current) {
 
 function orderLines(current) {
   if (current.order === 'compatible') return ['queue compatibility order: exact older-client ordering while a live ticket has no level']
+  if (current.levelOrder === 'bounded-p0') return ['queue legacy order: bounded P0 with aging; size bonus, project precedence and alternation inactive']
   return current.order === 'levels' && current.levelOrder === 'legacy' ? [LEGACY_LEVEL_ORDER] : []
 }
 
