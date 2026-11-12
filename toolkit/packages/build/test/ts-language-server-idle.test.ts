@@ -596,6 +596,39 @@ it('supervises SIGHUP through the same bounded stop path', async () => {
   expect(run.exitSignal, 'SIGHUP must supervise backend termination').toHaveBeenCalledWith('SIGHUP')
 })
 
+it.each([
+  { name: 'own TERM after client EOF', platform: 'linux', client: 'eof', close: 'SIGTERM', code: 0, signal: undefined },
+  { name: 'own TERM after client EOF on win32', platform: 'win32', client: 'eof', close: 'SIGTERM', code: 0, signal: undefined },
+  { name: 'a crash inside the forced window', platform: 'linux', client: 'eof', close: 'SIGSEGV', code: undefined, signal: 'SIGSEGV' },
+  { name: 'client SIGINT', platform: 'linux', client: 'SIGINT', close: 'SIGTERM', code: undefined, signal: 'SIGINT' },
+])('maps a backend killed by the forced stop ($name)', async ({ platform, client, close, code, signal }) => {
+  const run = fixture({ platform }); run.initialize()
+  if (client === 'eof') run.input.end(); else run.signals.emit(client)
+  await vi.advanceTimersByTimeAsync(100)
+  expect(run.children[0]!.backend.kill, 'the stop deadline must TERM the leader').toHaveBeenCalledWith('SIGTERM')
+  run.children[0]!.close(null, close)
+  await vi.advanceTimersByTimeAsync(1000); await vi.advanceTimersByTimeAsync(0)
+  if (signal) {
+    expect(run.exitSignal, 'a foreign signal or a client signal must still surface').toHaveBeenCalledExactlyOnceWith(signal)
+    expect(run.exit).not.toHaveBeenCalled()
+  } else {
+    expect(run.exitSignal, 'the wrapper must not kill itself with the TERM it sent its own backend').not.toHaveBeenCalled()
+    expect(run.exit, 'a forced stop the wrapper owns completes with code 0').toHaveBeenCalledExactlyOnceWith(code)
+  }
+})
+
+it('keeps a TERM death that happened before the forced stop even when its close arrives after it', async () => {
+  const run = fixture(); run.initialize()
+  run.input.end()
+  run.children[0]!.backend.emit('exit', null, 'SIGTERM')
+  await vi.advanceTimersByTimeAsync(100)
+  expect(run.children[0]!.backend.kill, 'the stop deadline still runs while the close is pending').toHaveBeenCalledWith('SIGTERM')
+  run.children[0]!.backend.emit('close', null, 'SIGTERM')
+  await vi.advanceTimersByTimeAsync(1000); await vi.advanceTimersByTimeAsync(0)
+  expect(run.exitSignal, 'a TERM the wrapper did not send must still surface').toHaveBeenCalledExactlyOnceWith('SIGTERM')
+  expect(run.exit).not.toHaveBeenCalled()
+})
+
 it('skips KILL when backend group ownership no longer matches', async () => {
   let ownership = 'ours'
   const killGroup = vi.fn()

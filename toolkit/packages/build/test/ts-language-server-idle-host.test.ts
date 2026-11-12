@@ -112,23 +112,23 @@ it.skipIf(process.platform !== 'linux')('verifies real Linux group birth identit
   expect(proof.mismatch, 'a mismatched start time must signal only the leader').toEqual({ groupKills: [], leaderKills: ['SIGTERM'] })
 })
 
-function naturalEofBackend() {
+function naturalEofBackend(exitOnEof = true) {
   const worker = 'process.on("SIGTERM",()=>{});process.send("ready");process.disconnect();setInterval(()=>{},1000)'
   return `import{spawn}from'node:child_process';import{tsFrame,tsFrameReader}from ${JSON.stringify(url('ts-lsp-wire'))};
     let ready=false,id;const answer=()=>{if(ready&&id!==undefined)process.stdout.write(tsFrame({jsonrpc:'2.0',id,result:{capabilities:{}}}))};
     const worker=spawn(process.execPath,['-e',${JSON.stringify(worker)}],{stdio:['ignore','ignore','ignore','ipc']});
     process.stderr.write('WORKER='+worker.pid+'\\n');worker.on('message',()=>{ready=true;answer()});
     process.stdin.on('data',tsFrameReader(m=>{if(m.method==='initialize'){id=m.id;answer()}}));
-    process.stdin.on('end',()=>process.exit(0));`
+    ${exitOnEof ? "process.stdin.on('end',()=>process.exit(0));" : 'setInterval(()=>{},1000);'}`
 }
 
-function naturalEofProof() {
+function naturalEofProof(exitOnEof = true) {
   return `import{spawn}from'node:child_process';import{PassThrough}from'node:stream';
     import{runTsIdleSession}from ${JSON.stringify(url('ts-idle-session'))};import{tsFrame}from ${JSON.stringify(url('ts-lsp-wire'))};
     const input=new PassThrough(),output=new PassThrough();output.once('data',()=>input.end());
     runTsIdleSession({input,output,idleMs:1000,stopMs:30,
       select:()=>({status:'launch',backend:'typescript-go',command:process.execPath,args:[]}),
-      start:(_c,_a,o)=>spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(naturalEofBackend())}],o)});
+      start:(_c,_a,o)=>spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(naturalEofBackend(exitOnEof))}],o)});
     input.write(tsFrame({jsonrpc:'2.0',id:1,method:'initialize',params:{}}));`
 }
 
@@ -144,5 +144,19 @@ it.skipIf(process.platform !== 'linux')('keeps EOF cleanup alive until the ignor
     expect(result.status, result.stderr).toBe(0)
     expect(pid, result.stderr).toBeGreaterThan(0)
     await vi.waitFor(() => expect(workerAlive(pid), 'EOF must keep the KILL timer alive after the leader closes').toBe(false), { timeout: 1500, interval: 20 })
+  } finally { if (pid) { try { process.kill(pid, 'SIGKILL') } catch { /* Already gone. */ } } }
+})
+
+it.skipIf(process.platform !== 'linux')('exits 0 when its own forced TERM ends a backend that ignores EOF', async () => {
+  const started = performance.now()
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', naturalEofProof(false)], { encoding: 'utf8', timeout: 10_000 })
+  const elapsedMs = performance.now() - started
+  const pid = Number(/WORKER=(\d+)/.exec(result.stderr)?.[1])
+  const outcome = `status=${result.status} signal=${result.signal} after ${elapsedMs.toFixed(0)} ms (a spawnSync timeout ends near 10000 ms; a self-kill by the forced TERM ends near 1000 ms)\n${result.stderr}`
+  try {
+    expect(result.status, outcome).toBe(0)
+    expect(result.signal, outcome).toBeNull()
+    expect(pid, outcome).toBeGreaterThan(0)
+    await vi.waitFor(() => expect(workerAlive(pid), 'the forced stop must still KILL the ignored-stdio worker').toBe(false), { timeout: 1500, interval: 20 })
   } finally { if (pid) { try { process.kill(pid, 'SIGKILL') } catch { /* Already gone. */ } } }
 })
