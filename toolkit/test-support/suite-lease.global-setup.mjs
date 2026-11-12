@@ -45,8 +45,10 @@ function listenForSuiteLeaseEnd(lease) {
   // Keep the lease until Vitest exits after stopping its workers. A broker socket
   // must not itself keep an otherwise finished Vitest process alive.
   lease.socket?.unref?.()
-  process.once('exit', (exit) => releaseSuiteLock(lease, { exit, served: exit !== 75 }))
+  let lost = false
+  process.once('exit', (exit) => releaseSuiteLock(lease, { exit, served: !lost }))
   lease.lost?.then((reason) => {
+    lost = true
     process.stderr.write(`vitest: suite lease lost (${reason || 'broker gone'}); stopping run\n`)
     process.exitCode = 75
     process.kill(process.pid, 'SIGTERM')

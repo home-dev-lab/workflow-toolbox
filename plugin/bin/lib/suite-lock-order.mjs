@@ -2,13 +2,13 @@ import { orderSuiteLockTickets as legacyOrder, numericLevel } from './suite-lock
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS, BOUNDED_P0_ORDER_VERSION, effectiveLevel, numericLevel, waitedMilliseconds } from './suite-lock-legacy-order.mjs'
 import { LIGHT_BYPASS_MAX_GRANTS } from './suite-lock-legacy-order.mjs'
 import { displayText } from './suite-lock-display.mjs'
-import { compareKeys, normalizeSuiteLockProject, ticketPassable } from './suite-lock-rank-common.mjs'
+import { compareKeys, normalizeSuiteLockProject, suiteLockIsoTime, ticketPassable } from './suite-lock-rank-common.mjs'
 
 export const SUITE_LOCK_ORDER_VERSION = 4
 
 function tierFor(record, project, precedence, now) {
   if (record.priority === 'release') return 0
-  return Date.parse(precedence?.[project]?.until) > now ? 1 : 2
+  return suiteLockIsoTime(precedence?.[project]?.until) > now ? 1 : 2
 }
 
 function reasonLine(reason, number) {
@@ -30,7 +30,8 @@ function rankFacts(record, context) {
   const { size, bonusWithheld, sizeBonus } = sizeFacts(record, history, project)
   const rankLevel = Math.max(0, record.level - Number(sizeBonus))
   const passable = ticketPassable(record, lightCounter, LIGHT_BYPASS_MAX_GRANTS)
-  const projectTurn = Object.hasOwn(turns, project) ? turns[project] : 0
+  const turn = Object.hasOwn(turns, project) ? turns[project] : 0
+  const projectTurn = Number.isSafeInteger(turn) && turn >= 0 ? turn : 0
   const tier = tierFor(record, project, precedence, now)
   return { tier, declared: record.level, rankLevel, size, sizeBonus, bonusWithheld,
     light: record.light === true, passable, project, projectTurn }
@@ -57,7 +58,8 @@ function legacyReason(ticket) {
 function mergeRankBlock(tickets) {
   const exclusive = tickets.filter((ticket) => !ticket.reason.light)
     .sort((a, b) => a.reason.projectTurn - b.reason.projectTurn || a.number - b.number)
-  const lights = tickets.filter((ticket) => ticket.reason.light).sort((a, b) => a.number - b.number)
+  const lights = tickets.filter((ticket) => ticket.reason.light)
+    .sort((a, b) => a.reason.projectTurn - b.reason.projectTurn || a.number - b.number)
   const ordered = []
   while (exclusive.length || lights.length) {
     const blocked = lights.length && exclusive.some((ticket) => !ticket.reason.passable && ticket.number < lights[0].number)

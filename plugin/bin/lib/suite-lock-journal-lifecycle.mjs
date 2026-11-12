@@ -5,6 +5,7 @@ import { suiteJournalEvent, suiteJournalRequest } from './suite-lock-journal.mjs
 import { staticLaneEnabled, staticLockOptions } from './suite-lock-static.mjs'
 import { staticWaitDeadline } from './suite-lock-static-deadline.mjs'
 import { suiteLockRankOptions } from './suite-lock-priority.mjs'
+import { suiteLockBootClock } from './host/platform.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -70,7 +71,12 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   } finally { deadline.close() }
 }
 
-export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString() })
+function holderBootStart() {
+  const { uptimeMs, bootId } = suiteLockBootClock()
+  return { startedUptimeMs: uptimeMs, bootId }
+}
+
+export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString(), ...holderBootStart() })
 
 export function finishBrokerLease(lease, outcome) {
   lease.markReleased?.()

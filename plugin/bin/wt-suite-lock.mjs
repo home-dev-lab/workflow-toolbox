@@ -123,7 +123,7 @@ async function runLeasedCommand(command, lease, requested) {
     let completed = false
     try {
       requested.attempt.outcome = finishParkRun(lease, requested.park, yielded)
-      completed = requested.attempt.outcome === 'not-parked\n' && !yielded && timing.heldMs !== undefined
+      completed = requested.attempt.outcome === 'not-parked\n' && !yielded && timing.started === true && !timing.lost
     } finally { releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs }) }
   }
 }
@@ -161,6 +161,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
     let forwardedSignal = null
     let lockLost = false
     let treeStopped = null
+    child.once('spawn', () => { timing.started = true })
     const forward = (signal) => {
       forwardedSignal = signal
       if (marker) signalCoveredCommand(child, signal, { group })
@@ -169,6 +170,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
     const stopSignals = watchParkChildSignals(forward)
     leaseLost?.then((reason) => {
       lockLost = true
+      timing.lost = true
       process.stderr.write(`wt-suite-lock: suite lock lost (${reason || 'broker gone'}); command stopped\n`)
       // The lease is released (the broker socket closed, by the caller's finally) only once this resolves.
       treeStopped = stopCoveredCommandTree(child, { group })

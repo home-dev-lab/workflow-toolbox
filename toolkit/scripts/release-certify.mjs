@@ -28,7 +28,7 @@ export function sampleLoad({ platform = process.platform, cores = availableParal
   return { at: new Date().toISOString(), load, capacity, source }
 }
 
-export function runGate(name, root, lease, spawnGate = spawn) {
+export function runGate(name, root, lease, spawnGate = spawn, execution = {}) {
   return new Promise((resolve) => {
     // Under a broker lease the gate gets its own process group (POSIX), so a lost lease stops its whole tree.
     const group = Boolean(lease?.broker)
@@ -37,6 +37,7 @@ export function runGate(name, root, lease, spawnGate = spawn) {
     let lost = false
     let treeStopped = null
     let finished = false
+    child.once('spawn', () => { execution.started = true })
     const forward = (signal) => signalCoveredCommand(child, signal, { group })
     const interrupt = () => forward('SIGINT')
     const terminate = () => forward('SIGTERM')
@@ -52,6 +53,7 @@ export function runGate(name, root, lease, spawnGate = spawn) {
     lease.lost?.then((reason) => {
       if (finished) return
       lost = true
+      execution.lost = true
       process.stderr.write(`certification ${name}: broker lease lost (${reason || 'broker gone'}); stopping gate\n`)
       treeStopped = stopCoveredCommandTree(child, { group })
     })
@@ -91,13 +93,16 @@ export async function certify(options = {}) {
   mkdirSync(dir, { recursive: true })
   const receipt = join(dir, `${Date.now()}-${process.pid}.json`)
   let lease
+  const execution = { started: false, lost: false }
   try {
     lease = await acquireSuiteLock({ ...(lockRoot ? { root: lockRoot } : {}), argv: ['pnpm', 'certify'], onWait: (line) => process.stderr.write(`${line}\n`) })
     record.start = probe()
     if (refuseCertification(record, override)) return 75
     admitCertification(record, override, receipt)
     for (const gate of gates) {
-      const exit = await executeGate(gate, root, lease)
+      // Injected gates execute in-process; the default runner observes the child's spawn event.
+      if (executeGate !== runGate) execution.started = true
+      const exit = await executeGate(gate, root, lease, undefined, execution)
       record.gates.push({ name: gate, exit, finishedAt: new Date().toISOString() })
       if (exit !== 0) return exit
     }
@@ -112,7 +117,7 @@ export async function certify(options = {}) {
     try {
       writeFileSync(receipt, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     } finally {
-      if (lease) releaseSuiteLock(lease, { exit: record.exit, served: record.gates.length > 0 })
+      if (lease) releaseSuiteLock(lease, { exit: record.exit, served: execution.started && !execution.lost })
     }
     process.stderr.write(`certification: receipt=${receipt} exit=${record.exit}\n`)
   }

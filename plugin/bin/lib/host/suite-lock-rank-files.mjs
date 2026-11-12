@@ -1,10 +1,37 @@
 import { randomUUID } from 'node:crypto'
-import { linkSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { readCounterText } from './suite-lock-queue.mjs'
+import { suiteLockIsoTime } from '../suite-lock-rank-common.mjs'
 
-export function readRankJson(file) {
-  try { return JSON.parse(readCounterText(file)) } catch { return null }
+let warned = false
+export function warnRankState(error) {
+  if (warned) return
+  warned = true
+  process.stderr.write(`wt-suite-lock: rank state unavailable (${error?.code ?? 'invalid content'}); continuing admission\n`)
+}
+
+export function readRankJson(file, unreadable = null) {
+  try {
+    const text = rankText(file)
+    if (text === null) return null
+    const entry = JSON.parse(text)
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('invalid rank-state object')
+    return entry
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    warnRankState(error)
+    return unreadable
+  }
+}
+
+function rankText(file) {
+  let failure
+  const text = readCounterText(file, (...args) => {
+    try { return readFileSync(...args) } catch (error) { failure = error; throw error }
+  })
+  if (text === null && failure?.code !== 'ENOENT') throw failure
+  return text
 }
 
 export function rankFiles(root, kind, strict = false) {
@@ -33,7 +60,7 @@ export function publishRankJson(file, value) {
 }
 
 function expiredPrecedence(entry, now) {
-  const until = typeof entry?.until === 'string' ? Date.parse(entry.until) : NaN
+  const until = suiteLockIsoTime(entry?.until)
   return Number.isFinite(until) && until < now
 }
 
@@ -50,7 +77,7 @@ function prunePrecedence(file, now) {
 }
 
 function pruneOldRankFile(file, kind, now) {
-  if (kind === 'size-history' && readRankJson(file)?.overran === true) return
+  if (kind === 'size-history' && readRankJson(file)?.overran !== false) return
   if (statSync(file).mtimeMs < now - 30 * 86400_000) rmSync(file, { force: true })
 }
 

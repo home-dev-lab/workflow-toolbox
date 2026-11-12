@@ -114,6 +114,8 @@ function registerLibraryBasics() {
       argv: ['pnpm', 'test'],
       cwd: process.cwd(),
       startedAt: expect.any(String),
+      startedUptimeMs: expect.any(Number),
+      bootId: process.platform === 'linux' ? expect.stringMatching(/^[a-f0-9-]+$/) : null,
       platform: process.platform,
       pidNamespace: process.platform === 'linux' ? expect.stringMatching(/^pid:\[\d+\]$/) : null,
       startTime: process.platform === 'linux' ? expect.any(Number) : null,

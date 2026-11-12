@@ -3,7 +3,7 @@ import net from 'node:net'
 import fs, { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { tmpdir, uptime } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -38,6 +38,144 @@ const cli = (root: string, args: string[], extra = {}) => spawnSync(process.exec
 const readState = (root: string, projects = ['alpha', 'beta']) => state.readSuiteLockRankState(root, projects.map((project, i) => ticket(i, { project })))
 const statePath = (root: string, kind: string, project: string) => join(root, kind, createHash('sha256').update(project).digest('hex').slice(0, 16) + '.json')
 const events = (root: string) => readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+
+describe('started work and defensive rank state', () => {
+  registerStartedTurns()
+  registerCorruptRankState()
+  registerMalformedRankState()
+  registerBootElapsed()
+})
+
+async function serve(root: string, project: string, options = {}, outcome = {}) {
+  const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project, ...options })
+  lock.releaseSuiteLock(lease, { served: true, heldMs: 12, ...outcome })
+}
+
+function registerStartedTurns() {
+  it('executed exit 75 consumes A1 turn so B1 precedes queued A2', async () => {
+    const root = temp(); await serve(root, 'alpha'); await serve(root, 'beta')
+    expect(cli(root, ['run', '--project', 'alpha', '--priority', 'P2', '--', process.execPath, '-e', 'process.exit(75)']).status).toBe(75)
+    const entries = [ticket(2), ticket(3, { project: 'beta' })]
+    expect(numbers(entries, readState(root)), 'B1 must follow executed A1 before A2').toEqual([3, 2])
+    expect(readState(root).turns).toEqual({ alpha: 3, beta: 2 })
+  })
+  it('equal rank lights A1 A2 B1 alternate as A1 B1 A2', async () => {
+    const root = temp(); const entries = [ticket(1, { light: true }), ticket(2, { light: true }), ticket(3, { light: true, project: 'beta' })]
+    const grants: number[] = []
+    while (entries.length) {
+      const number = numbers(entries, readState(root))[0]; const index = entries.findIndex((entry) => entry.number === number)
+      const [entry] = entries.splice(index, 1); grants.push(number)
+      await serve(root, entry!.record.project, { light: true, size: 'S' })
+    }
+    expect(grants, 'light project turns alternate').toEqual([1, 3, 2])
+    expect(readState(root)).toMatchObject({ turns: { alpha: 3, beta: 2 }, history: {} })
+    expect(numbers([ticket(1, { light: true }), ticket(2, { light: true, project: 'beta' })], { turns: { alpha: 10, beta: 3 } })).toEqual([2, 1])
+  })
+  it('completed A release stamps a turn so B1 precedes A1 without changing S history', async () => {
+    const root = temp(); await serve(root, 'alpha', { size: 'S' }, { heldMs: 660_000 }); await serve(root, 'beta')
+    const before = readState(root).history
+    await serve(root, 'alpha', { priority: 'release', size: 'S' })
+    expect(numbers([ticket(1), ticket(2, { project: 'beta' })], readState(root)), 'B1 follows A release').toEqual([2, 1])
+    expect(readState(root)).toMatchObject({ turns: { alpha: 3, beta: 2 }, history: before })
+  })
+  it('a served short S exit 75 restores bonus and a long S exit 75 consumes a turn', async () => {
+    const root = temp(); await serve(root, 'alpha', { size: 'S' }, { exit: 75, heldMs: 660_000 })
+    expect(readState(root)).toMatchObject({ turns: { alpha: 1 }, history: { alpha: { overran: true } } })
+    await serve(root, 'alpha', { size: 'S' }, { exit: 75 })
+    expect(readState(root)).toMatchObject({ turns: { alpha: 2 }, history: { alpha: { overran: false, heldMs: 12 } } })
+  })
+}
+
+function putState(root: string, kind: string, project: string, content: unknown) {
+  mkdirSync(join(root, kind), { recursive: true })
+  writeFileSync(statePath(root, kind, project), typeof content === 'string' ? content : JSON.stringify(content))
+}
+
+function registerCorruptRankState() {
+  it.each(['truncated', 'unreadable'])('corrupt size history withholds bonus without blocking admission: %s', async (mode) => {
+    const root = temp(); putState(root, 'size-history', 'alpha', '{')
+    if (mode === 'unreadable') { rmSync(statePath(root, 'size-history', 'alpha')); mkdirSync(statePath(root, 'size-history', 'alpha')) }
+    expect(numbers([ticket(1, { size: 'S' }), ticket(2, { project: 'beta', level: 1 })], readState(root)), 'corruption must not restore S bonus').toEqual([2, 1])
+    await serve(root, 'alpha')
+    expect(readState(root).turns.alpha).toBe(1)
+  })
+  it.each(['valid', 'missing', 'corrupt'])('truncated project turn ranks most recent with %s sequence', (sequence) => {
+    const root = temp(); putState(root, 'project-turns', 'alpha', '{')
+    putState(root, 'project-turns', 'beta', { project: 'beta', turn: 3 })
+    putState(root, 'project-turns', 'unrelated', { project: 'unrelated', turn: 9 })
+    if (sequence !== 'missing') writeFileSync(join(root, 'turn-seq'), sequence === 'valid' ? '{"sequence":12}' : '{')
+    expect(readState(root).turns).toEqual({ alpha: sequence === 'valid' ? 12 : 9, beta: 3 })
+    expect(numbers([ticket(1), ticket(2, { project: 'beta' })], readState(root))).toEqual([2, 1])
+  })
+  it('unreadable rank state warns once per process and admission continues', () => {
+    const root = temp(); putState(root, 'size-history', 'alpha', '{'); putState(root, 'project-turns', 'alpha', '{')
+    const program = `import {readSuiteLockRankState as read} from ${JSON.stringify(pathToFileURL(join(plugin, 'bin/lib/host/suite-lock-rank-state.mjs')).href)};for(let i=0;i<3;i++)read(${JSON.stringify(root)},[{record:{project:'alpha'}}])`
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], { encoding: 'utf8' })
+    expect(result.status).toBe(0)
+    expect(result.stderr.match(/rank state unavailable/g), 'one diagnostic per process').toHaveLength(1)
+    expect(result.stderr).toContain('continuing admission')
+  })
+}
+
+function registerMalformedRankState() {
+  it.each([{ toString: null }, 42, null, [], 'not-ISO', '2026-01-02', '2026-99-01T00:00:00Z', '2026-02-30T00:00:00Z'].map((until) => [until]))('malformed precedence until %j never throws or grants precedence', async (until) => {
+    const root = temp(); putState(root, 'precedence', 'alpha', { project: 'alpha', until })
+    const entries = [ticket(1), ticket(2, { project: 'beta', level: 1 })]
+    expect(() => numbers(entries, readState(root))).not.toThrow()
+    expect(numbers(entries, readState(root))).toEqual([2, 1])
+    expect(numbers(entries, { precedence: { alpha: { until } } })).toEqual([2, 1])
+    expect(() => state.listSuiteLockPrecedence(root)).not.toThrow()
+    await serve(root, 'alpha')
+  })
+  it.each([
+    ['project-turns', { project: 'alpha', turn: {} }], ['project-turns', { project: {}, turn: 1 }],
+    ['size-history', { project: 'alpha', size: 'S', heldMs: '12', overran: false }],
+    ['size-history', { project: 'alpha', size: 'S', heldMs: 12, overran: 'false' }],
+    ['size-history', { project: null, size: 'S', heldMs: 12, overran: false }],
+  ] as const)('invalid %s field types rank conservatively: %j', (kind, content) => {
+    const root = temp(); putState(root, kind, 'alpha', content); writeFileSync(join(root, 'turn-seq'), '{"sequence":12}')
+    const snapshot = readState(root)
+    if (kind === 'project-turns') expect(snapshot.turns.alpha).toBe(12)
+    else expect(rank(ticket(1, { size: 'S' }), snapshot).reason.sizeBonus).toBe(false)
+  })
+}
+
+function registerBootElapsed() {
+  it('grant persists boot relative start and boot identity at the host boundary', async () => {
+    const root = temp(); const before = uptime() * 1000
+    const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha' })
+    try {
+      const holder = JSON.parse(readFileSync(join(root, 'lock.d/holder.json'), 'utf8'))
+      expect(Number.isFinite(holder.startedUptimeMs)).toBe(true)
+      expect(holder.startedUptimeMs).toBeGreaterThanOrEqual(before)
+      expect(holder.startedUptimeMs).toBeLessThanOrEqual(uptime() * 1000)
+      if (process.platform === 'linux') expect(holder.bootId).toBe(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim())
+    } finally { lock.releaseSuiteLock(lease) }
+  })
+  it.each(['waiter', 'force'])('same boot reclaim retains an S overrun after a backward wall clock step: %s', async (route) => {
+    const root = temp(); const timing = { uptimeMs: 700_000, bootId: 'fixture-boot' }
+    abandonedHolder(root, { startedAt: new Date(Date.now() + 2940_000).toISOString(), startedUptimeMs: timing.uptimeMs - 660_000, bootId: timing.bootId })
+    const options = { root, bootClock: () => timing }
+    if (route === 'force') expect(lock.operatorReleaseSuiteLock({ ...options, force: true }).released).toBe(true)
+    else { const lease = await lock.acquireSuiteLock({ ...options, env: envFor(root), project: 'beta' }); lock.releaseSuiteLock(lease) }
+    expect(readState(root)).toMatchObject({ turns: {}, history: { alpha: { overran: true } } })
+    expect(readState(root).history.alpha.heldMs).toBeGreaterThanOrEqual(660_000)
+  })
+  it.each([
+    ['same boot', 'boot', 700_000, 40_000, 2940_000, true, 660_000],
+    ['different boot', 'old', 700_000, 40_000, -12, false, undefined],
+    ['different boot wall overrun', 'old', 700_000, 699_999, -660_000, true, 660_000],
+    ['backward wall fallback', 'old', 700_000, 40_000, 2940_000, true, undefined],
+    ['unknown wall fallback', 'old', 700_000, 40_000, NaN, true, undefined],
+    ['negative uptime fallback', 'boot', 700_000, 800_000, -660_000, true, 660_000],
+  ] as const)('abandoned duration uses %s conservatively', (_name, bootId, uptimeMs, startedUptimeMs, wallOffset, overran, expectedMs) => {
+    const root = temp(); const holder = { ...ticket(1, { size: 'S' }).record, bootId, startedUptimeMs, startedAt: Number.isFinite(wallOffset) ? new Date(now + wallOffset).toISOString() : null }
+    state.recordAbandonedSuiteLock(root, holder, { now: () => now, bootClock: () => ({ bootId: 'boot', uptimeMs }) })
+    expect(readState(root).turns).toEqual({})
+    expect(readState(root).history.alpha?.overran === true).toBe(overran)
+    if (expectedMs !== undefined) expect(readState(root).history.alpha.heldMs).toBe(expectedMs)
+  })
+}
 
 describe('round three adversarial regressions', () => {
   registerAbandonedHistory()
@@ -162,7 +300,7 @@ async function rawBroker(root: string, message: object, grant?: () => void) {
 function registerRawBroker() {
   it.each([{ exit: 0 }, { exit: 17 }, { exit: 0, served: false }, { exit: 75 }])('broker terminal outcome defaults to served with explicit opt outs %j', async (message) => {
     const root = temp(); await rawBroker(root, message)
-    expect(readState(root).turns).toEqual(message.exit === 75 || ('served' in message && message.served === false) ? {} : { alpha: 1 })
+    expect(readState(root).turns).toEqual('served' in message && message.served === false ? {} : { alpha: 1 })
   })
   it('broker ignores forged heldMs in raw terminal JSON after ten host monotonic minutes', async () => {
     const root = temp(); let clock: ReturnType<typeof vi.spyOn> | undefined
@@ -243,14 +381,7 @@ function registerCompletionContracts() {
     expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
     expect(events(root).at(-1)).toMatchObject({ served: false, exit })
   })
-  it('CLI exit 75 and spawn failure do not consume a project turn', () => {
-    for (const command of [[process.execPath, '-e', 'process.exit(75)'], [join(temp(), 'nonexistent-command')]]) {
-      const root = temp(); const result = cli(root, ['run', '--size', 'S', '--project', 'alpha', '--', ...command])
-      expect(result.status).not.toBe(0)
-      expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
-      expect(events(root).at(-1)).toMatchObject({ served: false })
-    }
-  })
+  registerCliStarted()
   it('CLI history records command runtime rather than grant-to-release elapsed time', () => {
     const root = temp()
     const script = `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const write=fs.writeSync;const mono=performance.now.bind(performance);const wall=Date.now;let gap=false;fs.writeSync=function(...args){const result=Reflect.apply(write,this,args);if(String(args[1]).includes('"event":"grant"')){Object.defineProperty(performance,'now',{configurable:true,value:()=>mono()+3600000});Date.now=()=>wall()+3600000;gap=true}return result};syncBuiltinESMExports();const {runSuiteLockCli}=await import(${JSON.stringify(pathToFileURL(join(plugin, 'bin/wt-suite-lock.mjs')).href)});process.exitCode=await runSuiteLockCli(['run','--size','S','--project','alpha','--',process.execPath,'-e','setTimeout(()=>{},120)']);process.stdout.write('gap='+Number(gap))`
@@ -264,6 +395,21 @@ function registerCompletionContracts() {
   })
 }
 
+function registerCliStarted() {
+  it('CLI exit 75 after running stamps a project turn and short S history', () => {
+    const root = temp(); const result = cli(root, ['run', '--size', 'S', '--project', 'alpha', '--', process.execPath, '-e', 'process.exit(75)'])
+    expect(result.status).toBe(75)
+    expect(readState(root)).toMatchObject({ turns: { alpha: 1 }, history: { alpha: { overran: false } } })
+    expect(events(root).at(-1)).toMatchObject({ served: true, exit: 75 })
+  })
+  it('CLI spawn failure does not consume a project turn', () => {
+    const root = temp(); const result = cli(root, ['run', '--size', 'S', '--project', 'alpha', '--', join(root, 'nonexistent-command')])
+    expect(result.status).not.toBe(0)
+    expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
+    expect(events(root).at(-1)).toMatchObject({ served: false })
+  })
+}
+
 function registerSignalCompletion() {
   it('a started command ended by signal consumes its turn and the changelog states it', () => {
     const root = temp(); const result = cli(root, ['run', '--project', 'alpha', '--', process.execPath, '-e', 'process.kill(process.pid,"SIGTERM")'])
@@ -274,23 +420,36 @@ function registerSignalCompletion() {
 }
 
 function registerCompletionCallers() {
-  it('release-certify refusal consumes no turn and an executed certification does', async () => {
+  registerCertificationSpawnFailure()
+  it.each([0, 75])('release-certify refusal consumes no turn and executed exit %i does', async (exit) => {
     const root = temp(); const certifyRoot = join(root, 'toolkit'); mkdirSync(certifyRoot)
-    const program = `import {certify} from ${JSON.stringify(pathToFileURL(join(toolkit, 'scripts/release-certify.mjs')).href)};process.exitCode=await certify({root:${JSON.stringify(certifyRoot)},lockRoot:${JSON.stringify(root)},gates:['typecheck'],probe:()=>({load:5,capacity:2,source:'fixture'}),override:process.argv[1]==='run',executeGate:async()=>0})`
+    const program = `import {certify} from ${JSON.stringify(pathToFileURL(join(toolkit, 'scripts/release-certify.mjs')).href)};process.exitCode=await certify({root:${JSON.stringify(certifyRoot)},lockRoot:${JSON.stringify(root)},gates:['typecheck'],probe:()=>({load:5,capacity:2,source:'fixture'}),override:process.argv[1]==='run',executeGate:async()=>${exit}})`
     const run = (mode: string) => spawnSync(process.execPath, ['--input-type=module', '-e', program, mode], { env: envFor(root, { WT_SUITE_LOCK_PROJECT: 'alpha', WT_SUITE_LOCK_SIZE: 'S' }), encoding: 'utf8' })
     expect(run('refuse').status).toBe(75)
     expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
     expect(events(root).at(-1)).toMatchObject({ served: false, exit: 75 })
-    expect(run('run').status).toBe(0)
+    expect(run('run').status).toBe(exit)
     expect(readState(root).turns).toEqual({ alpha: 1 })
-    expect(events(root).at(-1)).toMatchObject({ served: true, exit: 0 })
+    expect(events(root).at(-1)).toMatchObject({ served: true, exit })
   })
-  it('vitest global setup marks its completed covered run explicitly served', () => {
+  it.each([0, 75])('vitest global setup marks completed exit %i explicitly served', (exit) => {
     const root = temp()
-    const program = `import setup from ${JSON.stringify(pathToFileURL(join(toolkit, 'test-support/suite-lease.global-setup.mjs')).href)};await setup({config:{watch:false}})`
-    expect(spawnSync(process.execPath, ['--input-type=module', '-e', program], { env: envFor(root, { WT_SUITE_LOCK_PROJECT: 'alpha', WT_SUITE_LOCK_SIZE: 'S' }), encoding: 'utf8' }).status).toBe(0)
+    const program = `import setup from ${JSON.stringify(pathToFileURL(join(toolkit, 'test-support/suite-lease.global-setup.mjs')).href)};await setup({config:{watch:false}});process.exitCode=${exit}`
+    expect(spawnSync(process.execPath, ['--input-type=module', '-e', program], { env: envFor(root, { WT_SUITE_LOCK_PROJECT: 'alpha', WT_SUITE_LOCK_SIZE: 'S' }), encoding: 'utf8' }).status).toBe(exit)
     expect(readState(root).turns).toEqual({ alpha: 1 })
-    expect(events(root).at(-1)).toMatchObject({ served: true, exit: 0 })
+    expect(events(root).at(-1)).toMatchObject({ served: true, exit })
+  })
+}
+
+function registerCertificationSpawnFailure() {
+  it.skipIf(process.platform === 'win32')('certification gate spawn failure consumes no project turn', () => {
+    const root = temp(); const certifyRoot = join(root, 'toolkit'); mkdirSync(certifyRoot)
+    const program = `import {certify} from ${JSON.stringify(pathToFileURL(join(toolkit, 'scripts/release-certify.mjs')).href)};process.exitCode=await certify({root:${JSON.stringify(certifyRoot)},lockRoot:${JSON.stringify(root)},gates:['typecheck'],probe:()=>({load:null,capacity:2,source:'unavailable'})})`
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], { env: envFor(root, { PATH: root, WT_SUITE_LOCK_PROJECT: 'alpha', WT_SUITE_LOCK_SIZE: 'S' }), encoding: 'utf8' })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('ENOENT')
+    expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
+    expect(events(root).at(-1)).toMatchObject({ served: false })
   })
 }
 
@@ -423,7 +582,7 @@ function registerInheritedCli() {
 
 function registerStateMaintenance() {
   registerCounterReadFailure()
-  it.each([{ served: false }, { lost: true }, { yielded: true }, { served: true, exit: 75 }])('long S history survives an unserved ending %j', async (outcome) => {
+  it.each([{ served: false }, { served: true, lost: true }, { served: true, yielded: true }])('long S history survives an unserved ending %j', async (outcome) => {
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S' })
     lock.releaseSuiteLock(lease, { ...outcome, heldMs: 600_001 })
     expect(readState(root)).toMatchObject({ turns: {}, history: { alpha: { project: 'alpha', size: 'S', heldMs: 600_001, overran: true } } })
@@ -439,8 +598,8 @@ function registerStateMaintenance() {
   it('release prunes stale turns and history and expired precedence but keeps recent state', async () => {
     const root = temp(); const stale = new Date(Date.now() - 31 * 86400_000)
     for (const kind of ['project-turns', 'size-history']) {
-      mkdirSync(join(root, kind)); writeFileSync(statePath(root, kind, 'old'), JSON.stringify({ project: 'old', turn: 7, size: 'S', heldMs: 12 })); utimesSync(statePath(root, kind, 'old'), stale, stale)
-      writeFileSync(statePath(root, kind, 'recent'), JSON.stringify({ project: 'recent', turn: 9, size: 'S', heldMs: 20 }))
+      mkdirSync(join(root, kind)); writeFileSync(statePath(root, kind, 'old'), JSON.stringify({ project: 'old', turn: 7, size: 'S', heldMs: 12, overran: false })); utimesSync(statePath(root, kind, 'old'), stale, stale)
+      writeFileSync(statePath(root, kind, 'recent'), JSON.stringify({ project: 'recent', turn: 9, size: 'S', heldMs: 20, overran: false }))
     }
     state.setSuiteLockPrecedence(root, { project: 'old', until: new Date(Date.now() - 1).toISOString() })
     state.setSuiteLockPrecedence(root, { project: 'recent', until: new Date(Date.now() + 60_000).toISOString() })
@@ -656,7 +815,7 @@ function registerRollover() {
 }
 
 function registerServiceHistory() {
-  it('writes turns and duration only at served exclusive release before removing mutex', async () => {
+  it('writes served exclusive turns and S duration before removing mutex', async () => {
     const root = temp(); const env = envFor(root)
     const lease = await lock.acquireSuiteLock({ root, env, project: 'alpha', size: 'S' })
     expect(readState(root).turns).toEqual({})
@@ -674,12 +833,20 @@ function registerServiceHistory() {
 }
 
 function registerServiceExclusions() {
-  it.each([{ exit: 75 }, { exit: 0, served: false }, { lost: true }, { exit: 0, yielded: true }])('does not stamp an unserved lease %j', async (outcome) => {
+  it.each([{ exit: 0, served: false }, { served: true, lost: true }, { exit: 0, served: true, yielded: true }])('does not stamp an unserved lease %j', async (outcome) => {
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S' })
     lock.releaseSuiteLock(lease, outcome)
     expect(readState(root).turns).toEqual({})
   })
-  it.each([{ light: true }, { static: true }])('does not write rank state for %j', async (options) => {
+  it.each([12, 700_000])('a served light stamps a turn but never changes S history heldMs=%i', async (heldMs) => {
+    const root = temp(); await serve(root, 'alpha', { size: 'S', light: true }, { heldMs })
+    expect(readState(root)).toEqual({ turns: { alpha: 1 }, history: {}, precedence: {} })
+    await serve(root, 'alpha', { size: 'S' }, { heldMs: 660_000 }); const before = readState(root).history
+    await serve(root, 'alpha', { size: 'S', light: true }, { heldMs })
+    expect(readState(root)).toMatchObject({ turns: { alpha: 3 }, history: before })
+  })
+  it('static lane writes no rank state', async () => {
+    const options = { static: true }
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root, { WT_SUITE_LOCK_STATIC_LANE: '1' }), project: 'alpha', size: 'S', ...options })
     if (options.static) expect(lease.staticDomain).toBe(true)
     lock.releaseSuiteLock(lease, { served: true, heldMs: 700_000 })
@@ -687,10 +854,10 @@ function registerServiceExclusions() {
     expect(existsSync(join(root, 'static-lane', 'project-turns'))).toBe(false)
     expect(existsSync(join(root, 'static-lane', 'size-history'))).toBe(false)
   })
-  it.each([12, 600_001])('release priority writes neither project turn nor S history heldMs=%i', async (heldMs) => {
+  it.each([12, 600_001])('release priority stamps project turn but no S history heldMs=%i', async (heldMs) => {
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root), project: 'alpha', size: 'S', priority: 'release' })
     lock.releaseSuiteLock(lease, { served: true, heldMs })
-    expect(readState(root)).toEqual({ turns: {}, history: {}, precedence: {} })
+    expect(readState(root)).toEqual({ turns: { alpha: 1 }, history: {}, precedence: {} })
   })
 }
 
@@ -726,7 +893,8 @@ function registerPrecedence() {
     })))
     expect(JSON.parse(cli(root, ['precedence', 'list']).stdout).map((entry: { project: string }) => entry.project)).toEqual(['alpha', 'beta'])
     expect(cli(root, ['precedence', 'clear', '--project', 'alpha']).status).toBe(0)
-    expect(readState(root).precedence.alpha.until).toBe(null)
+    expect(readState(root).precedence).not.toHaveProperty('alpha')
+    expect(JSON.parse(readFileSync(statePath(root, 'precedence', 'alpha'), 'utf8')).until).toBe(null)
     expect(readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line).action).sort()).toEqual(['clear', 'set', 'set'])
     expect(cli(root, ['precedence', 'list'], { WT_SUITE_LOCK_BROKER: 'host' }).status).toBe(2)
   })

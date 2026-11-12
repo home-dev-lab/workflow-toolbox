@@ -29,7 +29,7 @@ export function observeBrokerJournalSocket(socket, handlers) {
     try {
       const message = JSON.parse(state.text.slice(0, state.text.indexOf('\n')))
       // Duration stays host-measured (grant to release): a sandboxed client's own timing is not trusted for S history.
-      if (Number.isInteger(message.exit) && !state.expired) state.outcome = { exit: message.exit, served: message.served !== false && message.exit !== 75 }
+      if (Number.isInteger(message.exit) && !state.expired) state.outcome = { exit: message.exit, served: message.served !== false }
     } catch { /* An invalid terminal message remains a lost lease. */ }
   })
   callbacks.set(handlers.onWait, state)
