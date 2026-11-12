@@ -5,7 +5,6 @@ import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTre
 import {
   DEFAULT_SUITE_LOCK_STALE_S,
   DEFAULT_SUITE_LOCK_WAIT_S,
-  P0_BYPASS_MAX_GRANTS,
   acquireSuiteLock,
   hasSuiteLeaseAsync,
   formatSuiteLockHolder,
@@ -29,19 +28,22 @@ import { acquireCliLease, cliInheritedLease, parseSuiteRunOptions } from './lib/
 import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
 import { acquireParkCliLease, clearParkRequest, finishParkRun, parkChildEnvironment, publishParkOutcome, shouldYieldParkLease, spawnParkEnvironment } from './lib/suite-lock-park.mjs'
 import { claimParkAttempt, parkSignalExit, watchParkChildSignals } from './lib/host/suite-lock-park-files.mjs'
+import { suiteLockPrecedenceCli } from './lib/suite-lock-precedence.mjs'
 
 const USAGE = `Usage:
-  node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
   node wt-suite-lock.mjs journal [--json] [--since <ISO>]
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
+  node wt-suite-lock.mjs precedence set --project NAME --until ISO --source ID | clear --project NAME | list
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
-  WT_SUITE_LOCK_PRIORITY declares P0, P1 (non-lane default), or P2 (routine lane default); levels age one step per 30 minutes.
+  WT_SUITE_LOCK_PRIORITY declares P0, P1 (non-lane default), or P2 (routine lane default).
   A lane's host launcher sets its level with wt-lane --lock-priority P0|P1|P2 or WT_SUITE_LOCK_PRIORITY
   in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
-  A P1/P2 ticket ages no higher than P1 until ${P0_BYPASS_MAX_GRANTS} declared-P0 admissions have passed it, so a declared P0
-  goes before aged tickets; this applies once every queued client runs this version (status names the legacy order otherwise).
+  V3 has no level aging: size S gains one level unless the project's last S exceeded 10 minutes; M/L gain none (default L).
+  WT_SUITE_LOCK_SIZE and WT_SUITE_LOCK_PROJECT supply defaults; explicit options win. Equal ranks alternate projects.
+  Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
   Release priority is reserved for the main session's release and merge-train gates.`
@@ -77,7 +79,7 @@ function applyRunPriority(priority) {
 }
 
 async function run(args) {
-  const { command, staticRun, waitS, staleS, light, priority, park } = parseSuiteRunOptions(args,
+  const { command, staticRun, waitS, staleS, light, priority, park, project, size } = parseSuiteRunOptions(args,
     { parseSeconds, parsePriority: parseRunPriority, waitSeconds: suiteLockWaitSeconds, defaultStaleS: DEFAULT_SUITE_LOCK_STALE_S })
   const attempt = { outcome: 'not-parked\n' }
   const releaseAttempt = claimParkAttempt(park, parkAttemptIsGone)
@@ -88,6 +90,7 @@ async function run(args) {
       return 2
     }
     applyRunPriority(priority)
+    if (project !== undefined) process.env.WT_SUITE_LOCK_PROJECT = project
     // A reader that exits mid-run must not kill the run: the lease outlives its diagnostics.
     process.stderr.on('error', () => { /* a diagnostic failure must leave the covered command running */ })
     if (process.env.WT_SUITE_LOCK === '0') {
@@ -98,7 +101,7 @@ async function run(args) {
     const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
     if (inherited === 75) return 75
     if (inherited) return await spawnCommand(command, null, null, parkChildEnvironment(park))
-    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, light, static: staticRun, priority, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, light, static: staticRun, priority, project, size, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
     if (typeof lease === 'number') return lease
     if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
     return await runLeasedCommand(command, lease, { light, staticRun, park, attempt })
@@ -109,14 +112,15 @@ async function runLeasedCommand(command, lease, requested) {
   const stopWarning = watchGrantedLease(lease, requested, command)
   let exit = 1
   let yielded = false
+  const timing = {}
   try {
     yielded = shouldYieldParkLease(lease, requested.park, readSuiteLockParked)
     if (yielded) { exit = 75; return exit }
-    exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park))
+    exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park), timing)
     return exit
   } finally {
     stopWarning()
-    try { requested.attempt.outcome = finishParkRun(lease, requested.park, yielded) } finally { releaseSuiteLock(lease, { exit }) }
+    try { requested.attempt.outcome = finishParkRun(lease, requested.park, yielded) } finally { releaseSuiteLock(lease, { exit, served: !yielded && timing.heldMs !== undefined, heldMs: timing.heldMs }) }
   }
 }
 
@@ -135,12 +139,13 @@ function grantedStaticLane(lease) {
   return lease.staticDomain === true || String(lease.holder?.leaseId ?? '').startsWith('static:')
 }
 
-function spawnCommand(command, leaseLost = null, marker = null, envOverrides) {
+function spawnCommand(command, leaseLost = null, marker = null, envOverrides, timing = {}) {
   return new Promise((resolve, reject) => {
     const refusal = windowsShimArgumentRefusal(command)
     if (refusal) { reject(new Error(refusal)); return }
     // A broker lease's command gets its own process group (POSIX), so losing the lease stops its whole tree.
     const group = Boolean(leaseLost)
+    const started = performance.now()
     const child = spawn(command[0], command.slice(1), {
       stdio: 'inherit',
       ...spawnParkEnvironment(marker, envOverrides, process.env),
@@ -166,6 +171,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides) {
     })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
+      timing.heldMs = performance.now() - started
       stopSignals()
       if (lockLost) { treeStopped.then(() => resolve(75)); return }
       if (code !== null) resolve(code)
@@ -215,6 +221,7 @@ export async function runSuiteLockCli(argv = process.argv.slice(2)) {
   if (subcommand === 'status') return status(args)
   if (subcommand === 'release') return release(args)
   if (subcommand === 'journal') return suiteLockJournalCli(args, suiteLeaseDomain())
+  if (subcommand === 'precedence') return suiteLockPrecedenceCli(args, suiteLeaseDomain())
   throw new Error(subcommand ? `unknown subcommand: ${subcommand}` : 'missing subcommand')
 }
 

@@ -7,8 +7,9 @@ import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
 import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside } from './host/suite-lock-queue.mjs'
 import { connectSuiteLockBroker } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
-import { BOUNDED_P0_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
+import { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
+import { readSuiteLockRankState, recordSuiteLockService, suiteLockReleaseOutcome } from './host/suite-lock-rank-state.mjs'
 import { observeSuiteQueuePlace, suiteQueueAdvanced } from './suite-lock-progress.mjs'
 import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
 import { requestBrokerLease } from './suite-lock-broker-client.mjs'
@@ -78,7 +79,7 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root))
+  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root))
   snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
@@ -220,11 +221,13 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
     }
     live.push({ number, record: ticket.holder })
   }
-  const ordered = orderSuiteLockTickets(live, counter, now, readP0Counter(path.dirname(queueDir))).tickets
+  const rankState = options.staticDomain ? {} : readSuiteLockRankState(path.dirname(queueDir))
+  const ordered = orderSuiteLockTickets(live, counter, now, readP0Counter(path.dirname(queueDir)), rankState).tickets
+  const ranked = ordered.find((ticket) => ticket.number === mine)
   const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
   const ahead = preceding.length
   return observeSuiteQueuePlace(options, { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
-    admissions: readAdmissionCounter(path.dirname(queueDir)) })
+    reason: ranked.reason, rankLevel: ranked.effectiveLevel, admissions: readAdmissionCounter(path.dirname(queueDir)) })
 }
 
 // true: acquired. false: the lock is held. 'reclaim': a reclaimer is in flight, so the acquisition is
@@ -336,7 +339,8 @@ function waiterRecord(options, counter, priority, p0Fields) {
     level: priority === 'release' ? 0 : Number(priority[1]),
     ...(priority === 'release' ? { priority: 'release' } : {}),
     ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
-    levelOrderVersion: BOUNDED_P0_ORDER_VERSION,
+    levelOrderVersion: options.staticDomain ? BOUNDED_P0_ORDER_VERSION : SUITE_LOCK_ORDER_VERSION,
+    project: options.project, size: options.size, sizeBonus: options.size === 'S',
     ...p0Fields,
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
@@ -349,7 +353,7 @@ function describeWait(place, current, record) {
   let priority = ''
   if (record.priority === 'release') priority = ' (release priority)'
   else if (record.light === true) priority = ' (light priority)'
-  return `position ${place.ahead + 1} of ${place.total}${priority}, ${holder}`
+  return `position ${place.ahead + 1} of ${place.total}${priority}, ${holder}${place.reason?.line ? ', ' + place.reason.line : ''}`
 }
 
 // Windows reports a file or directory that another process is deleting ("delete pending") as EPERM,
@@ -375,12 +379,12 @@ async function retryTransient(operation, pauseMs) {
 // Ordering/light-counter failures give back the provisional lease before the outer transient retry.
 function confirmAdmission(state, holder, place, options) {
   const { root, queueDir, ticket, record } = state
-  const lease = suiteLeaseWithPark(state, holder, options.park)
+  const lease = { ...suiteLeaseWithPark(state, holder, options.park), staticDomain: options.staticDomain }
   try {
     assertParkClaim(state)
     const confirmed = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
     if (confirmed.ahead > 0) {
-      releaseSuiteLock(lease)
+      releaseSuiteLock(lease, { served: false })
       options.afterHandBack?.()
       return { again: true, place }
     }
@@ -389,9 +393,11 @@ function confirmAdmission(state, holder, place, options) {
     // A count that cannot be written resets the P0 counter; only a failed reset fails the admission (lease handed back).
     if (record.level === 0 && record.priority !== 'release') recordP0Grant(root, options.p0GrantSeams)
     recordAdmissionGrant(root)
+    lease.rankLevel = confirmed.rankLevel
+    lease.reason = confirmed.reason
     return { lease }
   } catch (error) {
-    releaseSuiteLock(lease)
+    releaseSuiteLock(lease, { served: false })
     throw error
   }
 }
@@ -610,6 +616,8 @@ export function releaseSuiteLock(lease, outcome = { exit: 0 }) {
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
   if (!sameInstance(current.holder, lease.holder)) return false
+  outcome = suiteLockReleaseOutcome(lease, outcome)
+  recordSuiteLockService(lease, outcome)
   rmSync(lease.lockDir, REMOVE_WITH_RETRY)
   suiteJournalEvent(lease.journal, 'release', outcome)
   return true

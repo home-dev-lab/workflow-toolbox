@@ -4,6 +4,7 @@ import { createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
 import { suiteJournalEvent, suiteJournalRequest } from './suite-lock-journal.mjs'
 import { staticLaneEnabled, staticLockOptions } from './suite-lock-static.mjs'
 import { staticWaitDeadline } from './suite-lock-static-deadline.mjs'
+import { suiteLockRankOptions } from './suite-lock-priority.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -50,6 +51,8 @@ function journalWaitFailure(context, failure) {
 }
 
 export async function acquireJournalLease(acquire, options, domain, covered, inherit) {
+  const metadata = suiteLockRankOptions(options, options.env ?? process.env)
+  options = { ...options, project: metadata.project, size: metadata.size }
   const prepared = journalAcquisition(options, domain, covered, inherit)
   if (prepared.lease) return prepared.lease
   options = prepared.options
@@ -58,7 +61,7 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   try {
     const lease = await acquire({ ...deadline.options, [CONTEXT]: context })
     if (lease.inherited || lease.broker) return lease
-    suiteJournalEvent(context.journal, 'grant')
+    suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel })
     return { ...lease, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)

@@ -3,7 +3,7 @@ import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
 import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
 import { formatSuiteLockHolder, readSuiteLock, readSuiteLockStatus } from '../suite-lock.mjs'
-import { laneSuiteLockPriority } from '../suite-lock-priority.mjs'
+import { laneSuiteLockPriority, suiteLockRankOptions } from '../suite-lock-priority.mjs'
 import { suiteLockStatusJson } from '../suite-lock-status.mjs'
 import { acquireBrokerJournalLease as acquireSuiteLock, observeBrokerJournalSocket, releaseBrokerJournalLease as releaseSuiteLock } from './suite-lock-broker-journal.mjs'
 import { suiteOffloadConfig } from './suite-lock-offload-config.mjs'
@@ -101,11 +101,11 @@ export function laneSuiteLockMaxHoldSeconds(env = process.env) {
   return value
 }
 
-function hostLockOptions(env, priority) {
+function hostLockOptions(env, priority, root) {
   const hostEnv = { ...env, WT_SUITE_LOCK_CONTEXT: 'lane' }
   const declared = laneSuiteLockPriority({ priority }, hostEnv)
   if (declared === 'release') throw new Error('release priority is not available to a lane broker')
-  return { env: hostEnv, priority: declared }
+  return { env: hostEnv, priority: declared, ...suiteLockRankOptions({ cwd: root ?? process.cwd() }, hostEnv) }
 }
 
 function replyStatus(socket, options, finish) {
@@ -126,7 +126,7 @@ function brokerWaitCallbacks(socket) {
 export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, env = process.env, priority, root, runId } = {}) {
   if (!validMaxHold(maxHoldS)) throw new Error(`maxHoldS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(maxHoldS)})`)
   if (!validMaxHold(stopGraceS)) throw new Error(`stopGraceS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(stopGraceS)})`)
-  const lockOptions = { ...hostLockOptions(env, priority), offload: suiteOffloadConfig(root, env) }
+  const lockOptions = { ...hostLockOptions(env, priority, root), offload: suiteOffloadConfig(root, env) }
   const queue = createBrokerQueueState(runId)
   const broker = { active: 0, releases: new Set(), lockOptions, label, maxHoldS, stopGraceS, queue }
   const server = net.createServer((socket) => serveBrokerConnection(socket, broker))

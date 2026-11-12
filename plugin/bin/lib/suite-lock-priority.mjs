@@ -1,4 +1,5 @@
 import { displayArgv } from './suite-lock-display.mjs'
+import { defaultSuiteLockProject } from './host/suite-lock-project.mjs'
 
 export function parseSuiteLockPriority(value) {
   if (value === 'release') return value
@@ -49,4 +50,33 @@ export function suiteLockLightHoldSeconds(env = process.env) {
   if (String(value).trim() && Number.isFinite(seconds) && seconds >= 0) return seconds
   process.stderr.write(`wt-suite-lock: invalid WT_SUITE_LOCK_LIGHT_HOLD_S ${JSON.stringify(displayArgv([value]))}; using 600 s\n`)
   return 600
+}
+
+export function parseSuiteLockSize(value) {
+  if (['S', 'M', 'L'].includes(value)) return value
+  throw new Error('suite lock size must be S, M or L')
+}
+
+export function parseSuiteLockProject(value) {
+  if (typeof value === 'string' && value.trim() && value.length <= 120 && !/[\p{Cc}\p{Cf}]/u.test(value)) return value
+  throw new Error('suite lock project must be a nonempty name of at most 120 characters without controls')
+}
+
+let warnedSandboxRank = false
+function warnSandboxRank(options, env) {
+  if (!warnedSandboxRank && (options.size !== undefined || options.project !== undefined || env.WT_SUITE_LOCK_SIZE || env.WT_SUITE_LOCK_PROJECT)) {
+    warnedSandboxRank = true
+    process.stderr.write('wt-suite-lock: the host sets a lane\'s project and size; sandbox declarations are ignored\n')
+  }
+}
+
+export function suiteLockRankOptions(options = {}, env = process.env) {
+  if (env.WT_SUITE_LOCK_BROKER?.trim()) {
+    warnSandboxRank(options, env)
+    return {}
+  }
+  return {
+    project: parseSuiteLockProject(options.project ?? (env.WT_SUITE_LOCK_PROJECT || defaultSuiteLockProject(options.cwd, options.home))),
+    size: parseSuiteLockSize(options.size ?? (env.WT_SUITE_LOCK_SIZE || 'L')),
+  }
 }

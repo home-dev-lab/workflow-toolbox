@@ -40,9 +40,9 @@ function queueEntry(ticket, position, now) {
     waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(safeArgv(record?.argv)) }
 }
 
-export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0Counter) {
+export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0Counter, rankState) {
   const live = tickets.filter((ticket) => !ticket.stale)
-  const ordered = orderSuiteLockTickets(live, counter, now, p0Counter)
+  const ordered = orderSuiteLockTickets(live, counter, now, p0Counter, rankState)
   const stale = tickets.filter((ticket) => ticket.stale).sort((left, right) => left.number - right.number)
   const ageMs = current.held ? waitedMilliseconds(current.holder?.startedAt, now) : null
   const longHoldBoundS = suiteLockLongHoldSeconds(env)
@@ -50,7 +50,7 @@ export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0C
   return { ...current, holder: safeHolder(current.holder), ageMs, level: numericLevel(current.holder?.level) ? current.holder.level : null,
     lightPastClass: current.holder?.light === true && ageMs !== null && ageMs > lightHoldBoundS * 1000, lightHoldBoundS,
     longHold: ageMs !== null && ageMs > longHoldBoundS * 1000, longHoldBoundS, order: ordered.order, levelOrder: ordered.levelOrder,
-    queue: [...ordered.tickets, ...stale].map((ticket, index) => queueEntry(ticket, index + 1, now)) }
+    queue: [...ordered.tickets, ...stale].map((ticket, index) => ({ ...queueEntry(ticket, index + 1, now), reason: safeValue(ticket.reason) })) }
 }
 
 function formatSuiteLockDuration(ms) {
@@ -69,7 +69,7 @@ function queueKind(entry) {
   return entry.light ? 'light' : 'exclusive'
 }
 function queueLine(entry) {
-  return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})`
+  return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})${entry.reason?.line ? ', ' + entry.reason.line : ''}`
 }
 
 function parkedLine(entry) {

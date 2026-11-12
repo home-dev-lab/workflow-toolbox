@@ -7,6 +7,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Suite-lock queue ranking now combines declared priority, bounded light bypass,
+  job size and completed project turns. `run --size S|M|L --project NAME` declares
+  work; short jobs gain one level unless that project's latest short job overran
+  ten minutes. Host operators can set expiring project precedence. Waiting lines,
+  status and the journal explain the computed rank. Mixed-version queues retain
+  the exact legacy order until older tickets drain.
 - The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
   `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
   hook previews it only through an active pinned install. Install-time `--owner-keys` and
