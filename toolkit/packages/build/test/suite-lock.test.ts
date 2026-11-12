@@ -436,14 +436,20 @@ function registerRetryProgress() {
   }, 8000)
 
   // An explicit zero wait is a fail-fast request, at the head as well as behind another ticket.
+  // Asserted on the decision, not on wall time: the signal is aborted the first time the waiter reaches the
+  // head and tries the lock, so a wait or a new poll before the decision rejects with ABORT_ERR instead of
+  // the timeout. A wall-time bound measured the queue's filesystem work, which a hosted Windows runner can
+  // stretch past a second; the filesystem retries take no signal, so they cannot turn this test red.
   it('keeps --wait-s 0 fail-fast at the head of the queue', async () => {
     const root = tempRoot('zero-wait-head')
     const holder = await acquireSuiteLock({ root, argv: ['H'] })
     try {
-      const start = performance.now()
-      const error = await acquireSuiteLock({ root, waitS: 0, pollMs: 30 }).catch((cause: Error & { code?: string }) => cause)
+      const firstAttempt = new AbortController()
+      let headAttempts = 0
+      const beforeAcquire = () => { headAttempts += 1; firstAttempt.abort() }
+      const error = await acquireSuiteLock({ root, waitS: 0, pollMs: 30, signal: firstAttempt.signal, beforeAcquire }).catch((cause: Error & { code?: string }) => cause)
       expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-      expect(performance.now() - start).toBeLessThan(1000)
+      expect(headAttempts).toBeGreaterThan(0)
     } finally { releaseSuiteLock(holder) }
   }, 5000)
 
