@@ -3,6 +3,11 @@ import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
 import { isIssuedToken, knownTokens, replacementFor } from './token-vault.js';
 import { boundaryFindings, isContextual, referenceProof } from './value-boundary.js';
+import { walkOutbound, inspectionBudget, materializePath, TRUNCATED_PATH } from './outbound-traversal.js';
+import { numericEquals } from './decimal-equality.js';
+import { base64Utf8, HELD_VALUE_FLOOR, standsAlone } from './diagnostic-values.js';
+import { diagnosticSensitiveSet, plainDiagnosticKey, redactDiagnostic } from './diagnostic-redaction.js';
+export { base64Utf8, HELD_VALUE_FLOOR } from './diagnostic-values.js';
 
 const REFERENCE = /(?:op:\/\/[^\s"']+|secret:(?:env|file|1p):[^\s"']+|\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:[a-z-]+#[a-f0-9]{6})/gi;
 const SURFACE = {
@@ -24,37 +29,34 @@ const OUTBOUND_FIELDS = {
 // time and 5 digits 0.7%, 6 characters of any class never. So a short held value counts only where it stands
 // alone - no letter or digit touching either side: `pin=7342` is refused, a long numeric id such as `187673422687728310` is not.
 // Skipping short values altogether let a whole PIN and its base64 leave (critic-xhigh and Astra at 578fd20e).
-export const HELD_VALUE_FLOOR = 6;
-const ALNUM = /[A-Za-z0-9]/;
-const standsAlone = (text, at, length) => !ALNUM.test(text[at - 1] ?? '') && !ALNUM.test(text[at + length] ?? '');
-
 function withoutReferences(value) { return value.replace(REFERENCE, (reference) => ' '.repeat(reference.length)); }
-export function base64Utf8(value) {
-  let binary = '';
-  for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
 
 function pushDetectedFindings(found, value, key, path, options) {
   const candidate = withoutReferences(value);
-  const baseDirect = detections(candidate);
+  const baseDirect = detections(candidate, '', undefined, options);
+  if (options.inspectionBudget.exhausted) {
+    for (const item of baseDirect) found.push({ ...item, path });
+    return;
+  }
   // Only exact Route S spellings cancel frozen contextual findings.
   // Independent detector evidence survives; raw-only matches never add findings.
   const direct = baseDirect.filter((item) => !isContextual(item.kind)).map((item) => {
     const start = candidate.indexOf(item.value);
     return start < 0 ? { ...item, path } : { ...item, value: value.slice(start, start + item.value.length), path, index: start };
   });
-  direct.push(...boundaryFindings(value).map((item) => ({ ...item, path })));
-  found.push(...direct, ...optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }));
-  if (key) pushKeyFindings(found, { value, key, path, candidate, baseDirect });
+  for (const item of boundaryFindings(value, options)) direct.push({ ...item, path });
+  for (const item of direct) found.push(item);
+  for (const item of optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses })) found.push(item);
+  if (key) pushKeyFindings(found, { value, key, path, candidate, baseDirect }, options);
 }
 
-function pushKeyFindings(found, { value, key, path, candidate, baseDirect }) {
-  const keyEvidence = detections(key, '', undefined, { prose: false });
-  for (const item of detections(`${key}: ${candidate}`, '', undefined, { prose: false })) {
+function pushKeyFindings(found, { value, key, path, candidate, baseDirect }, options) {
+  const detectorOptions = { ...options, prose: false };
+  const keyEvidence = detections(key, '', undefined, detectorOptions);
+  for (const item of detections(`${key}: ${candidate}`, '', undefined, detectorOptions)) {
     if (baseDirect.some(({ value: directValue }) => directValue === item.value)) continue;
     // A match in the object key is evidence independent of the decoded child.
-    const inKey = detections(`${key}: `, '', undefined, { prose: false }).some((entry) => entry.kind === item.kind && entry.value === item.value);
+    const inKey = detections(`${key}: `, '', undefined, detectorOptions).some((entry) => entry.kind === item.kind && entry.value === item.value);
     if (inKey) {
       const origins = keyEvidence.filter((entry) => entry.kind === item.kind);
       if (!origins.length) origins.push({ kind: item.kind, value: key });
@@ -96,20 +98,58 @@ function pushStringFindings(found, value, key, path, options) {
 }
 
 function findingsIn(value) {
-  const options = config();
+  const budget = inspectionBudget();
+  const options = { ...config(), inspectionBudget: budget };
   const found = [];
-  if (typeof value === 'string') pushStringFindings(found, value, '', [], options);
-  const pending = value && typeof value === 'object' ? [{ value, path: [] }] : [];
-  while (pending.length) {
-    const item = pending.pop();
-    for (const [key, child] of Object.entries(item.value)) {
-      const path = [...item.path, key];
-      if (child && typeof child === 'object') pending.push({ value: child, path });
-      else if (typeof child === 'string') pushStringFindings(found, child, key, path, options);
+  for (const unit of walkOutbound(value, budget)) {
+    if (unit.kind === 'inspection-budget') {
+      found.push({ kind: 'inspection-budget', value: '', secret: '' });
+      break;
     }
+    consumeUnit(found, unit, options);
+    if (budget.exhausted) { found.push({ kind: 'inspection-budget', value: '', secret: '' }); break; }
   }
-  const unique = new Map(found.filter(({ value: detected }) => detected).map((item) => [`${item.kind}:${item.value}`, item]));
-  return [...unique.values()];
+  return reduceFindings(found);
+}
+
+// Presentation deduplication keeps one finding per kind:value, but every raw spelling
+// (including a discarded finding's secret) stays in sensitiveValues for redaction.
+export function reduceFindings(found) {
+  const sensitiveValues = new Set();
+  const unique = new Map();
+  for (const item of found) {
+    sensitiveValues.add(item.value); sensitiveValues.add(item.secret);
+    if (item.value || item.kind === 'inspection-budget') unique.set(`${item.kind}:${item.value}`, finishFinding(item));
+  }
+  return Object.defineProperty([...unique.values()], 'sensitiveValues', { value: sensitiveValues });
+}
+
+function consumeUnit(found, unit, options) {
+  const { text, key, pathRef } = unit;
+  if (unit.kind === 'number') return pushNumericFindings(found, unit);
+  if (unit.kind === 'concealed') {
+    for (const item of detections(JSON.stringify({ type: 'CONCEALED', value: text }), '', undefined, options)) found.push({ ...item, path: pathRef });
+  } else if (unit.kind === 'key') {
+    pushStringFindings(found, text, '', pathRef, options);
+    // Reference blanking is for values; raw key-alone evidence remains independent.
+    for (const item of detections(text, '', undefined, { ...options, prose: false })) found.push({ ...item, path: pathRef, index: text.indexOf(item.value) });
+  } else pushStringFindings(found, text, key, pathRef, options);
+}
+
+function pushNumericFindings(found, unit) {
+  for (const entry of knownTokens().values()) {
+    if (entry.ephemeral || !numericEquals(entry.value, unit.number)) continue;
+    found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path: unit.pathRef, index: 0 });
+  }
+}
+
+function finishFinding(item) {
+  const ref = item.path;
+  const held = heldSource(item);
+  delete item.path;
+  if (ref !== undefined) Object.defineProperty(item, 'path', { enumerable: true, get: () => materializePath(ref) });
+  Object.defineProperties(item, { pathRef: { value: ref }, heldSource: { value: held } });
+  return item;
 }
 
 function outboundInput(event) {
@@ -119,13 +159,9 @@ function outboundInput(event) {
 
 // A field name is the caller's text too: an MCP input can use a credential, or a held value, as a KEY. A
 // name is printed only when nothing in it would itself be refused; otherwise the refusal says <key>.
-function fieldName(path) {
+function fieldName(path, sensitive) {
   if (!path?.length) return 'input';
-  return path.map((key) => {
-    const found = [];
-    pushStringFindings(found, String(key), '', [], config());
-    return found.length ? '<key>' : String(key);
-  }).join('.');
+  return path.map((key) => key === TRUNCATED_PATH ? '...' : plainDiagnosticKey(String(key), sensitive)).join('.');
 }
 
 function heldSource(finding) {
@@ -141,13 +177,25 @@ function heldSource(finding) {
 // What matched, where, and how to satisfy it in the same turn - never the value itself. The position is the
 // occurrence the classification found, not the first spelling anywhere (which can sit inside an issued token).
 export function describeFindings(_event, findings) {
-  return findings.map((finding) => {
-    const where = Number.isInteger(finding.index)
-      ? `${fieldName(finding.path)} at ${finding.index}, ${finding.value.length} chars`
-      : `${fieldName(finding.path)}, ${finding.value.length} chars`;
-    const held = heldSource(finding);
-    return held ? `${held.label}: ${where} - replace it with ${held.token}` : `${finding.kind} detector: ${where}`;
-  });
+  const sensitive = diagnosticSensitiveSet(findings);
+  const descriptions = findings.slice(0, 20).map((finding) => describeFinding(finding, sensitive));
+  if (findings.length > 20) descriptions.push(`and ${findings.length - 20} more`);
+  return redactDiagnostic(descriptions.join('\n'), findings, sensitive).split('\n');
+}
+
+function describeFinding(finding, sensitive) {
+  if (finding.kind === 'inspection-budget') return 'input is too large to inspect';
+  const path = Object.hasOwn(finding, 'pathRef') ? materializePath(finding.pathRef, 8) : boundedPath(finding.path);
+  const field = fieldName(path, sensitive);
+  const where = Number.isInteger(finding.index)
+    ? `${field} at ${finding.index}, ${finding.value.length} chars` : `${field}, ${finding.value.length} chars`;
+  const held = finding.heldSource;
+  return held ? `${held.label}: ${where} - replace it with ${held.token}` : `${finding.kind} detector: ${where}`;
+}
+
+function boundedPath(path) {
+  if (!path || path.length <= 8) return path;
+  return [TRUNCATED_PATH, ...path.slice(-8)];
 }
 
 export async function classifyOutbound(_host, event) {
