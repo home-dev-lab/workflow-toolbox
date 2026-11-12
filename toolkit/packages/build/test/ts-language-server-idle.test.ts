@@ -629,6 +629,21 @@ it('keeps a TERM death that happened before the forced stop even when its close 
   expect(run.exit).not.toHaveBeenCalled()
 })
 
+it('keeps a foreign TERM when the forced stop could not deliver its own TERM', async () => {
+  const killGroup = vi.fn((_pid: number, signal: string) => {
+    if (signal === 'SIGTERM') throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+  })
+  const run = fixture({ groupOwnership: () => 'ours', killGroup }); run.initialize()
+  run.input.end()
+  await vi.advanceTimersByTimeAsync(100)
+  expect(killGroup, 'the stop deadline must try to TERM the group').toHaveBeenCalledWith(-123, 'SIGTERM')
+  run.children[0]!.backend.emit('exit', null, 'SIGTERM')
+  run.children[0]!.backend.emit('close', null, 'SIGTERM')
+  await vi.advanceTimersByTimeAsync(1000); await vi.advanceTimersByTimeAsync(0)
+  expect(run.exitSignal, 'a TERM the wrapper failed to send is not its own').toHaveBeenCalledExactlyOnceWith('SIGTERM')
+  expect(run.exit).not.toHaveBeenCalled()
+})
+
 it('skips KILL when backend group ownership no longer matches', async () => {
   let ownership = 'ours'
   const killGroup = vi.fn()
