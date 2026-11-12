@@ -37,8 +37,26 @@ export function suiteLeaseArgvForProject(project) {
   }
 }
 
+function skipSuiteLeaseSetup(project) {
+  return process.env.WT_SUITE_LOCK === '0' || project?.config?.watch === true
+}
+
+function listenForSuiteLeaseEnd(lease) {
+  // Keep the lease until Vitest exits after stopping its workers. A broker socket
+  // must not itself keep an otherwise finished Vitest process alive.
+  lease.socket?.unref?.()
+  let lost = false
+  process.once('exit', (exit) => releaseSuiteLock(lease, { exit, served: !lost }))
+  lease.lost?.then((reason) => {
+    lost = true
+    process.stderr.write(`vitest: suite lease lost (${reason || 'broker gone'}); stopping run\n`)
+    process.exitCode = 75
+    process.kill(process.pid, 'SIGTERM')
+  })
+}
+
 export default async function setup(project) {
-  if (process.env.WT_SUITE_LOCK === '0' || project?.config?.watch === true) return
+  if (skipSuiteLeaseSetup(project)) return
   let lease
   try {
     if (await hasSuiteLeaseAsync()) return
@@ -50,16 +68,7 @@ export default async function setup(project) {
   }
   const previous = process.env.WT_SUITE_LEASE
   process.env.WT_SUITE_LEASE = suiteLeaseMarker(lease)
-  // Vitest tears down global setup before closing its pool. Keep the lease until
-  // the Vitest process itself exits, after its workers have been stopped.
-  // The broker socket must not itself keep an otherwise finished Vitest process alive.
-  lease.socket?.unref?.()
-  process.once('exit', () => releaseSuiteLock(lease))
-  lease.lost?.then((reason) => {
-    process.stderr.write(`vitest: suite lease lost (${reason || 'broker gone'}); stopping run\n`)
-    process.exitCode = 75
-    process.kill(process.pid, 'SIGTERM')
-  })
+  listenForSuiteLeaseEnd(lease)
   return () => {
     if (previous === undefined) delete process.env.WT_SUITE_LEASE
     else process.env.WT_SUITE_LEASE = previous

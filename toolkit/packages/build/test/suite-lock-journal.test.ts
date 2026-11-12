@@ -10,6 +10,15 @@ const roots: string[] = []
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), 'wt-journal-')); roots.push(root); return root }
 const moduleUrl = new URL('../../../../plugin/bin/lib/suite-lock-journal.mjs', import.meta.url).href
 const appendUrl = new URL('../../../../plugin/bin/lib/host/suite-lock-journal-append.mjs', import.meta.url).href
+it('keeps precedence changes as replay events without counting them as leases', async () => {
+  const { readSuiteLockJournal } = await import(moduleUrl)
+  const root = scratch()
+  writeFileSync(join(root, 'journal.jsonl'), JSON.stringify({ event: 'precedence', action: 'set', project: 'alpha', until: '2027-01-01T00:00:00Z', source: 'operator', ts: '2026-01-01T00:00:00Z' }) + '\n')
+  const result = readSuiteLockJournal(root)
+  expect(result.precedence).toHaveLength(1)
+  expect(result.invalidLines).toBe(0)
+  expect(result.tickets).toHaveLength(0)
+})
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 it('journals request grant release with one leaseId and the command exit', async () => {

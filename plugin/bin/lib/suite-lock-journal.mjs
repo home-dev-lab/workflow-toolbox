@@ -1,5 +1,10 @@
 import { appendSuiteLockJournal, suiteJournalLines, warnSuiteLockJournal } from './host/suite-lock-journal-append.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
+import path from 'node:path'
+import { orderSuiteLockTickets } from './suite-lock-order.mjs'
+import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
+import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
+import { ticketIsStale } from './host/suite-lock-liveness.mjs'
 
 export function journalCommand(argv) {
   const args = Array.isArray(argv) ? argv : []
@@ -21,10 +26,25 @@ function journalRequest(root, ticket, record, priority, options, light) {
   const kind = journalKind(options, priority, light)
   const base = { ticket, leaseId: record.leaseId, root: options.journalRoot ?? root, kind,
     cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: journalLight(options, light),
-    pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct' }
+    pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct',
+    project: record.project, size: record.size, ...requestRankFields(root, ticket, record, options) }
   const journal = { base, now: options.now?.bind(options) }
   suiteJournalEvent(journal, 'request')
   return journal
+}
+
+function requestRankFields(root, ticket, record, options) {
+  try { return readRequestRankFields(root, ticket, record, options) } catch { return {} }
+}
+
+function readRequestRankFields(root, ticket, record, options) {
+  if (options.staticDomain) return {}
+  const now = options.now?.() ?? Date.now()
+  const tickets = readQueueSnapshot(path.join(root, 'queue.d'), now).filter((entry) => entry.number !== ticket && !ticketIsStale(entry, options)).map((entry) => ({ number: entry.number, record: entry.holder }))
+  tickets.push({ number: ticket, record })
+  const ordered = orderSuiteLockTickets(tickets, readLightCounter(root), now, readP0Counter(root), readSuiteLockRankState(root, tickets))
+  const { reason } = ordered.tickets.find((entry) => entry.number === ticket)
+  return { levelOrder: ordered.levelOrder, ...(reason.tier === undefined ? {} : { tier: reason.tier }), sizeBonus: reason.sizeBonus }
 }
 
 const journalLight = (options, light) => light === undefined ? options.light === true : light
@@ -54,8 +74,13 @@ function percentile(values, fraction) {
 const distribution = (values) => ({ count: values.length, p50: percentile(values, 0.5), p90: percentile(values, 0.9) })
 const seconds = (end, start) => end && start ? Math.max(0, (Date.parse(end.ts) - Date.parse(start.ts)) / 1000) : null
 
+function precedenceJournalEvent(event) {
+  return event?.event === 'precedence' && typeof event.project === 'string' && ['set', 'clear'].includes(event.action) && Number.isFinite(Date.parse(event.ts))
+}
+
 function parseJournalEvent(line) {
   const event = JSON.parse(line)
+  if (precedenceJournalEvent(event)) return event
   if (typeof event?.leaseId !== 'string' || !event.leaseId || !['exclusive', 'light', 'static', 'release'].includes(event.kind)
     || !['request', 'grant', 'release', 'timeout', 'abort'].includes(event.event) || !Number.isFinite(Date.parse(event.ts))) throw new Error('invalid event')
   return event
@@ -93,17 +118,19 @@ function journalSummary(tickets) {
 export function readSuiteLockJournal(root, { since, until } = {}) {
   const window = journalWindow(since, until)
   const groups = new Map()
+  const precedence = []
   let invalidLines = 0
   for (const line of suiteJournalLines(root)) {
     try {
       const event = parseJournalEvent(line)
       if (Date.parse(event.ts) > window.end) continue
+      if (event.event === 'precedence') { if (Date.parse(event.ts) >= window.start) precedence.push(event); continue }
       if (!groups.has(event.leaseId)) groups.set(event.leaseId, [])
       groups.get(event.leaseId).push(event)
     } catch { invalidLines += 1 }
   }
   const tickets = [...groups.values()].map(joinedTicket).filter((ticket) => Date.parse(ticket.ts) >= window.start)
-  return { tickets, summary: journalSummary(tickets), invalidLines,
+  return { tickets, precedence, summary: journalSummary(tickets), invalidLines,
     censored: tickets.filter((ticket) => ticket.censored).length,
     grantsWithoutRequest: tickets.filter((ticket) => ticket.grant && !ticket.request).length }
 }

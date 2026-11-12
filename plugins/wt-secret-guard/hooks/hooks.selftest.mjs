@@ -4145,7 +4145,9 @@ await test('a redaction note joined to an errored refusal never carries a held v
 }));
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 const { runValueBoundaryLocks } = await import('./value-boundary-locks.mjs');
+const { runTraversalLocks } = await import('./traversal-locks.mjs');
 await runValueBoundaryLocks({ test, freshVault, $, tokenize, hookForTool });
+await runTraversalLocks({ test, freshVault, $, tokenize, hookForTool, mcp });
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
 console.log(`hooks registered: ${hooks.length}`);
 const helpProse = 'read from the file named by EXAMPLE_USER_TOKEN_FILE; else from the example_token_file';
@@ -5121,4 +5123,44 @@ for (const shape of ['key', 'value']) {
     assert.deepEqual(scrub(value, ''), { value: expected, changed: true }, `round 2 held base64 ${shape} leaked`);
   }));
 }
+// The finalization is written into each tool.call hook (the host validator refuses a wrapper around `on`),
+// so the two tests below check every registered hook. This one: a denial produced beneath a hook carries a
+// pending confirmation code. Most hooks also scrub what `next` returns, so only the catch-all hook depends
+// on finalization alone here; the early-refusal test after it fails for any single hook that skips it.
+await test('every tool.call hook finalizes a denial from beneath', () => freshVault(async () => {
+  const token = tokenize('op-output', 'finalized-lock-Q4r8');
+  const before = logs.length;
+  await prompt($, { origin: { kind: 'composer' }, text: `wt-secret-guard release ${token}` }, async () => assert.fail('release forwarded'));
+  const value = logs.slice(before).join('\n').match(/confirmation code: ([a-f0-9]{6})/)?.[1];
+  assert.ok(value, 'no confirmation code was issued');
+  const toolCalls = hooks.filter((hook) => hook.event === 'tool.call');
+  assert.equal(toolCalls.length, 14, 'tool.call registration count changed; review this lock');
+  const nameFor = (tool) => (typeof tool === 'string' ? tool : tool.test('mcp__fixture__send') && !tool.test('Unmatched') ? 'mcp__fixture__send' : 'Unmatched');
+  const leaks = [];
+  for (const { matcher, hook } of toolCalls) {
+    const tool = nameFor(matcher.tool);
+    const event = { tool, command: 'true', file_path: '/tmp/wt-secret-guard-project/out', content: 'benign', pattern: 'benign', url: 'https://example.invalid', query: 'benign', prompt: 'benign', payload: 'benign' };
+    let forwarded = false;
+    const answer = await hook($, event, async () => { forwarded = true; return { deny: `beneath refused: ${value}` }; });
+    if (!forwarded) leaks.push(`${tool}: did not forward a benign call`);
+    else if (typeof answer?.deny !== 'string' || answer.deny.includes(value)) leaks.push(`${tool}: ${JSON.stringify(answer?.deny)}`);
+  }
+  assert.deepEqual(leaks, [], `tool.call hooks that do not finalize: ${leaks.join('; ')}`);
+}));
+// The same guarantee for a denial each hook produces itself: every tool.call hook refuses owner-release
+// grammar before forwarding, and a held value equal to that refusal's fixed wording must not be printed.
+await test('every tool.call hook finalizes its own early refusal', () => freshVault(async () => {
+  const value = ['owner-release', ' grammar'].join(''); tokenize('file', value);
+  const toolCalls = hooks.filter((hook) => hook.event === 'tool.call');
+  assert.equal(toolCalls.length, 14, 'tool.call registration count changed; review this lock');
+  const leaks = [];
+  for (const { matcher, hook } of toolCalls) {
+    const tool = typeof matcher.tool === 'string' ? matcher.tool : matcher.tool.test('mcp__fixture__send') && !matcher.tool.test('Unmatched') ? 'mcp__fixture__send' : 'Unmatched';
+    const grammar = ['wt-secret-guard', ' release'].join('');
+    const event = { tool, command: `echo ${grammar}`, content: grammar, payload: grammar, pattern: grammar };
+    const answer = await hook($, event, async () => assert.fail(`${tool} forwarded release grammar`));
+    if (typeof answer?.deny !== 'string' || answer.deny.includes(value)) leaks.push(`${tool}: ${JSON.stringify(answer?.deny)}`);
+  }
+  assert.deepEqual(leaks, [], `tool.call hooks whose early refusal is not finalized: ${leaks.join('; ')}`);
+}));
 process.exit(failures ? 1 : 0);

@@ -1,4 +1,5 @@
 import { registrationRefusalReason } from './token-vault.js';
+import { walkOutbound } from './outbound-traversal.js';
 
 function jwtPrefixAt(text, at) {
   return text.startsWith('eyJ', at) && !/[A-Za-z0-9_]/.test(text[at - 1] ?? '')
@@ -370,33 +371,60 @@ function scannedConcealedDetections(text) {
   return found;
 }
 
-function concealedJsonDetections(text) {
+function collectConcealedNode(found, pending, value) {
+  if (!Array.isArray(value) && value.type === 'CONCEALED' && typeof value.value === 'string' && value.value) {
+    found.push({ kind: 'op-json-concealed', value: JSON.stringify(value.value).slice(1, -1), secret: value.value });
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) pending.push(child);
+}
+
+function boundedConcealedDetections(root, budget) {
+  const found = [];
+  for (const unit of walkOutbound(root, budget)) {
+    if (unit.kind === 'inspection-budget') {
+      found.push({ kind: 'inspection-budget', value: '', secret: '' });
+      break;
+    }
+    if (unit.kind === 'concealed' && unit.text) {
+      found.push({ kind: 'op-json-concealed', value: JSON.stringify(unit.text).slice(1, -1), secret: unit.text });
+    }
+  }
+  return found;
+}
+
+function concealedJsonDetections(text, budget) {
   const candidate = text.trimStart();
   if (!candidate.includes('"CONCEALED"')) return [];
   let root;
   if ('[{'.includes(candidate[0])) {
     try { root = JSON.parse(candidate); } catch { /* Shell output may surround or truncate the JSON. */ }
   }
+  const found = parsedConcealedDetections(root, budget);
+  return found.length ? found : scannedConcealedDetections(text);
+}
+
+function parsedConcealedDetections(root, budget) {
+  if (budget && root !== undefined) return boundedConcealedDetections(root, budget);
   const found = [];
   const pending = root === undefined ? [] : [root];
   while (pending.length) {
     const value = pending.pop();
     if (!value || typeof value !== 'object') continue;
-    if (!Array.isArray(value) && value.type === 'CONCEALED' && typeof value.value === 'string' && value.value) {
-      found.push({ kind: 'op-json-concealed', value: JSON.stringify(value.value).slice(1, -1), secret: value.value });
-    }
-    pending.push(...(Array.isArray(value) ? value : Object.values(value)));
+    collectConcealedNode(found, pending, value);
   }
-  return found.length ? found : scannedConcealedDetections(text);
+  return found;
 }
+
+const budgetExhausted = (options) => Boolean(options.inspectionBudget?.exhausted);
 
 /** The pattern kinds, in order. The V34 union property enumerates every one of them. */
 export const PATTERN_KINDS = patterns.map(([kind]) => kind);
 
 // Metadata-only view of the same contextual matches and exemptions. detections() stays unchanged.
-export function contextualMatches(text) {
+export function contextualMatches(text, options = {}) {
   const allowed = allowedRanges(text);
-  const concealed = concealedJsonDetections(text);
+  const concealed = concealedJsonDetections(text, options.inspectionBudget);
+  if (budgetExhausted(options)) return [];
   const context = { text, concealed, command: '', options: {}, allowed };
   const found = [];
   for (const [kind, expression] of patterns.slice(-4)) {
@@ -428,9 +456,18 @@ export function detections(text, command = '', only, options = {}) {
   if (typeof text !== 'string') return [];
   const selected = only ? new Set(only) : null;
   const allowed = allowedRanges(text, command);
-  const concealed = !selected || selected.has('op-json-concealed') ? concealedJsonDetections(text) : [];
-  const found = [...concealed, ...(!selected || selected.has('credential-uuid') ? credentialUuidDetections(text) : [])];
+  const concealed = includesKind(selected, 'op-json-concealed') ? concealedJsonDetections(text, options.inspectionBudget) : [];
+  if (budgetExhausted(options)) return concealed;
+  const found = [...concealed, ...(includesKind(selected, 'credential-uuid') ? credentialUuidDetections(text) : [])];
   const context = { text, concealed, command, options, allowed };
+  appendPatternDetections(found, selected, context);
+  return found;
+}
+
+const includesKind = (selected, kind) => !selected || selected.has(kind);
+
+function appendPatternDetections(found, selected, context) {
+  const { text } = context;
   for (const [kind, expression] of patterns) {
     if (selected && !selected.has(kind)) continue;
     expression.lastIndex = 0;
@@ -439,7 +476,6 @@ export function detections(text, command = '', only, options = {}) {
       if (keepPatternMatch(kind, match, value, context)) found.push({ kind, value });
     }
   }
-  return found;
 }
 
 function isIpv6(value) {

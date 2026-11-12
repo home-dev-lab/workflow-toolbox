@@ -12,6 +12,16 @@ export function liveConfigTreeGuardPlatform(env = process.env) {
   return typeof forced === 'string' && KNOWN_PLATFORMS.has(forced) ? forced : hostPlatform
 }
 
+// Windows (NTFS) and macOS (APFS by default) open `.Claude/Rules` as `.claude/rules`. A
+// case-sensitive macOS volume exists too; on it folding also guards a sibling spelled in another
+// case (a warning, or a denial in deny mode), an over-match this guard accepts.
+const CASE_FOLDING_PLATFORMS = new Set(['win32', 'darwin'])
+
+/** Whether paths on `platform` name the same directory whatever their letter case. */
+export function foldsPathCase(platform) {
+  return CASE_FOLDING_PLATFORMS.has(platform)
+}
+
 // Git Bash spells drive C: as `/c/...` (or `/cygdrive/c/...`). Node on Windows reads that as a path
 // on the CURRENT drive (`C:\c\...`), so the guard maps it to the drive first.
 const GIT_BASH_DRIVE = /^\/(?:cygdrive\/)?([A-Za-z])(?=\/|$)/

@@ -23,6 +23,10 @@ const { queuedTickets, readTicket, takeTicket } = await import(moduleUrl('host/s
 const CLI = join(PLUGIN, 'bin/wt-suite-lock.mjs')
 const resumeParkedTicket = process.env.WT_PARK_TEST_PLUGIN_ROOT
   ? (await import(moduleUrl('suite-lock-park.mjs'))).resumeParkedTicket : defaultResumeParkedTicket
+it('covered park commands keep project but never inherit declared job size', async () => {
+  const { spawnParkEnvironment } = await import(moduleUrl('suite-lock-park.mjs'))
+  expect(spawnParkEnvironment(null, undefined, { WT_SUITE_LOCK_SIZE: 'S', WT_SUITE_LOCK_PROJECT: 'alpha' })).toEqual({ env: { WT_SUITE_LOCK_PROJECT: 'alpha' } })
+})
 it('preserves acquisition outputs errors effects property reads callback receivers and microtasks', () => assertSuiteAcquireParity(CLI))
 for (const [name, scenario] of Object.entries(parkReviewScenarios)) {
   it.skipIf((process.platform === 'win32' && /FIFO|SIG|symlink/.test(name) && !name.startsWith('tolerates')) || (process.platform !== 'linux' && /Linux/.test(name)))(name, () => (scenario as (cli: string) => Promise<unknown>)(CLI))
