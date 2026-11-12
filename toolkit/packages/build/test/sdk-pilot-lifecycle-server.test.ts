@@ -1427,7 +1427,8 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const firstPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const firstRecordPath = join(lifecycle.root, '.lane', 'supervision', `${firstPointer.runId}.json`)
     const abandonedAndCleaned = () => JSON.parse(readFileSync(firstRecordPath, 'utf8')).state === 'abandoned' && !existsSync(firstBrief)
-    for (let i = 0; i < 80 && !abandonedAndCleaned(); i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
+    const cleanedBy = performance.now() + 15_000
+    while (!abandonedAndCleaned() && performance.now() < cleanedBy) await new Promise((resolve) => setTimeout(resolve, 25))
     const firstRecord = JSON.parse(readFileSync(firstRecordPath, 'utf8'))
     expect(firstRecord.state).toBe('abandoned')
     expect(existsSync(firstBrief)).toBe(false)

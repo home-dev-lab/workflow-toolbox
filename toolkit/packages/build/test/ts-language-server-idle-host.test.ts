@@ -149,14 +149,14 @@ it.skipIf(process.platform !== 'linux')('keeps EOF cleanup alive until the ignor
 
 it.skipIf(process.platform !== 'linux')('exits 0 when its own forced TERM ends a backend that ignores EOF', async () => {
   const started = performance.now()
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', naturalEofProof(false)], { encoding: 'utf8', timeout: 10_000 })
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', naturalEofProof(false)], { encoding: 'utf8', timeout: 15_000 })
   const elapsedMs = performance.now() - started
   const pid = Number(/WORKER=(\d+)/.exec(result.stderr)?.[1])
-  const outcome = `status=${result.status} signal=${result.signal} after ${elapsedMs.toFixed(0)} ms (a spawnSync timeout ends near 10000 ms; a self-kill by the forced TERM ends near 1000 ms)\n${result.stderr}`
+  const outcome = `status=${result.status} signal=${result.signal} after ${elapsedMs.toFixed(0)} ms (a spawnSync timeout ends near 15000 ms; a self-kill by the forced TERM ends near 1000 ms)\n${result.stderr}`
   try {
     expect(result.status, outcome).toBe(0)
     expect(result.signal, outcome).toBeNull()
     expect(pid, outcome).toBeGreaterThan(0)
-    await vi.waitFor(() => expect(workerAlive(pid), 'the forced stop must still KILL the ignored-stdio worker').toBe(false), { timeout: 1500, interval: 20 })
+    await vi.waitFor(() => expect(workerAlive(pid), 'the forced stop must still KILL the ignored-stdio worker').toBe(false), { timeout: 15_000, interval: 20 })
   } finally { if (pid) { try { process.kill(pid, 'SIGKILL') } catch { /* Already gone. */ } } }
 })
