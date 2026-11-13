@@ -5,6 +5,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
+
 ## [0.200.0] - 2026-11-12
 
 ### Added
@@ -84,15 +88,6 @@ Minor release: measured on a clean checkout of the release tree against the 0.18
 
 ### Fixed
 
-- wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
-- Count every started command's project turn, including light jobs, release-priority
-  jobs, and commands exiting 75. Keep S-bonus history exclusive and non-release;
-  order equal-rank lights by project turn. Read damaged rank state conservatively
-  without blocking admission, and recover abandoned S durations using boot-relative
-  time when the holder's boot identity matches.
-
-- The secret guard's refusals no longer print what they refuse. The outbound check now walks a tool input once (string values, object keys, numbers, CONCEALED objects), and every tool-call refusal is redacted at one final step against the current findings and the held values; a key prints only when it is a plain identifier. The guard now also refuses a native CONCEALED object, a held value used as an object key, and a held value sent as a JSON number (exact decimal comparison, so a held `1e-400` does not refuse `0`). Very deep or wide inputs no longer throw. An input over 1,000,000 nodes or 64 Mi characters is refused with an empty refusal text, because text the guard did not inspect could match any wording.
-- The live-config-tree guard now folds letter case on Windows and macOS, so a git command spelling the live rules directory as .Claude/Rules (or CLAUDE_CONFIG_DIR in another case) is warned or denied like .claude/rules.
 - `wt-lane` no longer holds the machine-wide launch admission for up to 15 minutes when the lane's
   model command never runs under a process named `opencode` or `codex` (a Node script, for example).
   Once the lane's process family has shown no such process for 30 seconds, the launcher releases
