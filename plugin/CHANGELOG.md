@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.200.0] - 2026-11-12
+
 ### Added
 
 - Suite-lock queue ranking now combines declared priority, bounded light bypass,
@@ -17,6 +19,51 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   precedence for up to seven days. Waiting lines,
   status and the journal explain the computed rank. Mixed-version queues retain
   the exact legacy order until older tickets drain.
+
+### Fixed
+
+- Count every started command's project turn, including light jobs, release-priority
+  jobs, and commands exiting 75. Keep S-bonus history exclusive and non-release;
+  order equal-rank lights by project turn. Read damaged rank state conservatively
+  without blocking admission, and recover abandoned S durations using boot-relative
+  time when the holder's boot identity matches.
+
+- The secret guard's refusals no longer print what they refuse. The outbound check now walks a tool input once (string values, object keys, numbers, CONCEALED objects), and every tool-call refusal is redacted at one final step against the current findings and the held values; a key prints only when it is a plain identifier. The guard now also refuses a native CONCEALED object, a held value used as an object key, and a held value sent as a JSON number (exact decimal comparison, so a held `1e-400` does not refuse `0`). Very deep or wide inputs no longer throw. An input over 1,000,000 nodes or 64 Mi characters is refused with an empty refusal text, because text the guard did not inspect could match any wording.
+- The live-config-tree guard now folds letter case on Windows and macOS, so a git command spelling the live rules directory as .Claude/Rules (or CLAUDE_CONFIG_DIR in another case) is warned or denied like .claude/rules.
+
+### Changed
+
+- Marketplace plugin version in this release: `wt-secret-guard` 0.1.9 (refusals no longer print what they refuse; one outbound traversal). Update it with the plugin for the change to load.
+
+### Known issues
+
+- On native Windows, two continuous-integration checks fail in this release. The suite-lock test for a command ended by a signal expects the POSIX exit code 143, while Windows reports such a command with exit code 1. The `wt-secret-guard` selftest's traversal locks start a helper through a file URL path that Windows cannot resolve. Both are defects in the tests, not in the shipped hooks: the guard's runtime does not use that path. Linux and macOS pass. Both are fixed in the next patch release.
+
+### Quality
+
+Minor release: measured on a clean checkout of the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; the baseline was not refreshed at 0.190.0 through 0.199.0). No judge total regressed against that baseline. Against 0.199.0's figures: ESLint warnings rose from 644 to 647 (still under the ratchet ceiling of 685) and Knip issues from 188 to 189; line coverage rose from 84.57 % to 84.65 %, branch coverage from 76.55 % to 76.66 %, duplication fell from 1.870 % to 1.866 %; the longest function (480 lines), biggest file, complexity and dependency cycles are unchanged. On files this release touched, Knip issues went from 3 to 4 and one touched file reaches the maximum of 7 parameters, both inside the totals above. Coverage comes from this release tree's own test run (558 files, 18508 passed, 91 skipped).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 112 | -14 |
+| Cognitive complexity | 268 -> 129 | -139 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 480 | -220 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 647 | -37 |
+| Duplication % | 2.4324 -> 1.8662 | -0.57 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 84.65 | +6.04 |
+| Coverage branches % | 69.76 -> 76.66 | +6.90 |
+| Coverage functions % | 80.86 -> 88.11 | +7.25 |
+| Coverage statements % | 76.50 -> 82.87 | +6.37 |
+
+## [0.199.0] - 2026-11-11
+
+### Added
+
 - The pinned pre-push signature guard can spend a fresh, signed owner Yes from Atrium
   `request_authorization` for one exact destination/ref/new-tip update attempt. The Claude
   hook previews it only through an active pinned install. Install-time `--owner-keys` and
@@ -80,6 +127,31 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The pilot and pilot-orchestrator templates, and the delegation-chain skill, no longer tell a read-only critic or verifier (a type with no Write tool) to write a report file, which the spawn-capability guard refuses. Such a type is now spawned anonymously in the foreground and its final message is the report, which the spawner saves; the file-report contract stays for named spawns and types that have Write.
 - The suite-lock lane runner honours an explicit `--light` launcher prefix, preserves the real command in queued tickets, and refuses unsupported or repeated launcher flags before taking the lock.
 - The arc watch no longer reports a sub-agent as stale when the harness has marked it finished (its `finished` flag was written after the last transcript record), even if its last message did not end in a clean end-of-turn. An agent that was resumed after finishing still gets reported.
+
+### Changed
+
+- Marketplace plugin version in this release: `wt-rules-on-demand` 0.1.5 (a refusal names the one call it refuses). Update it with the plugin for the change to load.
+
+### Quality
+
+Minor release: measured on a clean checkout of the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; the baseline was not refreshed at 0.190.0 through 0.198.0). No judge total regressed against that baseline. Against 0.193.0's figures, the last release that published this section: ESLint warnings fell from 647 to 644, line coverage rose from 81.75 % to 84.57 %, branch coverage from 73.30 % to 76.55 %, duplication fell from 2.153 % to 1.869 %, longest function from 628 to 480 lines; Knip issues and dependency cycles are unchanged. On files this release touched, the biggest file grew from 1298 to 1640 lines and Knip issues from 3 to 4, both inside the unchanged totals. Coverage comes from this release tree's own test run (18349 passed, 90 skipped).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 112 | -14 |
+| Cognitive complexity | 268 -> 129 | -139 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 480 | -220 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 644 | -40 |
+| Duplication % | 2.4324 -> 1.8695 | -0.56 |
+| Knip issues | 196 -> 188 | -8 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 84.57 | +5.96 |
+| Coverage branches % | 69.76 -> 76.55 | +6.79 |
+| Coverage functions % | 80.86 -> 88.00 | +7.14 |
+| Coverage statements % | 76.50 -> 82.76 | +6.26 |
 
 ## [0.198.0] - 2026-11-08
 
