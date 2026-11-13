@@ -7,6 +7,7 @@ import { config, configure } from './config.js';
 import { planOwnerChannel } from './owner-channel.js';
 import { rows, objectRows } from './fixtures/value-boundary-rows.mjs';
 import { runBudgetRefusalLocks } from './budget-refusal-locks.mjs';
+import { fileURLToPath } from 'node:url';
 
 const send = (payload) => ({ tool: 'mcp__fixture__send', payload });
 const secret = () => ['Q7m9', 'Ab12'].join('');
@@ -230,7 +231,7 @@ async function numericLocks(check) {
 }
 
 async function isolatedCase(name) {
-  const child = spawnSync(process.execPath, [new URL(import.meta.url).pathname, '--case', name], { encoding: 'utf8', timeout: 45000, maxBuffer: 1024 * 1024 });
+  const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--case', name], { encoding: 'utf8', timeout: 45000, maxBuffer: 1024 * 1024 });
   assert.equal(child.error, undefined, `isolated ${name} watchdog: ${child.error?.message}`);
   assert.equal(child.status, 0, `isolated ${name}: ${child.stderr || child.stdout}`);
 }
@@ -339,7 +340,7 @@ async function childCase(name) {
 }
 
 if (process.argv[2] === '--case') await childCase(process.argv[3]);
-else if (process.argv[1] === new URL(import.meta.url).pathname) {
+else if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let failures = 0;
   await runTraversalLocks({ test: async (name, run) => {
     try { await run(); console.log(`PASS ${name}`); }

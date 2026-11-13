@@ -413,7 +413,9 @@ function registerCliStarted() {
 function registerSignalCompletion() {
   it('a started command ended by signal consumes its turn and the changelog states it', () => {
     const root = temp(); const result = cli(root, ['run', '--project', 'alpha', '--', process.execPath, '-e', 'process.kill(process.pid,"SIGTERM")'])
-    expect(result.status).toBe(143)
+    // Windows has no POSIX signals: Node ends the process with TerminateProcess and exit code 1, so the child reports
+    // code 1 instead of SIGTERM and the CLI returns 1, not 128 + 15. The turn must be consumed on every platform.
+    expect(result.status).toBe(process.platform === 'win32' ? 1 : 143)
     expect(readState(root).turns).toEqual({ alpha: 1 })
     expect(readFileSync(join(plugin, 'CHANGELOG.md'), 'utf8')).toContain('Commands that started and ended, by exit or signal, consume project')
   })
