@@ -37,7 +37,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, or a SIGTERM from elsewhere (including when its own TERM could not be delivered) still surfaces
+- wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
 - Count every started command's project turn, including light jobs, release-priority
   jobs, and commands exiting 75. Keep S-bonus history exclusive and non-release;
   order equal-rank lights by project turn. Read damaged rank state conservatively
