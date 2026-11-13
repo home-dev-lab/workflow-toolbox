@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 async function start(f, token) {
   const before = f.logs.length;
@@ -22,7 +23,7 @@ async function storage(f) {
       writeFileSync(path, original);
       const offset = original.indexOf('123456');
       const payload = { expected: Buffer.from('123456').toString('base64'), replacement: Buffer.from('"\n****').toString('base64'), prefix: '', size: Buffer.byteLength(original), recordOffset: 0, recordLength: Buffer.byteLength(original) - 1, toolUseId: 'range-fixture' };
-      const result = spawnSync(process.execPath, [new URL('./prompt-storage-range.mjs', import.meta.url).pathname, path, String(offset), '6', '', 'write'], { input: JSON.stringify(payload), encoding: 'utf8' });
+      const result = spawnSync(process.execPath, [fileURLToPath(new URL('./prompt-storage-range.mjs', import.meta.url)), path, String(offset), '6', '', 'write'], { input: JSON.stringify(payload), encoding: 'utf8' });
       assert.notEqual(result.status, 0, 'range writer accepted invalid modified JSON');
       assert.equal(readFileSync(path, 'utf8'), original, 'range writer wrote before parsing');
     } finally { rmSync(dir, { recursive: true, force: true }); }
