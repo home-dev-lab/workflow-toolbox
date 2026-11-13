@@ -29,71 +29,159 @@ function watcher() {
 
 const nativeWatchSpy = () => vi.fn<(file: fs.PathLike, options?: unknown, listener?: unknown) => fs.FSWatcher>(() => watcher())
 
-type ServerShape = { version: string; shared?: boolean; shim?: boolean; change?: string; compiler?: string; reason?: string }
-function compatibilityServer(shape: ServerShape) {
-  const root = temporary(), lib = join(root, 'lib')
-  fs.mkdirSync(lib)
-  fs.writeFileSync(join(root, 'package.json'), JSON.stringify({ version: shape.version, type: 'commonjs' }))
-  const compiler = `const original = require(${JSON.stringify(require.resolve('typescript'))});
+type ServerShape = {
+  version: string; shared?: boolean; shim?: boolean; change?: string; compiler?: string; reason?: string
+  before?: string; delayed?: boolean; load?: string; startup?: string; later?: string; symlinkMain?: boolean
+}
+function compatibilityCompiler(shape: ServerShape) {
+  return `const fs = require('node:fs');
+    globalThis.compilerCapped = fs.watch !== globalThis.nativeBefore;
+    const original = require(${JSON.stringify(require.resolve('typescript'))});
     const ts = { ...original, version: ${JSON.stringify(shape.version)}, sys: { ...original.sys } };
     ${shape.change ?? ''}
     globalThis.directoryBefore = ts.sys?.watchDirectory;
     globalThis.closedBefore = ts.server?.ProjectService?.prototype.watchClosedScriptInfo;
+    globalThis.argsBefore = [...ts.sys.args];
+    globalThis.compiler = ts;
     module.exports = ts;`
-  fs.writeFileSync(join(lib, 'typescript.js'), shape.compiler ?? compiler)
-  const server = `const fs = require('node:fs'), Module = require('node:module');
-    const ts = ${shape.shared ? 'require("./typescript.js")' : '{ version: ' + JSON.stringify(shape.version) + ' }'};
-    require('node:readline').createInterface({ input: process.stdin }).once('line', line => setImmediate(() => {
-      let refused = false;
+}
+
+function compatibilityEntry(shape: ServerShape) {
+  const load = shape.load ?? (shape.shared ? 'require("./typescript.js")' : '{ version: ' + JSON.stringify(shape.version) + ' }')
+  return `const fs = require('node:fs'), Module = require('node:module');
+    let startupRefused = false;
+    try { fs.watch(__filename).close() } catch (error) { startupRefused = error.code === "ENOSPC" }
+    const ts = ${load};
+    ${shape.startup ?? ''}
+    require('node:readline').createInterface({ input: process.stdin }).once('line', async line => {
+      let refused = false, promisesRefused = false;
       try { fs.watch(__filename).close() } catch (error) { refused = error.code === 'ENOSPC' }
-      console.log(JSON.stringify({ answer: JSON.parse(line).value + 1, refused,
+      try { await fs.promises.watch(__filename).next() } catch (error) { promisesRefused = error.code === 'ENOSPC' }
+      console.log(JSON.stringify({ answer: JSON.parse(line).value + 1, refused, startupRefused,
+        promisesRefused, compilerCapped: globalThis.compilerCapped,
         nativeUnchanged: fs.watch === globalThis.nativeBefore,
         promisesUnchanged: fs.promises.watch === globalThis.promisesBefore,
         directoryUnchanged: ts.sys?.watchDirectory === globalThis.directoryBefore,
         closedUnchanged: ts.server?.ProjectService?.prototype.watchClosedScriptInfo === globalThis.closedBefore,
-        requireUnchanged: Module.prototype.require === globalThis.requireBefore }));
-    }));`
-  fs.writeFileSync(join(lib, shape.shim ? '_tsserver.js' : 'tsserver.js'), server)
+        argsUnchanged: JSON.stringify(ts.sys?.args) === JSON.stringify(globalThis.argsBefore),
+        argvUnchanged: JSON.stringify(process.argv) === JSON.stringify(globalThis.argvBefore),
+        compileUnchanged: Module.prototype._compile === globalThis.compileBefore,
+        requireUnchanged: Module.prototype.require === globalThis.requireBefore,
+        argv: process.argv, compilerArgs: globalThis.compiler?.sys.args,
+        inheritedRestored: !Object.hasOwn(globalThis.compiler?.sys ?? {}, 'watchDirectory') && globalThis.compiler?.sys.watchDirectory === globalThis.directoryBefore }));
+    });`
+}
+
+function compatibilityServer(shape: ServerShape) {
+  const root = temporary(), lib = join(root, 'lib')
+  fs.mkdirSync(lib)
+  fs.writeFileSync(join(root, 'package.json'), JSON.stringify({ version: shape.version, type: 'commonjs' }))
+  fs.writeFileSync(join(lib, 'typescript.js'), shape.compiler ?? compatibilityCompiler(shape))
+  fs.writeFileSync(join(lib, 'bootstrap.js'), 'module.exports = require("./typescript")')
+  fs.writeFileSync(join(lib, shape.shim ? '_tsserver.js' : 'tsserver.js'), compatibilityEntry(shape))
   if (shape.shim) fs.writeFileSync(join(lib, 'tsserver.js'), 'module.exports = require("./_tsserver.js")')
   const seal = pathToFileURL(fileURLToPath(new URL('./fixtures/ts-watch/network-seal.mjs', import.meta.url))).href
   const observer = `data:text/javascript,import fs from 'node:fs'; import Module from 'node:module';
-    globalThis.nativeBefore=fs.watch; globalThis.promisesBefore=fs.promises.watch; globalThis.requireBefore=Module.prototype.require;`
+    globalThis.nativeBefore=fs.watch; globalThis.promisesBefore=fs.promises.watch; globalThis.requireBefore=Module.prototype.require;
+    globalThis.compileBefore=Module.prototype._compile; globalThis.argvBefore=[...process.argv];
+    ${shape.before ?? ''}`
   const compatibilityPreload = pathToFileURL(join(testPluginRoot, 'bin/lib/host/ts-watch-preload.mjs')).href
-  return spawnSync(process.execPath, ['--import', seal, '--import', observer, '--import', compatibilityPreload, join(lib, 'tsserver.js')], {
+  const delayed = shape.delayed ? ['--import', 'data:text/javascript,await new Promise(r=>setTimeout(r,50))'] : []
+  const later = shape.later ? ['--import', `data:text/javascript,await import(${JSON.stringify(compatibilityPreload)}); ${shape.later}`] : []
+  const entry = join(lib, shape.symlinkMain ? 'linked/tsserver.js' : 'tsserver.js')
+  if (shape.symlinkMain) { fs.mkdirSync(join(lib, 'linked')); fs.symlinkSync(join(lib, 'tsserver.js'), entry) }
+  return spawnSync(process.execPath, [...(shape.symlinkMain ? ['--preserve-symlinks-main'] : []), '--import', seal, '--import', observer, '--import', compatibilityPreload, ...delayed, ...later, entry], {
     encoding: 'utf8', input: '{"value":41}\n', timeout: 15_000,
     env: { ...fixtureEnvironment(root), WT_TSLS_NATIVE_WATCH_BUDGET: '0' },
   })
 }
 
-it('starts and answers with a pre-5 compiler without server and a separately bundled tsserver', () => {
+it.each<[string, Omit<ServerShape, 'version'>, object]>([
+  ['frozen argv survives cleanup', { startup: 'Object.freeze(process.argv);' }, { answer: 42 }],
+  ['frozen compiler args survives cleanup', { startup: 'Object.freeze(globalThis.compiler.sys.args);' }, { answer: 42 }],
+  ['startup arguments survive rollback', { startup: 'process.argv.push("--startup"); globalThis.compiler.sys.args.push("--startup");' }, { argv: expect.arrayContaining(['--startup']), compilerArgs: expect.arrayContaining(['--startup']) }],
+  ['existing ATA survives rollback', { before: 'process.argv.push("--disableAutomaticTypingAcquisition");', change: 'ts.sys.args = ["--disableAutomaticTypingAcquisition"];', startup: 'process.argv.push("--startup"); globalThis.compiler.sys.args.push("--startup");' }, { argv: expect.arrayContaining(['--disableAutomaticTypingAcquisition', '--startup']), compilerArgs: ['--disableAutomaticTypingAcquisition', '--startup'] }],
+  ['replaced args survive rollback', { startup: 'globalThis.compiler.sys.args = ["--replacement"]; process.argv = ["--replacement"];' }, { argv: ['--replacement'], compilerArgs: ['--replacement'] }],
+  ['reordered arguments survive rollback', { change: 'ts.sys.args = ["--first", "--second"];', startup: 'globalThis.compiler.sys.args.reverse(); globalThis.compiler.sys.args.push("--last");' }, { compilerArgs: ['--second', '--first', '--last'] }],
+  ['inherited watchDirectory is restored', { change: 'const inherited = ts.sys.watchDirectory; delete ts.sys.watchDirectory; Object.setPrototypeOf(ts.sys, { watchDirectory: inherited });' }, { inheritedRestored: true }],
+  ['unrelated preload does not establish sharing', { later: 'const { createRequire } = await import("node:module"); createRequire(process.argv[1])("./typescript.js");' }, { directoryUnchanged: true }],
+  ['preserved symlink main decides degradation', { symlinkMain: true }, { answer: 42 }],
+])('round3 %s', (_name, shape, answer) => {
+  const result = compatibilityServer({ version: ts.version, load: 'globalThis.compiler', ...shape })
+  expect.soft(result.status, 'rollback must keep the server running').toBe(0)
+  expect.soft(result.stdout ? JSON.parse(result.stdout) : {}, 'startup mutations must survive rollback').toMatchObject(answer)
+  expect.soft(result.stderr.trim()).toBe(`wt-tsls: warning: TypeScript ${ts.version}: native watch cap applied; directory polling and closed-input polling not applied (server-module-not-shared)`)
+})
+
+it.each([
+  ['accessor', 'const directory = ts.sys.watchDirectory; Object.defineProperty(ts.sys, "watchDirectory", { configurable: true, get() { return directory }, set() { throw new Error("must not patch accessor") } });'],
+  ['non-writable', 'Object.defineProperty(ts.sys, "watchDirectory", { writable: false });'],
+])('round3 rejects %s watchDirectory before patching', (_name, change) => {
+  const result = compatibilityServer({ version: ts.version, shared: true, change })
+  expect(result.status, result.stderr).toBe(0)
+  expect(JSON.parse(result.stdout)).toMatchObject({ directoryUnchanged: true, closedUnchanged: true, argsUnchanged: true, argvUnchanged: true })
+  expect(result.stderr.trim()).toBe(`wt-tsls: warning: TypeScript ${ts.version}: native watch cap applied; directory polling and closed-input polling not applied (unsupported-watch-surface)`)
+})
+
+it('starts a pre-5 separate server with the native cap and one degraded warning', () => {
   const result = compatibilityServer({ version: '3.9.10', change: 'delete ts.server;' })
-  expect(result.status, `legacy bundled server must start and answer: ${result.stderr}`).toBe(0)
-  expect(JSON.parse(result.stdout)).toMatchObject({ answer: 42, nativeUnchanged: true, promisesUnchanged: true, refused: false })
-  expect(result.stderr.trim().split('\n')).toEqual(['wt-tsls: warning: TypeScript 3.9.10: native watch budget and closed-input polling not applied (unsupported-version)'])
+  expect.soft(result.status, result.stderr).toBe(0)
+  expect.soft(result.stdout).toContain('"answer":42')
+  if (result.stdout) expect.soft(JSON.parse(result.stdout)).toMatchObject({ nativeUnchanged: false, promisesUnchanged: false, refused: true, promisesRefused: true, startupRefused: true })
+  expect.soft(result.stderr.trim()).toBe('wt-tsls: warning: TypeScript 3.9.10: native watch cap applied; directory polling and closed-input polling not applied (unsupported-version)')
+})
+
+it('installs the native cap before the compiler and server entry execute', () => {
+  const result = compatibilityServer({ version: ts.version, shared: true })
+  expect(result.status, result.stderr).toBe(0)
+  expect(JSON.parse(result.stdout).startupRefused, 'startup code must not allocate outside the budget').toBe(true)
+  expect(JSON.parse(result.stdout).compilerCapped, 'compiler evaluation must already be capped').toBe(true)
 })
 
 it.each<[string, ServerShape]>([
-  ['shared TypeScript 5', { version: '5.1.6', shared: true }],
+  ['shared modern surface labeled TypeScript 5', { version: '5.9.3', shared: true }],
   ['shared TypeScript 6 shim', { version: ts.version, shared: true, shim: true }],
+  ['extra async import preload', { version: ts.version, shared: true, delayed: true }],
+  ['extensionless compiler import', { version: ts.version, load: 'require("./typescript")' }],
+  ['absolute compiler import', { version: ts.version, load: 'require(require("node:path").join(__dirname, "typescript.js"))' }],
+  ['compiler import through bootstrap', { version: ts.version, load: 'require("./bootstrap.js")' }],
   ['pre-5 separate server namespace', { version: '4.9.5', reason: 'unsupported-version' }],
-  ['missing server namespace', { version: ts.version, shared: true, change: 'delete ts.server;', reason: 'unsupported-watch-surface' }],
+  ['TypeScript 5.0-5.2 missing server namespace', { version: '5.1.6', shared: true, change: 'delete ts.server;', reason: 'unsupported-watch-surface' }],
   ['missing ProjectService', { version: ts.version, shared: true, change: 'ts.server = {};', reason: 'unsupported-watch-surface' }],
   ['missing polling factory', { version: ts.version, shared: true, change: 'delete ts.createSystemWatchFunctions;', reason: 'unsupported-watch-surface' }],
   ['unknown future version', { version: '7.0.0', shared: true, reason: 'unsupported-version' }],
   ['unknown version format', { version: 'unrecognized', shared: true, reason: 'unsupported-version' }],
   ['malformed version in a known major', { version: '6.not-a-version', shared: true, reason: 'unsupported-version' }],
-  ['separate bundled compiler with a full adjacent surface', { version: ts.version, reason: 'server-module-not-shared' }],
+  ['standalone server never imports the adjacent compiler', { version: '5.4.5', reason: 'server-module-not-shared' }],
   ['throwing compiler load with a bundled server', { version: ts.version, compiler: 'throw new Error("compiler cannot load")', reason: 'preload-initialization-failed' }],
-  ['immutable watch surface', { version: ts.version, shared: true, change: 'Object.freeze(ts.sys);', reason: 'watch-installation-failed' }],
-  ['throwing installation rolls back all patches', { version: ts.version, shared: true, change: 'ts.createSystemWatchFunctions = () => { throw new Error("factory failed") };', reason: 'watch-installation-failed' }],
-])('applies or explicitly skips the watch bound for %s', (_name, shape) => {
+  ['immutable watch surface', { version: ts.version, shared: true, change: 'Object.freeze(ts.sys);', reason: 'unsupported-watch-surface' }],
+  ['throwing TS installation preserves native cap', { version: ts.version, shared: true, change: 'ts.createSystemWatchFunctions = () => { throw new Error("factory failed") };', reason: 'watch-installation-failed' }],
+  ['accessor closed-input surface degrades before installation', { version: ts.version, shared: true, change: 'ts.sys.args = []; const closed = ts.server.ProjectService.prototype.watchClosedScriptInfo; Object.defineProperty(ts.server.ProjectService.prototype, "watchClosedScriptInfo", { configurable: true, get() { return closed }, set() { throw new Error("closed patch failed") } });', reason: 'unsupported-watch-surface' }],
+  ['throwing ATA installation', { version: ts.version, shared: true, change: 'ts.sys.args = []; ts.sys.args.push = () => { throw new Error("ATA failed") };', reason: 'watch-installation-failed' }],
+])('starts native-capped or degrades once for %s', (_name, shape) => {
   const result = compatibilityServer(shape)
-  expect(result.status, `compatibility must not prevent startup: ${result.stderr}`).toBe(0)
-  const answer = JSON.parse(result.stdout), skipped = Boolean(shape.reason)
-  expect(answer, 'native admission must match the verified shared-module verdict').toMatchObject({ answer: 42, nativeUnchanged: skipped, promisesUnchanged: skipped, refused: !skipped, requireUnchanged: true })
-  if (shape.shared) expect(answer).toMatchObject({ directoryUnchanged: skipped, closedUnchanged: skipped })
-  expect(result.stderr.trim().split('\n').filter(Boolean)).toEqual(shape.reason
-    ? [`wt-tsls: warning: TypeScript ${shape.version}: native watch budget and closed-input polling not applied (${shape.reason})`] : [])
+  expect.soft(result.status, 'a native-capped server must start').toBe(0)
+  const answer = result.stdout.trim() ? JSON.parse(result.stdout) : {}
+  expect.soft(answer).toMatchObject({ answer: 42, nativeUnchanged: false, promisesUnchanged: false, refused: true, promisesRefused: true, startupRefused: true, requireUnchanged: true, compileUnchanged: true })
+  if (shape.shared) expect.soft(answer).toMatchObject({ directoryUnchanged: Boolean(shape.reason), closedUnchanged: Boolean(shape.reason) })
+  if (shape.reason === 'watch-installation-failed') expect.soft(answer).toMatchObject({ argsUnchanged: true, argvUnchanged: true })
+  expect.soft(result.stderr.trim().split('\n').filter(Boolean)).toEqual(shape.reason
+    ? [`wt-tsls: warning: TypeScript ${shape.version}: native watch cap applied; directory polling and closed-input polling not applied (${shape.reason})`] : [])
+})
+
+it.each([
+  ['immutable fs.watch', 'Object.defineProperty(fs, "watch", { writable: false })'],
+  ['missing fs.watch', 'fs.watch = undefined'],
+  ['immutable promises.watch', 'Object.defineProperty(fs.promises, "watch", { writable: false })'],
+  ['missing promises.watch', 'fs.promises.watch = undefined'],
+  ['throwing native installation', 'Object.defineProperty(fs, "watch", { configurable: true, get() { return globalThis.nativeBefore }, set() { throw new Error("native install failed") } })'],
+  ['silently ignored native installation', 'Object.defineProperty(fs, "watch", { configurable: true, get() { return globalThis.nativeBefore }, set() {} })'],
+  ['native initialization throws', 'Object.defineProperty(fs, "promises", { configurable: true, get() { throw new Error("native initialization failed") } })'],
+])('refuses only when the native cap cannot be installed: %s', (_name, before) => {
+  const result = compatibilityServer({ version: ts.version, shared: true, before })
+  expect.soft(result.status).toBe(1)
+  expect.soft(result.stdout, 'uncapped server must never answer').toBe('')
+  expect.soft(result.stderr.trim()).toBe('wt-tsls: error: TypeScript unknown: refusing server startup (native-watch-installation-failed)')
 })
 
   it('inherits the preload without replacing an explicit Node client option', () => {
