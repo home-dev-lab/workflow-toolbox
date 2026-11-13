@@ -3,3 +3,4 @@ export function createBoundedFsWatch(ts: unknown, nativeWatch?: typeof import('n
 export function createPollingDirectoryWatch(ts: unknown, system?: unknown): (directory: string, callback: (path: string) => void, recursive?: boolean, options?: object) => { close(): void }
 export function observeClosedProgramInputs(ts: unknown): void
 export function boundTypeScriptWatches(ts: unknown, fs?: unknown): void
+export function boundNativeWatches(fs?: unknown): void
