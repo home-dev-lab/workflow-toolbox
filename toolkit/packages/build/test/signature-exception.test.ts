@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error plain ESM fixture also used by node end-to-end probes
 import { attestation, exceptionFixture, signingOwner } from './helpers/atrium-attestation-fixture.mjs'
 // @ts-expect-error plugin runtime module
@@ -115,6 +115,20 @@ describe('signed owner signature exception identity and freshness', () => {
     const other = { ...target, [field]: field === 'newSha' ? 'b'.repeat(40) : `${target[field as keyof typeof target]}-other` }
     f.relay(attestation(exceptionStatement(other), f.owner))
     expect(f.check().failure.cause).toBe('digest-mismatch')
+  })
+})
+
+describe('signed owner signature exception test fixture', () => {
+  it('accepts the default fixture answer when the verifier clock reads 5 s behind its producer', () => {
+    const f = fixture()
+    const produced = f.now
+    vi.spyOn(Date, 'now').mockReturnValue(produced)
+    let answer
+    try { answer = attestation(statement, f.owner) } finally { vi.restoreAllMocks() }
+    f.relay(answer)
+    const result = findOwnerException({ statement, config: f.config, now: produced - 5_000 })
+    expect(result.failure?.cause, 'a default fixture expiry must leave margin under the verifier maximum').toBeUndefined()
+    expect(result.opened).toBeTruthy()
   })
 })
 

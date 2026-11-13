@@ -148,10 +148,14 @@ function fromBackend(state, message, restarting) {
   if (message.id !== undefined) armIdle(state)
 }
 
+// The forced stop's own TERM ending the backend is the completion the wrapper asked for, never a signal to re-raise.
+// Only a backend that exited after forcing began qualifies: a close delayed by inherited pipes keeps its own status.
+function forcedTermClose(backend, signal) { return backend.exitedWhileForced === true && signal === 'SIGTERM' }
+
 function closedBackend(state, backend, code, signal) {
   if (state.backend !== backend || state.phase === 'closed') return
   clearTimeout(state.idleTimer)
-  backend.closeResult ??= { code, signal }
+  backend.closeResult ??= forcedTermClose(backend, signal) ? { code: 0 } : { code, signal }
   backend.closedUnexpectedly ??= state.phase !== 'stopping'
   state.phase = 'stopping'
   if (cleanTsClosedGroup(state, backend, closedBackend)) return
@@ -192,6 +196,7 @@ function startBackend(state, restarting) {
     start: (command, args, options) => {
       backend.child = start(command, args, { ...options, detached: process.platform !== 'win32' })
       backend.child.once('spawn', () => captureTsGroup(backend))
+      backend.child.once('exit', () => { backend.exitedWhileForced = backend.termSent === true })
       return backend.child
     },
     exit: code => closedBackend(state, backend, code), exitSignal: signal => closedBackend(state, backend, 1, signal) })

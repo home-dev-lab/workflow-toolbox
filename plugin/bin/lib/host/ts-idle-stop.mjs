@@ -50,33 +50,36 @@ function tsGroupOwnership(state, backend) {
 }
 
 // POSIX backends are session leaders; never signal an unverified reused group.
+// Returns true only when the signal was handed to the kernel; ChildProcess.kill reports a refused send as false.
 export function signalTsBackend(state, backend, signal) {
   try {
-    if ((state.options.platform ?? process.platform) === 'win32') backend.child?.kill(signal)
-    else signalOwnedGroup(state, backend, signal)
+    if ((state.options.platform ?? process.platform) === 'win32') return backend.child ? backend.child.kill(signal) !== false : false
+    return signalOwnedGroup(state, backend, signal)
   } catch (error) {
     if (error.code !== 'ESRCH') state.streams.stderr.write(`wt-tsls: backend group signal failed (${error.message}); descendant cleanup unknown\n`)
+    return false
   }
 }
 
 function signalOwnedGroup(state, backend, signal) {
-  if (!backend.child?.pid) return
+  if (!backend.child?.pid) return false
   const ownership = tsGroupOwnership(state, backend)
-  if (ownership === 'empty') return
+  if (ownership === 'empty') return false
   if (ownership !== 'ours') {
     // Our direct, unreaped ChildProcess cannot be a reused pid, so the leader is always safe to signal.
     state.streams.stderr.write('wt-tsls: backend group ownership unknown; signalling the leader only; descendant cleanup unknown\n')
-    backend.child.kill(signal)
-    return
+    return backend.child.kill(signal) !== false
   }
   ;(state.options.killGroup ?? process.kill)(-backend.child.pid, signal)
+  return true
 }
 
 function forceTsStop(state, backend, closed) {
   if (state.backend !== backend || state.phase === 'closed' || backend.forced) return
   backend.forced = true
   backend.input.end()
-  signalTsBackend(state, backend, 'SIGTERM')
+  // Only a TERM the kernel accepted can be the wrapper's own; a refused send leaves any TERM death foreign.
+  backend.termSent = signalTsBackend(state, backend, 'SIGTERM')
   state.killTimer = setTimeout(() => {
     if (state.backend !== backend || state.phase === 'closed') return
     signalTsBackend(state, backend, 'SIGKILL')
