@@ -7,6 +7,7 @@ import { testRestoreVault, testVaultSnapshot, tokenize } from './token-vault.js'
 import { detections } from './detector.js';
 import { inspectionBudget, INSPECTION_TEXT, walkOutbound } from './outbound-traversal.js';
 import { boundaryFindings } from './value-boundary.js';
+import { fileURLToPath } from 'node:url';
 
 const send = (payload) => ({ tool: 'mcp__fixture__send', payload });
 const concealed = (value) => ({ type: 'CONCEALED', value });
@@ -141,7 +142,7 @@ async function accountingLocks(check) {
   });
 }
 
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   let failures = 0;
   await runBudgetRefusalLocks({ test: async (name, run) => {
     try { await run(); console.log(`PASS ${name}`); }

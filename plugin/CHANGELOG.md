@@ -5,6 +5,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- On native Windows, the `wt-secret-guard` selftest no longer fails: its traversal locks spawned their own file through a
+  file URL's pathname (`/D:/...`), which Windows resolved to a path that does not exist. Every lock file now converts the
+  URL with `fileURLToPath`, so a lock that spawns a helper also really runs it on Windows. The suite-lock test for a command
+  ended by a signal now expects exit code 1 on Windows, where Node ends the process without a POSIX signal; the turn is
+  still consumed. The guard's runtime hooks were not affected.
+
 ## [0.200.0] - 2026-11-12
 
 ### Added
