@@ -2,11 +2,12 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:f
 import path from 'node:path'
 import { foreignNamespaceStale, pidProvesGone, platformOf, ticketIsStale, TICKET_SILENCE_MS } from './host/suite-lock-liveness.mjs'
 import { suiteLockDir } from './host/suite-lock-dir.mjs'
+import { assertCurrentSuiteLockClient } from './host/suite-lock-client-currency.mjs'
 import { currentPidNamespace, processStartTime } from './host/pid-namespace.mjs'
 import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside } from './host/suite-lock-queue.mjs'
 import { connectSuiteLockBroker } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
-import { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
+import * as suiteLockOrder from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
 import { readSuiteLockRankState, recordAbandonedSuiteLock, recordSuiteLockService, suiteLockReleaseOutcome } from './host/suite-lock-rank-state.mjs'
 import { normalizeSuiteLockProject } from './suite-lock-rank-common.mjs'
@@ -22,7 +23,9 @@ export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-orde
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
+const { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTickets } = suiteLockOrder
 const suiteLockNow = (options) => options.now?.() ?? Date.now()
+const SUITE_LOCK_MODULE_URL = import.meta.url
 
 export function suiteLockWaitSeconds(env = process.env) {
   return env.WT_SUITE_LOCK_WAIT_S === undefined
@@ -461,6 +464,7 @@ function prepareSuiteWait(root, options, env, priority) {
   const pollMs = options.pollMs ?? 2000
   const noticeMs = options.noticeMs ?? 30_000
   const startedWaiting = Date.now()
+  assertCurrentSuiteLockClient(SUITE_LOCK_MODULE_URL, SUITE_LOCK_ORDER_VERSION, env, options)
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority, p0QueueFields(root, priority))
   return { lockDir, queueDir, record, waitMs, headWaitMs, pollMs, noticeMs, nextNoticeAt: startedWaiting, lastProgressAt: startedWaiting,

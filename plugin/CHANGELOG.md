@@ -5,6 +5,22 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- Cached suite-lock writers now refuse main-queue admission with exit 78 when the
+  effective enabled install has a higher queue-order version and passes a bounded
+  loadability check. Direct invocations print the replacement command; broker and
+  library writers name the install to restart from. Unknown or incomplete installs
+  fail open, and static tickets, bypasses and inherited leases retain their routes.
+  Resuming an older parked ticket upgrades its ordering version while preserving
+  its saved priority and queue class. Long-lived writers reuse currency verdicts
+  for at most 60 seconds, invalidating on registry, manifest and executable stat
+  identities. Project-scoped selection follows the acquisition directory or the
+  broker's selection-only root, with null roots using the project environment.
+  Broker tickets retain the service working directory. Replacement commands preserve the
+  running Node interpreter and execution flags; unrenderable Windows commands
+  retain the refusal with restart guidance.
+
 ## [0.200.1] - 2026-11-13
 
 Patch release: fixes the two native-Windows test defects listed under Known issues in 0.200.0.

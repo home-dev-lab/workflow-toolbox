@@ -235,6 +235,10 @@ export async function runSuiteLockCliEntrypoint(argv = process.argv.slice(2)) {
   try {
     return await runSuiteLockCli(argv)
   } catch (error) {
+    if (error?.code === 'WT_SUITE_LOCK_STALE_CLIENT') {
+      process.stderr.write(`wt-suite-lock: ${error.message}\n`)
+      return 78
+    }
     process.stderr.write(`wt-suite-lock: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`)
     return error.exitCode === 64 ? 64 : 2
   }
