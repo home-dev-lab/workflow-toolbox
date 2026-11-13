@@ -21,6 +21,27 @@ Patch release: fixes the two native-Windows test defects listed under Known issu
 
 - Marketplace plugin version in this release: `wt-secret-guard` 0.1.10 (its selftest locks run on native Windows). Update it with the plugin for the change to load.
 
+### Quality
+
+Patch release: measured on a clean checkout of the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; the baseline was not refreshed at 0.190.0 through 0.200.0). No judge total regressed against that baseline. Against 0.200.0's figures: line coverage moved from 84.65 % to 84.63 % and statement coverage from 82.87 % to 82.85 %; every other judge is unchanged.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 112 | -14 |
+| Cognitive complexity | 268 -> 129 | -139 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 480 | -220 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 647 | -37 |
+| Duplication % | 2.4324 -> 1.8662 | -0.57 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 84.63 | +6.02 |
+| Coverage branches % | 69.76 -> 76.66 | +6.90 |
+| Coverage functions % | 80.86 -> 88.11 | +7.25 |
+| Coverage statements % | 76.50 -> 82.85 | +6.35 |
+
 ## [0.200.0] - 2026-11-12
 
 ### Added
