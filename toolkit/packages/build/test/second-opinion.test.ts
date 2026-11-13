@@ -214,7 +214,7 @@ describe('second-opinion advisor', () => {
     const stop = vi.fn(() => ['app-server cleanup unavailable: broker not captured before companion exit'])
     const wrap = vi.fn()
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', unreadable, wrap, dispose }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'lane sandbox: bwrap (test)', unreadable, wrap, dispose }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     const baseline = process.listenerCount('exit')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
@@ -307,7 +307,7 @@ describe('second-opinion advisor', () => {
     const dispose = vi.fn()
     const stop = vi.fn(() => [])
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', wrap, dispose }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'lane sandbox: bwrap (test)', wrap, dispose }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     const baseline = process.listenerCount('exit')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
@@ -330,7 +330,7 @@ describe('second-opinion advisor', () => {
     writeFileSync(f.request, requestText(outside))
     const unreadable = vi.fn((candidates: string[][]) => candidates.filter((group) => group.includes(outside)).map(() => ({ path: outside, reason: null })))
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap: vi.fn() }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'sandbox', unreadable, dispose: vi.fn(), wrap: vi.fn() }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
     expect(lines(f.out).join('\n')).toContain(outside)
@@ -348,7 +348,7 @@ describe('second-opinion advisor', () => {
     const unreadable = vi.fn((candidates: string[][]) => candidates.flatMap((group) => [a, b].filter((file) => group.includes(file)).map((file) => ({ path: file, reason: null }))))
     const wrap = vi.fn()
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
     expect(lines(f.out).join('\n')).toContain(`${a}, ${b}`)
@@ -363,7 +363,7 @@ describe('second-opinion advisor', () => {
     writeFileSync(f.request, `Review ${named}`)
     const unreadable = vi.fn((candidates: string[][], { exempt }: { exempt: string[] }) => candidates.filter((group) => !exempt.includes(group[0]!)).map((group) => ({ path: group[0]!, reason: null })))
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap: () => [process.execPath, ['-e', '']] }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'sandbox', unreadable, dispose: vi.fn(), wrap: () => [process.execPath, ['-e', '']] }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, { ...f.env, WT_SECOND_OPINION_UNREAD: named.slice(0, -1) })).toBe(2)
     expect(unreadable.mock.calls[0]![1].exempt).toEqual([named.slice(0, -1)])
@@ -383,7 +383,7 @@ describe('second-opinion advisor', () => {
     const unreadable = vi.fn((candidates: string[][]) => candidates.flatMap((group) => [dir, file].filter((p) => group.includes(p)).map((p) => (p === dir ? { path: p, reason: null, directory: true } : { path: p, reason: null }))))
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
     const wrap = vi.fn(() => [process.execPath, ['-e', "process.stdout.write('ran\\n')"]])
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
     const text = lines(f.out).join('\n')
@@ -408,7 +408,7 @@ describe('second-opinion advisor', () => {
     const dispose = vi.fn()
     const wrap = vi.fn()
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable: () => { throw new LaneSandboxRefusal('could not check the request\'s paths inside the sandbox: probe failed') }, dispose, wrap }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'sandbox', unreadable: () => { throw new LaneSandboxRefusal('could not check the request\'s paths inside the sandbox: probe failed') }, dispose, wrap }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     const baseline = process.listenerCount('exit')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
@@ -1075,7 +1075,7 @@ describe('second-opinion advisor', () => {
     }
     const resolveSandbox = (request: Record<string, unknown>) => {
       requests.push(request)
-      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', unreadable: vi.fn(() => []), wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
+      return { kind: 'bwrap', gitHistoryHidden: true, line: 'lane sandbox: bwrap (codex; writable /fixture)', unreadable: vi.fn(() => []), wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
     }
     const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
     deps.resolveCodexCompanion = () => companion
@@ -1142,7 +1142,7 @@ describe('second-opinion advisor', () => {
       createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
     }
     const deps = createSecondOpinionDependencies(adapter, {
-      resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', unreadable: vi.fn(() => []), wrap: () => [join(f.repo, 'missing-executable'), []] }),
+      resolveSandbox: () => ({ kind: 'bwrap', gitHistoryHidden: true, line: 'lane sandbox: bwrap (test)', unreadable: vi.fn(() => []), wrap: () => [join(f.repo, 'missing-executable'), []] }),
     })
     deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
 

@@ -84,8 +84,12 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
   let child
   try {
     // second-opinion only reads the repository: it is bound read-only (H5).
-    sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
+    sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true, hideGitHistory: true })
     announceUnsandboxedLane(sandbox)
+    if (sandbox.kind !== 'none' && (sandbox.kind !== 'bwrap' || sandbox.gitHistoryHidden !== true)) {
+      refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
+      return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot withhold repository git history.\n', cleanup: [], sandbox: sandbox.line })
+    }
     if (sandbox.kind === 'bwrap') {
       if (typeof sandbox.unreadable !== 'function') {
         refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
