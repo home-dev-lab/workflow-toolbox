@@ -247,7 +247,7 @@ describe('Vitest globalSetup light selections', () => {
       expect(process.stderr.listenerCount('error')).toBeGreaterThan(0)
     } finally {
       process.stderr.removeAllListeners('error')
-      for (const listener of listeners) process.stderr.on('error', listener)
+      for (const listener of listeners) process.stderr.on('error', listener as (error: Error) => void)
     }
   })
 
