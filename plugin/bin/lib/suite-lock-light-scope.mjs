@@ -9,7 +9,9 @@ import { quoteRemedyWord } from './remedy-quote.mjs'
 // default to `refuse`: at least 20 firings over at least 3 distinct days, every one checked as covering two or
 // more test files (or a whole suite), and zero false hits (a flagged run that covered at most one test file).
 //
-// Blind spot, by design: a script file (`bash x.sh`, `zsh .lane/g1.zsh`) is opaque and never flagged.
+// Blind spot, by design: a script file (`bash x.sh`, `zsh .lane/g1.zsh`) and a shell string (`bash -c '...'`) are
+// opaque and never flagged. A guard that may refuse prefers a miss to a false hit: only well-understood runner
+// shapes are classified, and anything else reads as 'other'.
 export const LIGHT_SCOPE_PROBATION = 'flip the default to refuse after >= 20 firings over >= 3 days, each covering >= 2 test files, with 0 false hits'
 
 const TEST_FILE = /\.(test|spec|selftest)\.[cm]?[jt]sx?$/
@@ -22,9 +24,10 @@ const VITEST_VALUE_FLAGS = new Set(['-t', '--testNamePattern', '--project', '--c
 const ANY_VALUE_FLAGS = new Set([...NODE_VALUE_FLAGS, ...VITEST_VALUE_FLAGS])
 const SUITE_SCRIPTS = new Set(['test', 'test:all', 'test:unit'])
 const PACKAGE_MANAGERS = new Set(['pnpm', 'npm', 'yarn'])
-const PLAIN_WRAPPERS = new Set(['npx', 'nice', 'setsid', 'time', 'command', 'exec'])
+const PLAIN_WRAPPERS = new Set(['setsid', 'time', 'command', 'exec'])
+// Node options after which no test file runs: evaluated code, help, version, syntax check.
+const NODE_NO_RUN = new Set(['-e', '--eval', '-p', '--print', '-h', '--help', '-v', '--version', '-c', '--check'])
 const DIR_OPTIONS = new Set(['-C', '--dir', '--prefix', '--filter'])
-const SHELLS = new Set(['bash', 'sh', 'zsh'])
 const VITEST_NON_RUN = new Set(['list', 'bench', 'init', 'typecheck'])
 const VITEST_RUN = new Set(['run', 'watch', 'dev', 'related'])
 // A lint, format or typecheck tool handed test files checks them; it never runs them.
@@ -79,6 +82,7 @@ function nodeScriptScope(targets) {
 }
 
 function nodeScope(args) {
+  if (args.some((word) => NODE_NO_RUN.has(word) || /^--(eval|print)=/.test(word))) return OTHER
   const targets = positionals(args, NODE_VALUE_FLAGS)
   if (!runsNodeTest(args)) return nodeScriptScope(targets)
   if (targets.length === 0) return { kind: 'suite', files: [] }
@@ -99,17 +103,35 @@ function vitestScope(args) {
   return filterScope(positionals(VITEST_RUN.has(args[0]) ? args.slice(1) : args, VITEST_VALUE_FLAGS))
 }
 
+// A `test` script's runner is unknown, so only test-file-shaped words and directories count; a bare `pnpm test`
+// runs the whole suite, and arguments that name no test file are read as options of an unknown runner.
+function testScriptScope(rest) {
+  if (rest.length === 0) return { kind: 'suite', files: [] }
+  const targets = positionals(rest, ANY_VALUE_FLAGS)
+  const dirs = targets.filter((word) => word.endsWith('/'))
+  if (dirs.length > 0) return { kind: 'suite', files: dirs }
+  const files = targets.filter((word) => TEST_FILE.test(word))
+  return files.length === 0 ? OTHER : countScope(files)
+}
+
 function packageScriptScope(args) {
   const script = args[0] === 'run' ? args[1] : args[0]
   const rest = args.slice(args[0] === 'run' ? 2 : 1).filter((word) => word !== '--')
   if (script === 'vitest') return vitestScope(rest)
-  return SUITE_SCRIPTS.has(script) ? filterScope(positionals(rest, ANY_VALUE_FLAGS)) : OTHER
+  return SUITE_SCRIPTS.has(script) ? testScriptScope(rest) : OTHER
 }
 
 // env [-i] [-u NAME] [NAME=value...] command
 function unwrapEnv(rest) {
   let index = 0
   while (index < rest.length && rest[index].startsWith('-')) index += rest[index] === '-u' || rest[index] === '-C' ? 2 : 1
+  return rest.slice(index)
+}
+
+// npx [--yes|-y|--package=x...] command; nice [-n N] command
+function unwrapLeadingOptions(rest, valued) {
+  let index = 0
+  while (index < rest.length && rest[index].startsWith('-')) index += valued.has(rest[index]) ? 2 : 1
   return rest.slice(index)
 }
 
@@ -129,7 +151,15 @@ function unwrapSuiteLock(words) {
 // `pnpm -C dir ...` keeps the manager; `pnpm exec x` / `pnpm dlx x` hands over to x.
 function packageManagerStep(head, rest) {
   if (DIR_OPTIONS.has(rest[0])) return [head, ...rest.slice(2)]
-  return rest[0] === 'exec' || rest[0] === 'dlx' ? rest : null
+  return rest[0] === 'exec' || rest[0] === 'dlx' ? rest.slice(1) : null
+}
+
+// Wrappers with options of their own, stripped down to the command they launch.
+const OPTION_WRAPPERS = {
+  env: unwrapEnv,
+  timeout: unwrapTimeout,
+  npx: (rest) => unwrapLeadingOptions(rest, new Set(['-p', '--package', '-c', '--call'])),
+  nice: (rest) => unwrapLeadingOptions(rest, new Set(['-n', '--adjustment'])),
 }
 
 // One unwrapping step, or null when the head is the runner itself.
@@ -137,8 +167,7 @@ function unwrapStep(words) {
   const [head, ...rest] = words
   const base = baseName(head)
   if (/^[A-Za-z_]\w*=/.test(head) || PLAIN_WRAPPERS.has(base)) return rest
-  if (base === 'env') return unwrapEnv(rest)
-  if (base === 'timeout') return unwrapTimeout(rest)
+  if (Object.hasOwn(OPTION_WRAPPERS, base)) return OPTION_WRAPPERS[base](rest)
   if (SUITE_LOCK_CLI.test(head) || (base === 'node' && SUITE_LOCK_CLI.test(rest[0] ?? ''))) return unwrapSuiteLock(rest)
   return PACKAGE_MANAGERS.has(base) ? packageManagerStep(head, rest) : null
 }
@@ -154,29 +183,6 @@ function unwrap(argv) {
   return words
 }
 
-// Quote-aware split of one shell segment into words, as the shell would hand them to the command.
-function shellWords(text) {
-  return [...text.matchAll(/'([^']*)'|"([^"]*)"|([^\s'"]+)/g)].map((match) => match[1] ?? match[2] ?? match[3])
-}
-
-// A shell string: each command segment is classified on its own and their test files add up, since
-// sequential runs share one lease. A lint or any other command names files without running them.
-function shellStringScope(text) {
-  const files = []
-  for (const segment of text.split(/&&|\|\||;|\||\n/)) {
-    const scope = lightRunScope(shellWords(segment.trim()))
-    if (scope.kind === 'suite') return scope
-    if (scope.kind !== 'other') files.push(...scope.files)
-  }
-  return files.length === 0 ? OTHER : countScope([...new Set(files)])
-}
-
-// `bash -c`, `bash -lc`, `sh -ec`: the option word that carries `c`, followed by the command string.
-function shellCommandString(args) {
-  const index = args.findIndex((word) => /^-[a-z]+$/.test(word) && word.includes('c'))
-  return index >= 0 && typeof args[index + 1] === 'string' ? args[index + 1] : null
-}
-
 // { kind: 'single' | 'multi' | 'suite' | 'other', files }: how many test files a command covers.
 export function lightRunScope(argv) {
   if (!Array.isArray(argv)) return OTHER
@@ -185,9 +191,7 @@ export function lightRunScope(argv) {
   const base = baseName(head)
   if (base === 'node') return nodeScope(rest)
   if (base === 'vitest') return vitestScope(rest)
-  if (PACKAGE_MANAGERS.has(base)) return packageScriptScope(rest)
-  const script = SHELLS.has(base) ? shellCommandString(rest) : null
-  return script === null ? OTHER : shellStringScope(script)
+  return PACKAGE_MANAGERS.has(base) ? packageScriptScope(rest) : OTHER
 }
 
 export function coversSeveralTestFiles(scope) {

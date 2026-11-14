@@ -58,8 +58,14 @@ function skipSuiteLeaseSetup(project) {
   return process.env.WT_SUITE_LOCK === '0' || project?.config?.watch === true
 }
 
+// A closed stderr reports EPIPE asynchronously as an 'error' event; unhandled, it would end the Vitest run.
+function writeStderr(text) {
+  if (process.stderr.listenerCount('error') === 0) process.stderr.on('error', () => { /* a diagnostic failure never ends the run */ })
+  process.stderr.write(text)
+}
+
 // A light selection over several files is warned (probation) and recorded on the host, like `run --light`.
-export function vitestLightScopeGuard(argv, { env = process.env, write = (text) => process.stderr.write(text), domain = suiteLeaseDomain } = {}) {
+export function vitestLightScopeGuard(argv, { env = process.env, write = writeStderr, domain = suiteLeaseDomain } = {}) {
   let log = null
   try {
     const root = domain()

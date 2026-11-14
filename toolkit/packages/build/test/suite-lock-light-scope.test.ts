@@ -25,13 +25,15 @@ describe('lightRunScope on commands that cover several test files', () => {
     [['node', 'run-tests.mjs', 'lib/node-false-green-probe.test.mjs', 'run-gate-detached.test.mjs', 'run-tests.test.mjs'], 3],
     [['node', '--test', 'scripts/host-dispatch-r5-payload.test.mjs', 'scripts/host-dispatch-r7.selftest.mjs'], 2],
     [['env', 'FOO=1', 'node', '--test', '--test-concurrency=1', 'a.test.mjs', 'b.test.mjs'], 2],
-    [['bash', '-c', 'node --test a.test.mjs && node --test b.test.mjs'], 2],
     // Review round 1 (cross-family counterexamples): wrappers and shells the first cut missed.
     [['vitest', 'a.test.ts', 'b.test.ts', '--run'], 2],
-    [['bash', '-lc', 'node --test a.test.mjs b.test.mjs'], 2],
     [['env', '-i', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
     [['/usr/bin/env', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
     [['timeout', '--signal=TERM', '10s', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
+    // Review round 2: wrappers with their own options.
+    [['pnpm', 'dlx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'], 2],
+    [['npx', '--yes', 'vitest', 'run', 'a.test.ts', 'b.test.ts'], 2],
+    [['nice', '-n', '10', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
     [['node', '/x/plugin/bin/wt-suite-lock.mjs', 'run', '--light', '--', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
   ])('flags %j as multi (%i files)', (argv, count) => {
     const result = scope(argv)
@@ -68,16 +70,19 @@ describe('lightRunScope on runs a light ticket is for', () => {
     [['vitest', 'run', 'a.test.ts', '--hookTimeout', '60000']],
     [['vitest', 'run', 'a.test.ts', '--coverage.reporter', 'text']],
     [['node', '--test', '--test-shard', '1/3', 'a.test.mjs']],
-    // Review round 1: quoted words and option values in shell strings and package-script arguments.
-    [['bash', '-c', 'node --test "a.test.mjs"']],
-    [['bash', '-c', 'vitest run a.test.ts -t "works correctly"']],
+    // Review rounds 1-2: option values in package-script arguments; only test-file-shaped words count there.
     [['npm', 'test', '--', 'a.test.ts', '-t', 'b.test.ts']],
+    [['npm', 'test', '--', 'run', 'a.test.ts']],
+    [['npm', 'test', '--', 'a.test.js', '--grep', 'smoke']],
+    [['npm', 'test', '--', 'a.test.js', '--reporter-options', 'output=results.xml']],
   ])('accepts %j as one file', (argv) => {
     const result = scope(argv)
     expect(result.kind).toBe('single')
     expect(result.files).toHaveLength(1)
   })
+})
 
+describe('lightRunScope on commands that run no test file, or that it cannot see into', () => {
   it.each([
     [['pnpm', 'typecheck']],
     [['pnpm', 'lint']],
@@ -86,6 +91,14 @@ describe('lightRunScope on runs a light ticket is for', () => {
     // Review round 1: lint tools handed test files are a lint, never a multi-file test run.
     [['node', 'node_modules/eslint/bin/eslint.js', 'a.test.ts', 'b.test.ts']],
     [['bash', '-c', 'eslint a.test.ts b.test.ts']],
+    // Review round 2: a shell string is opaque, like a script file (declared blind spot), so quoted text,
+    // comments and loops never invent a run; node evaluating code or printing help runs no test file.
+    [['bash', '-c', "echo 'ignored; node --test'"]],
+    [['bash', '-c', 'node --test a.test.mjs # smoke check']],
+    [['bash', '-lc', 'node --test a.test.mjs b.test.mjs']],
+    [['node', '-e', 'console.log(process.argv.slice(1))', 'a.test.mjs', 'b.test.mjs']],
+    [['node', '--test', '--help']],
+    [['node', '--version']],
     [['node', '/home/u/.claude/scripts/quality/run-quality.mjs', '--root', '/tmp/x']],
     [['bash', '.lane/red-proofs.sh']],
     [['zsh', '.lane/g1.zsh']],
@@ -224,6 +237,18 @@ describe('Vitest globalSetup light selections', () => {
     const guard = vitestLightScopeGuard(['vitest', 'run', 'a.test.ts', 'b.test.ts'], { env: {}, write: () => { throw new Error('EPIPE') }, domain: () => root })
     expect(guard.refused).toBe(false)
     expect(readLightScopeFirings(root)).toMatchObject([{ outcome: 'warned', fileCount: 2 }])
+  })
+
+  it('guards its own stderr write against an asynchronous EPIPE (review round 2)', () => {
+    const listeners = process.stderr.listeners('error')
+    process.stderr.removeAllListeners('error')
+    try {
+      vitestLightScopeGuard(['vitest', 'run', 'a.test.ts', 'b.test.ts'], { env: {}, domain: () => scratch() })
+      expect(process.stderr.listenerCount('error')).toBeGreaterThan(0)
+    } finally {
+      process.stderr.removeAllListeners('error')
+      for (const listener of listeners) process.stderr.on('error', listener)
+    }
   })
 
   it('stays silent for one file', () => {
