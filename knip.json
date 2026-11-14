@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreWorkspaces": ["toolkit/examples"],
   // Platform executables used by the launcher and FIFO-based tests, not npm binaries.
-  "ignoreBinaries": ["mkfifo", "ionice"],
+  "ignoreBinaries": ["bwrap", "mkfifo", "ionice"],
   // Named test seams reached by computed imports or tests outside the configured workspace projects.
   "tags": ["-knipTestSeam"],
   "workspaces": {
