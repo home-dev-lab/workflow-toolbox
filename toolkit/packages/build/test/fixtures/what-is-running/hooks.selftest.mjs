@@ -14,7 +14,9 @@ import { HOST_USER_CONFIG_TYPES } from './host-user-config-types.mjs';
 const { readSnapshot, register } = hooksModule;
 const hookDir = fileURLToPath(new URL('.', import.meta.url));
 const pluginRoot = fileURLToPath(new URL('../../../../../../plugin/', import.meta.url));
-const renderPropsSnapshot = JSON.parse(readFileSync(join(hookDir, 'render-props.snapshot.json'), 'utf8'));
+// The snapshot pins the Claude Code version whose declarations it copies (`hostVersion`).
+const renderPropsPin = JSON.parse(readFileSync(join(hookDir, 'render-props.snapshot.json'), 'utf8'));
+const renderPropsSnapshot = renderPropsPin.components;
 
 function declaredKeys(source, typeName) {
   const match = source.match(new RegExp(`export\\s+type\\s+${typeName}\\s*=\\s*\\{([\\s\\S]*?)\\n\\s*\\};`));
@@ -31,6 +33,22 @@ function parsedRenderProps(source) {
     Button: { props: declaredKeys(source, 'ButtonProps'), hover: textHover },
     Link: { props: declaredKeys(source, 'LinkProps') },
   };
+}
+
+// Names every prop the installed host adds or drops against the snapshot, the pinned version, and
+// the remedy; null when they match.
+function renderPropsDrift(installed, pin, declarationPath) {
+  const changes = [];
+  for (const name of new Set([...Object.keys(installed), ...Object.keys(pin.components)])) {
+    for (const field of ['props', 'hover']) {
+      const host = installed[name]?.[field] ?? []; const checkedIn = pin.components[name]?.[field] ?? [];
+      const added = host.filter((key) => !checkedIn.includes(key)); const dropped = checkedIn.filter((key) => !host.includes(key));
+      if (added.length || dropped.length) changes.push(`${name}.${field}${added.map((key) => ` +${key}`).join('')}${dropped.map((key) => ` -${key}`).join('')}`);
+    }
+  }
+  if (!changes.length) return null;
+  return `installed host declarations (${declarationPath}) differ from render-props.snapshot.json, pinned at Claude Code ${pin.hostVersion}: ${changes.join('; ')}. `
+    + 'Remedy: check that the pane does not need the changed props, then copy the installed props into render-props.snapshot.json and set its hostVersion to the installed `claude --version`.';
 }
 
 function validateElementProps(name, props) {
@@ -167,7 +185,23 @@ await test('[blank pane fix schema lock] checked-in render props match the insta
     if (component.hover) assert.deepEqual(component.hover, [...component.hover].sort());
   }
   const declaration = join(process.env.WT_HOST_CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'plugins', 'marketplaces', 'claude-code-plugins', 'mods', 'types', 'claude-code.d.ts');
-  if (existsSync(declaration)) assert.deepEqual(parsedRenderProps(readFileSync(declaration, 'utf8')), renderPropsSnapshot);
+  if (!existsSync(declaration)) return;
+  const installed = parsedRenderProps(readFileSync(declaration, 'utf8'));
+  const drift = renderPropsDrift(installed, renderPropsPin, declaration);
+  assert.ok(drift === null, drift);
+  assert.deepEqual(installed, renderPropsSnapshot);
+});
+await test('[blank pane fix schema lock] a host drift names the pinned version, every changed prop, and the remedy', async () => {
+  assert.match(renderPropsPin.hostVersion, /^\d+\.\d+\.\d+$/);
+  assert.equal(renderPropsDrift(renderPropsSnapshot, renderPropsPin, '/host.d.ts'), null);
+  const installed = structuredClone(renderPropsSnapshot);
+  installed.Box.props = [...installed.Box.props, 'role'].sort();
+  installed.Link.props = installed.Link.props.filter((key) => key !== 'label');
+  const message = renderPropsDrift(installed, renderPropsPin, '/host.d.ts');
+  assert.equal(typeof message, 'string', 'a host drift must produce a failure message');
+  assert.ok(message.includes(`pinned at Claude Code ${renderPropsPin.hostVersion}`), message);
+  assert.ok(message.includes('Box.props +role') && message.includes('Link.props -label'), message);
+  assert.ok(message.includes('/host.d.ts') && message.includes('Remedy:') && message.includes('hostVersion'), message);
 });
 
 await test('stale liveness metadata is ignored when a fresh worktree keeps the row live', async () => {
