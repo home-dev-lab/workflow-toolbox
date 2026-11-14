@@ -67,133 +67,179 @@ function refuseBeforeLaunch(sandbox, ownership, removeListeners) {
   removeListeners()
 }
 
-function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES, resolveSandbox = resolveLaneSandbox }) {
-  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
-  const ownership = adapter.createCodexBrokerOwnership(env)
-  const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
-  let stopEverything = (reason = null) => {
+function codexLifecycle(ownership, signal) {
+  const state = { ownership, signal }
+  state.stopEverything = (reason = null) => {
     if (reason) { return ownership.stop() }
     return []
   }
-  const onAbort = () => stopEverything(signal?.reason)
-  const onExit = () => { stopEverything() }
+  const onAbort = () => state.stopEverything(signal?.reason)
+  const onExit = () => { state.stopEverything() }
   process.once('exit', onExit)
   signal?.addEventListener('abort', onAbort, { once: true })
-  let sandbox
-  let directoryNote = null
-  let child
-  try {
-    // second-opinion only reads the repository: it is bound read-only (H5).
-    sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true, hideGitHistory: true })
-    announceUnsandboxedLane(sandbox)
-    if (sandbox.kind !== 'none' && (sandbox.kind !== 'bwrap' || sandbox.gitHistoryHidden !== true)) {
-      refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
-      return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot withhold repository git history.\n', cleanup: [], sandbox: sandbox.line })
-    }
-    if (sandbox.kind === 'bwrap') {
-      if (typeof sandbox.unreadable !== 'function') {
-        refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
-        return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot check request paths.\n', cleanup: [], sandbox: sandbox.line })
-      }
-      const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
-      // Only files refuse; an unreadable named directory is reported and the review runs.
-      const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
-      directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path), ownership.env.HOME ?? env.HOME ?? '', env)
-      if (missing.length) {
-        refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
-        return Promise.resolve({ status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, ownership.env.HOME ?? env.HOME ?? '', env), cleanup: [], sandbox: sandbox.line })
-      }
-    }
-    // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
-    // a host descendant of the sandbox instead of trusting that number.
-    if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
-    const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
-    child = spawn(command, commandArgs, {
-      cwd,
-      env: ownership.env,
-      detached: adapter.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
-  } catch (error) {
+  state.onAbort = onAbort
+  state.removeListeners = () => {
     process.removeListener('exit', onExit)
     signal?.removeEventListener('abort', onAbort)
-    sandbox?.dispose?.()
-    ownership.stop()
-    // A path-check refusal happens before the companion starts, so no broker diagnostic applies.
-    if (sandbox?.kind === 'bwrap' && error instanceof LaneSandboxRefusal) {
-      return Promise.resolve({ status: 1, stdout: '', stderr: `REFUSED: ${error.message}\n`, cleanup: [], sandbox: sandbox.line })
-    }
-    throw error
   }
-  const chunks = { stdout: [], stderr: [] }
-  let outputBytes = 0
-  let overflow = false
-  let cleanup = null
-  let companionAlive = true
-  let interrupted = null
-  const captureBroker = () => {
-    if (companionAlive && child.pid) ownership.capture(child.pid)
+  state.directoryNote = null
+  return state
+}
+
+function codexHome(ownership, env) {
+  return ownership.env.HOME ?? env.HOME ?? ''
+}
+
+function codexRequestPaths(state, namedPaths, cwd, env) {
+  const { sandbox, ownership, removeListeners } = state
+  if (typeof sandbox.unreadable !== 'function') {
+    refuseBeforeLaunch(sandbox, ownership, removeListeners)
+    return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot check request paths.\n', cleanup: [], sandbox: sandbox.line })
   }
-  captureBroker()
-  const captureTimer = setInterval(captureBroker, 25)
-  captureTimer.unref()
-  child.once('exit', () => {
-    companionAlive = false
-    clearInterval(captureTimer)
+  const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, codexHome(ownership, env)) })
+  // Only files refuse; an unreadable named directory is reported and the review runs.
+  const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
+  state.directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path), codexHome(ownership, env), env)
+  if (missing.length) {
+    refuseBeforeLaunch(sandbox, ownership, removeListeners)
+    return Promise.resolve({ status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, codexHome(ownership, env), env), cleanup: [], sandbox: sandbox.line })
+  }
+  return null
+}
+
+function codexSandboxPaths(state, namedPaths, cwd, env) {
+  const { sandbox, ownership, removeListeners } = state
+  if (sandbox.kind !== 'none' && (sandbox.kind !== 'bwrap' || sandbox.gitHistoryHidden !== true)) {
+    refuseBeforeLaunch(sandbox, ownership, removeListeners)
+    return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot withhold repository git history.\n', cleanup: [], sandbox: sandbox.line })
+  }
+  if (sandbox.kind === 'bwrap') return codexRequestPaths(state, namedPaths, cwd, env)
+  return null
+}
+
+function launchCodex(state, { companion, companionArgs, cwd, namedPaths, env, adapter, resolveSandbox }) {
+  const { ownership } = state
+  // second-opinion only reads the repository: it is bound read-only (H5).
+  state.sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true, hideGitHistory: true })
+  const { sandbox } = state
+  announceUnsandboxedLane(sandbox)
+  const refusal = codexSandboxPaths(state, namedPaths, cwd, env)
+  if (refusal) return refusal
+  // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
+  // a host descendant of the sandbox instead of trusting that number.
+  if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
+  const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
+  state.child = spawn(command, commandArgs, {
+    cwd,
+    env: ownership.env,
+    detached: adapter.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
-  stopEverything = (reason = null) => {
-    if (cleanup) return cleanup
-    if (reason) interrupted ??= reason
-    clearInterval(captureTimer)
-    captureBroker()
-    if (companionAlive) child.kill('SIGTERM')
-    cleanup = ownership.stop()
-    // The refreshed codex token is written back to the shared ~/.codex by the sandbox (host
-    // perimeter) only if it changed; the shared file stayed read-only during the run (H3).
-    sandbox.writeBackAuth?.()
-    sandbox.dispose?.()
-    return cleanup
+  return null
+}
+
+function codexLaunchError(state, error) {
+  const { sandbox, ownership } = state
+  state.removeListeners()
+  sandbox?.dispose?.()
+  ownership.stop()
+  // A path-check refusal happens before the companion starts, so no broker diagnostic applies.
+  if (sandbox?.kind === 'bwrap' && error instanceof LaneSandboxRefusal) {
+    return Promise.resolve({ status: 1, stdout: '', stderr: `REFUSED: ${error.message}\n`, cleanup: [], sandbox: sandbox.line })
   }
-  const collect = (stream, chunk) => {
-    if (overflow) return
-    outputBytes += chunk.length
-    if (outputBytes > maxOutputBytes) {
-      overflow = true
-      chunks.stdout.length = 0
-      chunks.stderr.length = 0
-      stopEverything()
-      return
-    }
-    chunks[stream].push(chunk)
+  throw error
+}
+
+function stopCodex(state, reason = null) {
+  if (state.cleanup) return state.cleanup
+  if (reason) state.interrupted ??= reason
+  clearInterval(state.captureTimer)
+  state.captureBroker()
+  if (state.companionAlive) state.child.kill('SIGTERM')
+  state.cleanup = state.ownership.stop()
+  // The refreshed codex token is written back to the shared ~/.codex by the sandbox (host
+  // perimeter) only if it changed; the shared file stayed read-only during the run (H3).
+  state.sandbox.writeBackAuth?.()
+  state.sandbox.dispose?.()
+  return state.cleanup
+}
+
+function collectCodexOutput(state, stream, chunk, maxOutputBytes) {
+  if (state.overflow) return
+  state.outputBytes += chunk.length
+  if (state.outputBytes > maxOutputBytes) {
+    state.overflow = true
+    state.chunks.stdout.length = 0
+    state.chunks.stderr.length = 0
+    state.stopEverything()
+    return
   }
-  child.stdout.on('data', (chunk) => collect('stdout', chunk))
-  child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  if (signal?.aborted) onAbort()
+  state.chunks[stream].push(chunk)
+}
+
+function codexOverflowResult(state, maxOutputBytes) {
+  return { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup: state.cleanup }
+}
+
+function codexCompletion(state, maxOutputBytes) {
   return new Promise((resolve) => {
     let settled = false
     const finish = (result) => {
       if (settled) return
       settled = true
-      clearInterval(captureTimer)
-      process.removeListener('exit', onExit)
-      signal?.removeEventListener('abort', onAbort)
-      resolve({ ...result, interrupted, sandbox: sandbox.line, notes: directoryNote ? [directoryNote] : [] })
+      clearInterval(state.captureTimer)
+      state.removeListeners()
+      resolve({ ...result, interrupted: state.interrupted, sandbox: state.sandbox.line, notes: state.directoryNote ? [state.directoryNote] : [] })
     }
-    child.once('error', (error) => {
-      stopEverything()
-      finish(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
-        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n`, cleanup })
+    state.child.once('error', (error) => {
+      state.stopEverything()
+      finish(state.overflow
+        ? codexOverflowResult(state, maxOutputBytes)
+        : { status: 1, stdout: Buffer.concat(state.chunks.stdout).toString(), stderr: `${Buffer.concat(state.chunks.stderr).toString()}${error.message}\n`, cleanup: state.cleanup })
     })
-    child.once('close', (code, childSignal) => {
-      companionAlive = false
-      stopEverything()
-      finish(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
-        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString(), cleanup })
+    state.child.once('close', (code, childSignal) => {
+      state.companionAlive = false
+      state.stopEverything()
+      finish(state.overflow
+        ? codexOverflowResult(state, maxOutputBytes)
+        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(state.chunks.stdout).toString(), stderr: Buffer.concat(state.chunks.stderr).toString(), cleanup: state.cleanup })
     })
   })
+}
+
+function superviseCodex(state, maxOutputBytes) {
+  const { child, ownership, signal } = state
+  Object.assign(state, { chunks: { stdout: [], stderr: [] }, outputBytes: 0, overflow: false, cleanup: null, companionAlive: true, interrupted: null })
+  state.captureBroker = () => {
+    if (state.companionAlive && child.pid) ownership.capture(child.pid)
+  }
+  state.captureBroker()
+  state.captureTimer = setInterval(state.captureBroker, 25)
+  state.captureTimer.unref()
+  child.once('exit', () => {
+    state.companionAlive = false
+    clearInterval(state.captureTimer)
+  })
+  state.stopEverything = (reason = null) => stopCodex(state, reason)
+  child.stdout.on('data', (chunk) => collectCodexOutput(state, 'stdout', chunk, maxOutputBytes))
+  child.stderr.on('data', (chunk) => collectCodexOutput(state, 'stderr', chunk, maxOutputBytes))
+  if (signal?.aborted) state.onAbort()
+  return codexCompletion(state, maxOutputBytes)
+}
+
+function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES, resolveSandbox = resolveLaneSandbox }) {
+  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
+  const ownership = adapter.createCodexBrokerOwnership(env)
+  const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
+  const state = codexLifecycle(ownership, signal)
+  try {
+    const refusal = launchCodex(state, { companion, companionArgs, cwd, namedPaths, env, adapter, resolveSandbox })
+    if (refusal) return refusal
+  } catch (error) {
+    return codexLaunchError(state, error)
+  }
+  return superviseCodex(state, maxOutputBytes)
 }
 
 export function listProcessTable(adapter) {
