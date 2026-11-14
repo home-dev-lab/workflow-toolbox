@@ -131,15 +131,15 @@ for (const [name, order, status] of [['refusal', '4', 0], ['admission', '3', 0],
 
 test('T3 replacement starts with the injected absolute interpreter and carries execArgv', () => {
   const command = suiteLockReplacementCommand('/plugin/bin/entry', ['run', '--', 'true'], 'linux', {
-    execPath: '/runtime dir/node', execArgv: ['--conditions=x', '--import', '/loader dir/register.mjs'],
+    execPath: '/runtime dir/node', execArgv: ['--conditions=x', '--import', 'file:///loader%20dir/register.mjs'],
   })
-  assert.equal(command, "'/runtime dir/node' '--conditions=x' '--import' '/loader dir/register.mjs' '/plugin/bin/entry' 'run' '--' 'true'",
+  assert.equal(command, "'/runtime dir/node' '--conditions=x' '--import' 'file:///loader%20dir/register.mjs' '/plugin/bin/entry' 'run' '--' 'true'",
     'replacement must preserve the running interpreter and Node execution flags')
 })
 
 for (const entry of ['wt-suite-lock.mjs', 'wt-suite-lock-run.mjs']) {
   test(`T3 ${entry} probes use the injected interpreter and execArgv`, () => {
-    const f = fixture(), flags = ['--conditions=x', '--import', '/loader.mjs']
+    const f = fixture(), flags = ['--conditions=x', '--import', 'file:///loader.mjs']
     f.check({ argv: ['node', `${f.own}\\bin\\${entry}`, 'run'], execPath: '/runtime/node', execArgv: flags })
     assert.equal(f.probes.length, entry === 'wt-suite-lock.mjs' ? 1 : 2)
     for (const probe of f.probes) {

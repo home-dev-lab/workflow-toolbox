@@ -760,7 +760,8 @@ describe('wt-actionable-gate-hook', () => {
     const text = blockText(runHook(payload, env))
     expect(text).toContain('snapshot file is missing although the producer reported writing it')
     expect(text).toContain('refresh the board snapshot')
-    expect(text).not.toContain('stale')
+    // The refresh command names this checkout's path, which may itself contain the word.
+    expect(text.split(REPO_ROOT).join('<repo>/')).not.toContain('stale')
     expect(text.split('\n')).toHaveLength(1)
   })
 

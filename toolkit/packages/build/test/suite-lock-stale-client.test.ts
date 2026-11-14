@@ -1,8 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import net from 'node:net'
 import { afterEach, expect, it } from 'vitest'
@@ -315,6 +315,23 @@ function runAsync(entry: string, args: string[], env: NodeJS.ProcessEnv, cwd: st
   })
 }
 
+// Resolves when the broker publishes its readiness marker; rejects if the broker exits first.
+function brokerReady(child: ReturnType<typeof spawn>, socket: string) {
+  const marker = `${socket}.ready`
+  return new Promise<void>((resolve, reject) => {
+    const watcher = watch(dirname(socket))
+    const finish = (failure?: Error) => {
+      watcher.close(); child.off('exit', exited)
+      if (failure) reject(failure); else resolve()
+    }
+    const exited = (code: number | null, signal: string | null) => finish(new Error(`broker exited (${code ?? signal}) before readiness`))
+    watcher.on('change', () => { if (existsSync(marker)) finish() })
+    watcher.on('error', (cause) => finish(cause))
+    child.once('exit', exited)
+    if (existsSync(marker)) finish()
+  })
+}
+
 async function stopBroker(child: ReturnType<typeof spawn>) {
   if (child.exitCode !== null || child.signalCode !== null) return
   const exited = new Promise<void>((resolve) => child.once('close', () => resolve()))
@@ -337,7 +354,7 @@ it.skipIf(process.platform === 'win32')('judges the broker writer tree and forwa
   const f = fixture(), socket = join(f.root, 'broker.sock')
   const broker = spawn(process.execPath, [join(f.old, 'bin/lib/host/lane-suite-lock-broker.mjs'), '--socket', socket, '--parent', String(process.pid), '--label', 'fixture'], { env: f.env, stdio: 'ignore' })
   try {
-    await expect.poll(() => existsSync(`${socket}.ready`), { timeout: 10_000 }).toBe(true)
+    await brokerReady(broker, socket)
     const reply = await new Promise<string>((resolve, reject) => {
       const connection = net.connect(socket)
       let text = ''
@@ -361,7 +378,7 @@ it.skipIf(process.platform === 'win32')('lets a stale sandbox wrapper delegate t
   const f = fixture(), socket = join(f.root, 'broker.sock')
   const broker = spawn(process.execPath, [join(f.current, 'bin/lib/host/lane-suite-lock-broker.mjs'), '--socket', socket, '--parent', String(process.pid), '--label', 'fixture'], { env: f.env, stdio: 'ignore' })
   try {
-    await expect.poll(() => existsSync(`${socket}.ready`), { timeout: 10_000 }).toBe(true)
+    await brokerReady(broker, socket)
     const result = f.run(undefined, { WT_SUITE_LOCK_BROKER: socket })
     expect(result.status, result.stderr).toBe(0)
     expect(existsSync(f.marker)).toBe(true)
