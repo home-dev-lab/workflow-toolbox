@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error plugin runtime module
-import { heavyJobAdvice, lightRunScope } from '../../../../plugin/bin/lib/suite-lock-light-scope.mjs'
+import { guardLightRun, heavyJobAdvice, lightRunScope } from '../../../../plugin/bin/lib/suite-lock-light-scope.mjs'
 // @ts-expect-error toolkit test-support runtime module
 import { suiteLeaseClassFor, vitestLightScopeGuard } from '../../../test-support/suite-lease.global-setup.mjs'
 // @ts-expect-error plugin runtime module
@@ -22,13 +22,13 @@ describe('lightRunScope on commands that cover several test files', () => {
     [['pnpm', 'exec', 'vitest', 'run', '--reporter=verbose', 'packages/build/test/node-false-green-probe.test.ts', 'packages/build/test/node-probe-gates.test.ts'], 2],
     [['pnpm', 'vitest', 'run', 'packages/build/test/plugin-superseded.test.ts', 'packages/build/test/delegate-wake'], 2],
     [['pnpm', '-C', 'toolkit', 'exec', 'vitest', 'run', 'a.test.ts', 'b.test.ts'], 2],
-    [['node', 'run-tests.mjs', 'lib/node-false-green-probe.test.mjs', 'run-gate-detached.test.mjs', 'run-tests.test.mjs'], 3],
     [['node', '--test', 'scripts/host-dispatch-r5-payload.test.mjs', 'scripts/host-dispatch-r7.selftest.mjs'], 2],
     [['env', 'FOO=1', 'node', '--test', '--test-concurrency=1', 'a.test.mjs', 'b.test.mjs'], 2],
     // Review round 1 (cross-family counterexamples): wrappers and shells the first cut missed.
     [['vitest', 'a.test.ts', 'b.test.ts', '--run'], 2],
     [['env', '-i', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
     [['/usr/bin/env', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
+    [['node', '--test', 'a.test.mjs', 'b.test.mjs', '--test-name-pattern', '--help'], 2],
     [['timeout', '--signal=TERM', '10s', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
     // Review round 2: wrappers with their own options.
     [['pnpm', 'dlx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'], 2],
@@ -69,7 +69,12 @@ describe('lightRunScope on runs a light ticket is for', () => {
     // Option values the runner reads as values, never as a second file (false hits would block a legitimate run).
     [['vitest', 'run', 'a.test.ts', '--hookTimeout', '60000']],
     [['vitest', 'run', 'a.test.ts', '--coverage.reporter', 'text']],
+    [['vitest', 'run', 'a.test.ts', '--coverage.reportsDirectory', 'b.test.ts']],
     [['node', '--test', '--test-shard', '1/3', 'a.test.mjs']],
+    // Review round 3: option values, a repeated path, and node options read only before the script.
+    [['node', '--test', '--test-coverage-exclude', 'b.test.mjs', 'a.test.mjs']],
+    [['node', '--title', 'scope-review', '--test', 'a.test.mjs']],
+    [['node', '--test', 'a.test.mjs', 'a.test.mjs']],
     // Review rounds 1-2: option values in package-script arguments; only test-file-shaped words count there.
     [['npm', 'test', '--', 'a.test.ts', '-t', 'b.test.ts']],
     [['npm', 'test', '--', 'run', 'a.test.ts']],
@@ -99,6 +104,14 @@ describe('lightRunScope on commands that run no test file, or that it cannot see
     [['node', '-e', 'console.log(process.argv.slice(1))', 'a.test.mjs', 'b.test.mjs']],
     [['node', '--test', '--help']],
     [['node', '--version']],
+    // Review round 3: a node script's own arguments, help and version of wrappers and runners, typecheck mode.
+    [['node', 'run-tests.mjs', 'a.test.mjs', 'b.test.mjs']],
+    [['node', 'tool.mjs', '--test', 'ordinary-argument']],
+    [['nice', '--help', 'node', '--test']],
+    [['npx', '--version', 'vitest', 'run']],
+    [['vitest', '--help']],
+    [['vitest', '--version']],
+    [['vitest', 'run', '--typecheck.only', 'a.test.ts', 'b.test.ts']],
     [['node', '/home/u/.claude/scripts/quality/run-quality.mjs', '--root', '/tmp/x']],
     [['bash', '.lane/red-proofs.sh']],
     [['zsh', '.lane/g1.zsh']],
@@ -255,5 +268,19 @@ describe('Vitest globalSetup light selections', () => {
     let text = ''
     vitestLightScopeGuard(['vitest', 'run', 'a.test.ts'], { env: {}, write: (chunk: string) => { text += chunk }, domain: () => scratch() })
     expect(text).toBe('')
+  })
+})
+
+describe('guardLightRun never turns a recording failure into a different run (review round 3)', () => {
+  const command = ['node', '--test', 'a.test.mjs', 'b.test.mjs']
+  const failing = { record: () => { throw new Error('record failed') }, end: () => { throw new Error('end failed') } }
+  it('warn mode lets the run through and its end never throws', () => {
+    const guard = guardLightRun({ command, route: 'cli', env: {}, write: () => {}, log: failing })
+    expect(guard.refused).toBe(false)
+    expect(() => guard.end(10)).not.toThrow()
+  })
+  it('refuse mode still refuses when the record fails, and a bad clock is survived', () => {
+    const guard = guardLightRun({ command, route: 'cli', env: { WT_SUITE_LOCK_LIGHT_SCOPE: 'refuse' }, write: () => {}, log: failing, now: () => Number.NaN })
+    expect(guard.refused).toBe(true)
   })
 })

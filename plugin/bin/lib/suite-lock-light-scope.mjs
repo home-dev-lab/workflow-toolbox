@@ -16,7 +16,8 @@ export const LIGHT_SCOPE_PROBATION = 'flip the default to refuse after >= 20 fir
 
 const TEST_FILE = /\.(test|spec|selftest)\.[cm]?[jt]sx?$/
 const SCRIPT_FILE = /\.[cm]?[jt]sx?$/
-const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-shard', '--test-reporter', '--test-reporter-destination',
+const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-shard', '--test-coverage-include',
+  '--test-coverage-exclude', '--test-global-setup', '--title', '--input-type', '--watch-path', '--disable-warning', '--test-reporter', '--test-reporter-destination',
   '--test-concurrency', '--test-timeout', '--import', '--require', '-r', '--env-file', '--conditions', '-C', '--loader', '--experimental-loader'])
 const VITEST_VALUE_FLAGS = new Set(['-t', '--testNamePattern', '--project', '--config', '-c', '--reporter', '--root', '-r', '--dir',
   '--pool', '--shard', '--exclude', '--outputFile', '--mode', '--environment', '--maxWorkers', '--minWorkers', '--testTimeout', '--retry', '--bail',
@@ -30,30 +31,28 @@ const NODE_NO_RUN = new Set(['-e', '--eval', '-p', '--print', '-h', '--help', '-
 const DIR_OPTIONS = new Set(['-C', '--dir', '--prefix', '--filter'])
 const VITEST_NON_RUN = new Set(['list', 'bench', 'init', 'typecheck'])
 const VITEST_RUN = new Set(['run', 'watch', 'dev', 'related'])
-// A lint, format or typecheck tool handed test files checks them; it never runs them.
-const LINT_TOOLS = new Set(['eslint', 'prettier', 'tsc', 'biome', 'oxlint', 'jscpd', 'depcruise', 'knip', 'stylelint'])
-const LINT_PACKAGES = new Set(['eslint', 'prettier', 'typescript', '@biomejs', 'oxlint', 'jscpd', 'dependency-cruiser', 'knip', 'stylelint'])
+// Options after which a wrapper or a runner prints and exits without running anything.
+const PRINT_AND_EXIT = new Set(['-h', '--help', '-v', '-V', '--version'])
 const SUITE_LOCK_CLI = /(^|\/)wt-suite-lock(\.mjs)?$/
 const OTHER = Object.freeze({ kind: 'other', files: [] })
 const SUITE_FILE_SECONDS = 24 // p90 hold of a one-file light run, suite-lock journal 2026-11-09..14
 const SUITE_MINUTES = 30
 
-const countScope = (files) => ({ kind: files.length > 1 ? 'multi' : 'single', files })
+// The same path named twice runs once.
+function countScope(files) {
+  const unique = [...new Set(files)]
+  return { kind: unique.length > 1 ? 'multi' : 'single', files: unique }
+}
 const baseName = (word) => String(word).split('/').pop()
 // A filter naming a directory or a glob selects a whole tree.
 const treeFilter = (word) => word === '.' || word.endsWith('/') || word.includes('*')
 
-function lintTool(script) {
-  const parts = String(script).split('/')
-  return LINT_TOOLS.has(parts.at(-1).replace(/\.[cm]?js$/, '')) || parts.slice(0, -1).some((part) => LINT_PACKAGES.has(part))
-}
-
-// Does this flag take the next word as its value? Known value flags do; a dotted option (`--coverage.reporter
-// text`) does unless the next word is another flag or a test file. Unknown flags are read as booleans.
+// Does this flag take the next word as its value? Known value flags do, and so does a dotted option
+// (`--coverage.reporter text`) unless the next word is another flag. Unknown flags are read as booleans.
 function consumesValue(word, next, valueFlags) {
   if (word.includes('=') || next === undefined) return false
   if (valueFlags.has(word)) return true
-  return word.startsWith('--') && word.includes('.') && !String(next).startsWith('-') && !TEST_FILE.test(String(next))
+  return word.startsWith('--') && word.includes('.') && !String(next).startsWith('-')
 }
 
 // Positional words of an argument list. A bare number is never a file (an unknown flag's value): when in
@@ -68,23 +67,27 @@ function positionals(args, valueFlags) {
   return out
 }
 
-function runsNodeTest(args) {
-  return args.some((word) => word === '--test' || String(word).startsWith('--test='))
+// Node's own options: the option words before the first positional word (values skipped). Anything after
+// the script belongs to the script, so `node tool.mjs --test x` does not run the test runner.
+function nodeLeadingOptions(args) {
+  const options = []
+  for (let index = 0; index < args.length && String(args[index]).startsWith('-'); index += 1) {
+    options.push(String(args[index]))
+    if (consumesValue(String(args[index]), args[index + 1], NODE_VALUE_FLAGS)) index += 1
+  }
+  return options
 }
 
-// `node a.test.mjs` runs one file; `node <runner> a.test.mjs b.test.mjs` hands a runner several.
+// `node a.test.mjs` runs one file. A script handed test-file arguments is not assumed to run them.
 function nodeScriptScope(targets) {
-  const [script, ...rest] = targets
-  if (script === undefined || lintTool(script)) return OTHER
-  if (TEST_FILE.test(script)) return countScope([script])
-  const files = rest.filter((word) => TEST_FILE.test(word))
-  return files.length > 1 ? countScope(files) : OTHER
+  return targets.length > 0 && TEST_FILE.test(targets[0]) ? countScope([targets[0]]) : OTHER
 }
 
 function nodeScope(args) {
-  if (args.some((word) => NODE_NO_RUN.has(word) || /^--(eval|print)=/.test(word))) return OTHER
+  const options = nodeLeadingOptions(args)
+  if (options.some((word) => NODE_NO_RUN.has(word) || /^--(eval|print)=/.test(word))) return OTHER
   const targets = positionals(args, NODE_VALUE_FLAGS)
-  if (!runsNodeTest(args)) return nodeScriptScope(targets)
+  if (!options.some((word) => word === '--test' || word.startsWith('--test='))) return nodeScriptScope(targets)
   if (targets.length === 0) return { kind: 'suite', files: [] }
   // A directory or a glob node expands itself covers a whole tree.
   if (targets.some((word) => word.includes('*') || !SCRIPT_FILE.test(word))) return { kind: 'suite', files: targets }
@@ -100,6 +103,7 @@ function filterScope(targets) {
 // `vitest [run|watch|related] a b` (filters), never `vitest list|bench|init|typecheck`.
 function vitestScope(args) {
   if (VITEST_NON_RUN.has(args[0])) return OTHER
+  if (args.some((word) => PRINT_AND_EXIT.has(word) || String(word).startsWith('--typecheck'))) return OTHER
   return filterScope(positionals(VITEST_RUN.has(args[0]) ? args.slice(1) : args, VITEST_VALUE_FLAGS))
 }
 
@@ -121,25 +125,24 @@ function packageScriptScope(args) {
   return SUITE_SCRIPTS.has(script) ? testScriptScope(rest) : OTHER
 }
 
-// env [-i] [-u NAME] [NAME=value...] command
-function unwrapEnv(rest) {
+// npx [--yes|-y|--package=x...] command; nice [-n N] command. A help or version option runs nothing after it.
+function unwrapLeadingOptions(rest, valued) {
   let index = 0
-  while (index < rest.length && rest[index].startsWith('-')) index += rest[index] === '-u' || rest[index] === '-C' ? 2 : 1
+  while (index < rest.length && rest[index].startsWith('-')) {
+    if (PRINT_AND_EXIT.has(rest[index])) return []
+    index += valued.has(rest[index]) ? 2 : 1
+  }
   return rest.slice(index)
 }
 
-// npx [--yes|-y|--package=x...] command; nice [-n N] command
-function unwrapLeadingOptions(rest, valued) {
-  let index = 0
-  while (index < rest.length && rest[index].startsWith('-')) index += valued.has(rest[index]) ? 2 : 1
-  return rest.slice(index)
+// env [-i] [-u NAME] [NAME=value...] command
+function unwrapEnv(rest) {
+  return unwrapLeadingOptions(rest, new Set(['-u', '--unset', '-C', '--chdir', '-S', '--split-string']))
 }
 
 // timeout [-s SIGNAL] [-k DURATION] [--option=value...] DURATION command
 function unwrapTimeout(rest) {
-  let index = 0
-  while (index < rest.length && rest[index].startsWith('-')) index += rest[index] === '-s' || rest[index] === '-k' ? 2 : 1
-  return rest.slice(index + 1)
+  return unwrapLeadingOptions(rest, new Set(['-s', '--signal', '-k', '--kill-after'])).slice(1)
 }
 
 // `wt-suite-lock run [flags] -- command`, directly or as `node <path>/wt-suite-lock.mjs`: the covered command.
@@ -231,15 +234,20 @@ export function lightScopeMessage({ scope, mode, advice }) {
 
 const FILE_LIST_CAP = 40
 
-// Checks one light request. Returns { refused, end(heldMs) }. `log` records firings; it must never throw.
+// Records one firing; any failure (clock, id, file) only loses the record, never changes the run.
+function recordFiring(log, entry, now) {
+  try { return log ? log.record({ ts: new Date(now()).toISOString(), ...entry }) : null } catch { return null }
+}
+
+// Checks one light request. Returns { refused, end(heldMs) }. Neither the warning nor the record can throw.
 export function guardLightRun({ command, route, env = process.env, write, log, now = Date.now }) {
   const scope = lightRunScope(command)
   if (!coversSeveralTestFiles(scope)) return { refused: false, end: () => {} }
   const mode = lightScopeMode(env)
   try { write(lightScopeMessage({ scope, mode, advice: heavyJobAdvice({ command, scope, env }) })) } catch { /* a closed stderr never stops the run */ }
-  const id = log?.record({ ts: new Date(now()).toISOString(), route, mode, outcome: mode === 'refuse' ? 'refused' : 'warned',
-    kind: scope.kind, fileCount: scope.files.length, files: scope.files.slice(0, FILE_LIST_CAP), project: env.WT_SUITE_LOCK_PROJECT?.trim() || null })
-  return { refused: mode === 'refuse', end: (heldMs) => { if (id) log.end(id, heldMs) } }
+  const id = recordFiring(log, { route, mode, outcome: mode === 'refuse' ? 'refused' : 'warned', kind: scope.kind,
+    fileCount: scope.files.length, files: scope.files.slice(0, FILE_LIST_CAP), project: env.WT_SUITE_LOCK_PROJECT?.trim() || null }, now)
+  return { refused: mode === 'refuse', end: (heldMs) => { try { if (id) log.end(id, heldMs) } catch { /* the hold is lost, not the run */ } } }
 }
 
 function firingLine(firing) {

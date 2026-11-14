@@ -23,12 +23,14 @@ function appendLine(root, entry) {
 export function lightScopeLog(root, { cwd = process.cwd(), now = Date.now } = {}) {
   return {
     record(entry) {
-      const id = randomUUID()
-      return appendLine(root, { event: 'fire', id, ...entry, cwd }) ? id : null
+      try {
+        const id = randomUUID()
+        return appendLine(root, { event: 'fire', id, ...entry, cwd }) ? id : null
+      } catch { return null }
     },
     end(id, heldMs) {
       const holdS = Number.isFinite(heldMs) ? Math.round(heldMs) / 1000 : null
-      appendLine(root, { event: 'end', id, ts: new Date(now()).toISOString(), holdS })
+      try { appendLine(root, { event: 'end', id, ts: new Date(now()).toISOString(), holdS }) } catch { /* bad clock: the hold is lost */ }
     },
   }
 }
