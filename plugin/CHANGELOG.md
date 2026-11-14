@@ -10,6 +10,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.
   Its preload now safely rolls back only its own changes and confirms compiler sharing during entry execution, including preserved symlink entries.
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
+
+### Added
+- wt-suite-lock warns when a light run covers several test files or a whole suite (node --test, vitest, pnpm/npm test; the toolkit's Vitest globalSetup for 2 to 8 selected files too), records each firing and its hold in light-scope.jsonl under the lock root, and lists them with wt-suite-lock light-scope. WT_SUITE_LOCK_LIGHT_SCOPE=refuse refuses instead; the default stays warn until at least 20 firings over at least 3 days are each confirmed to cover two or more test files with no false hit. The message names the command to run instead: with WT_SUITE_LOCK_HEAVY_JOB set to a heavy-job wrapper, that wrapper with --project, --expected-min and --suite-lock; with the variable unset (the public default) or inside a lane, the exclusive wt-suite-lock run -- <command>, with that reason. Blind spot: a script file (bash x.sh) is opaque and never flagged.
+
 ## [0.200.1] - 2026-11-13
 
 Patch release: fixes the two native-Windows test defects listed under Known issues in 0.200.0.
