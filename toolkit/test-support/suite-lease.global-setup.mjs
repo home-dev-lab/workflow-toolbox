@@ -75,8 +75,8 @@ function listenForSuiteLeaseEnd(lease, scopeGuard) {
   let lost = false
   const granted = performance.now()
   process.once('exit', (exit) => {
+    scopeGuard?.end(performance.now() - granted) // before release: a release failure never loses the hold
     releaseSuiteLock(lease, { exit, served: !lost })
-    scopeGuard?.end(performance.now() - granted)
   })
   lease.lost?.then((reason) => {
     lost = true

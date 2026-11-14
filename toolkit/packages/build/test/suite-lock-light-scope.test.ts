@@ -26,6 +26,13 @@ describe('lightRunScope on commands that cover several test files', () => {
     [['node', '--test', 'scripts/host-dispatch-r5-payload.test.mjs', 'scripts/host-dispatch-r7.selftest.mjs'], 2],
     [['env', 'FOO=1', 'node', '--test', '--test-concurrency=1', 'a.test.mjs', 'b.test.mjs'], 2],
     [['bash', '-c', 'node --test a.test.mjs && node --test b.test.mjs'], 2],
+    // Review round 1 (cross-family counterexamples): wrappers and shells the first cut missed.
+    [['vitest', 'a.test.ts', 'b.test.ts', '--run'], 2],
+    [['bash', '-lc', 'node --test a.test.mjs b.test.mjs'], 2],
+    [['env', '-i', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
+    [['/usr/bin/env', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
+    [['timeout', '--signal=TERM', '10s', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
+    [['node', '/x/plugin/bin/wt-suite-lock.mjs', 'run', '--light', '--', 'node', '--test', 'a.test.mjs', 'b.test.mjs'], 2],
   ])('flags %j as multi (%i files)', (argv, count) => {
     const result = scope(argv)
     expect(result.kind).toBe('multi')
@@ -41,6 +48,8 @@ describe('lightRunScope on commands that cover several test files', () => {
     [['node', '--test', 'scripts/host-dispatch*.test.mjs']],
     [['pnpm', 'test']],
     [['npm', 'run', 'test']],
+    [['vitest', 'run', 'src/']],
+    [['pnpm', 'test', '--', 'a.test.ts', 'src/']],
   ])('flags %j as a whole suite', (argv) => {
     expect(scope(argv).kind).toBe('suite')
   })
@@ -55,6 +64,14 @@ describe('lightRunScope on runs a light ticket is for', () => {
     [['pnpm', 'vitest', 'run', 'packages/build/test/sdk-pilot-lifecycle-server.test.ts', '--reporter', 'verbose']],
     [['node', '--test', '--test-name-pattern', 'D1 real supervisor', 'scripts/host-dispatch-real.test.mjs']],
     [['node', '.lane/quality-owner.selftest.mjs']],
+    // Option values the runner reads as values, never as a second file (false hits would block a legitimate run).
+    [['vitest', 'run', 'a.test.ts', '--hookTimeout', '60000']],
+    [['vitest', 'run', 'a.test.ts', '--coverage.reporter', 'text']],
+    [['node', '--test', '--test-shard', '1/3', 'a.test.mjs']],
+    // Review round 1: quoted words and option values in shell strings and package-script arguments.
+    [['bash', '-c', 'node --test "a.test.mjs"']],
+    [['bash', '-c', 'vitest run a.test.ts -t "works correctly"']],
+    [['npm', 'test', '--', 'a.test.ts', '-t', 'b.test.ts']],
   ])('accepts %j as one file', (argv) => {
     const result = scope(argv)
     expect(result.kind).toBe('single')
@@ -66,6 +83,9 @@ describe('lightRunScope on runs a light ticket is for', () => {
     [['pnpm', 'lint']],
     [['pnpm', 'exec', 'eslint', '--max-warnings', '0', 'a.test.ts', 'b.test.ts']],
     [['pnpm', 'vitest', 'list', 'a.test.ts', 'b.test.ts']],
+    // Review round 1: lint tools handed test files are a lint, never a multi-file test run.
+    [['node', 'node_modules/eslint/bin/eslint.js', 'a.test.ts', 'b.test.ts']],
+    [['bash', '-c', 'eslint a.test.ts b.test.ts']],
     [['node', '/home/u/.claude/scripts/quality/run-quality.mjs', '--root', '/tmp/x']],
     [['bash', '.lane/red-proofs.sh']],
     [['zsh', '.lane/g1.zsh']],
@@ -197,6 +217,13 @@ describe('Vitest globalSetup light selections', () => {
     expect(text).toContain('wt-suite-lock run -- pnpm exec vitest run a.test.ts b.test.ts')
     guard.end(1500)
     expect(readLightScopeFirings(root)).toMatchObject([{ route: 'vitest', outcome: 'warned', fileCount: 2, holdS: 1.5 }])
+  })
+
+  it('never lets a failing stderr write stop the run (review round 1)', () => {
+    const root = scratch()
+    const guard = vitestLightScopeGuard(['vitest', 'run', 'a.test.ts', 'b.test.ts'], { env: {}, write: () => { throw new Error('EPIPE') }, domain: () => root })
+    expect(guard.refused).toBe(false)
+    expect(readLightScopeFirings(root)).toMatchObject([{ outcome: 'warned', fileCount: 2 }])
   })
 
   it('stays silent for one file', () => {

@@ -6,7 +6,8 @@ import { join } from 'node:path'
 // Vitest globalSetup process), one appendFileSync of one short line each; a torn or foreign line is skipped
 // by the reader. A failing write never changes the run: warn mode lets it through, refuse mode has already
 // decided. Lines: { event: 'fire', id, ts, route, mode, outcome, kind, fileCount, files, project, cwd } and
-// { event: 'end', id, ts, holdS } once the ticket's hold ends.
+// { event: 'end', id, ts, holdS } once the ticket's hold ends. holdS is the covered command's run time under the
+// lease (CLI) or grant-to-exit time (Vitest), in seconds; null when the run never ran under a local lease.
 export function lightScopeLogPath(root) {
   return join(root, 'light-scope.jsonl')
 }

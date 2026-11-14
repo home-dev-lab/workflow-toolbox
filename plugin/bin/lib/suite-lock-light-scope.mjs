@@ -14,28 +14,53 @@ export const LIGHT_SCOPE_PROBATION = 'flip the default to refuse after >= 20 fir
 
 const TEST_FILE = /\.(test|spec|selftest)\.[cm]?[jt]sx?$/
 const SCRIPT_FILE = /\.[cm]?[jt]sx?$/
-const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-reporter', '--test-reporter-destination',
+const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-shard', '--test-reporter', '--test-reporter-destination',
   '--test-concurrency', '--test-timeout', '--import', '--require', '-r', '--env-file', '--conditions', '-C', '--loader', '--experimental-loader'])
 const VITEST_VALUE_FLAGS = new Set(['-t', '--testNamePattern', '--project', '--config', '-c', '--reporter', '--root', '-r', '--dir',
-  '--pool', '--shard', '--exclude', '--outputFile', '--mode', '--environment', '--maxWorkers', '--minWorkers', '--testTimeout', '--retry', '--bail'])
+  '--pool', '--shard', '--exclude', '--outputFile', '--mode', '--environment', '--maxWorkers', '--minWorkers', '--testTimeout', '--retry', '--bail',
+  '--hookTimeout', '--teardownTimeout', '--slowTestThreshold', '--maxConcurrency'])
+const ANY_VALUE_FLAGS = new Set([...NODE_VALUE_FLAGS, ...VITEST_VALUE_FLAGS])
 const SUITE_SCRIPTS = new Set(['test', 'test:all', 'test:unit'])
 const PACKAGE_MANAGERS = new Set(['pnpm', 'npm', 'yarn'])
-const PREFIX_WRAPPERS = new Set(['npx', 'env', 'nice', 'setsid', 'time', 'command', 'exec'])
+const PLAIN_WRAPPERS = new Set(['npx', 'nice', 'setsid', 'time', 'command', 'exec'])
 const DIR_OPTIONS = new Set(['-C', '--dir', '--prefix', '--filter'])
 const SHELLS = new Set(['bash', 'sh', 'zsh'])
+const VITEST_NON_RUN = new Set(['list', 'bench', 'init', 'typecheck'])
+const VITEST_RUN = new Set(['run', 'watch', 'dev', 'related'])
+// A lint, format or typecheck tool handed test files checks them; it never runs them.
+const LINT_TOOLS = new Set(['eslint', 'prettier', 'tsc', 'biome', 'oxlint', 'jscpd', 'depcruise', 'knip', 'stylelint'])
+const LINT_PACKAGES = new Set(['eslint', 'prettier', 'typescript', '@biomejs', 'oxlint', 'jscpd', 'dependency-cruiser', 'knip', 'stylelint'])
+const SUITE_LOCK_CLI = /(^|\/)wt-suite-lock(\.mjs)?$/
 const OTHER = Object.freeze({ kind: 'other', files: [] })
 const SUITE_FILE_SECONDS = 24 // p90 hold of a one-file light run, suite-lock journal 2026-11-09..14
 const SUITE_MINUTES = 30
 
 const countScope = (files) => ({ kind: files.length > 1 ? 'multi' : 'single', files })
+const baseName = (word) => String(word).split('/').pop()
+// A filter naming a directory or a glob selects a whole tree.
+const treeFilter = (word) => word === '.' || word.endsWith('/') || word.includes('*')
 
-// Positional words of an argument list; a flag in valueFlags consumes the next word unless written --flag=value.
+function lintTool(script) {
+  const parts = String(script).split('/')
+  return LINT_TOOLS.has(parts.at(-1).replace(/\.[cm]?js$/, '')) || parts.slice(0, -1).some((part) => LINT_PACKAGES.has(part))
+}
+
+// Does this flag take the next word as its value? Known value flags do; a dotted option (`--coverage.reporter
+// text`) does unless the next word is another flag or a test file. Unknown flags are read as booleans.
+function consumesValue(word, next, valueFlags) {
+  if (word.includes('=') || next === undefined) return false
+  if (valueFlags.has(word)) return true
+  return word.startsWith('--') && word.includes('.') && !String(next).startsWith('-') && !TEST_FILE.test(String(next))
+}
+
+// Positional words of an argument list. A bare number is never a file (an unknown flag's value): when in
+// doubt this errs towards counting fewer files, so a guess never refuses a legitimate one-file run.
 function positionals(args, valueFlags) {
   const out = []
   for (let index = 0; index < args.length; index += 1) {
     const word = String(args[index])
-    if (!word.startsWith('-')) out.push(word)
-    else if (!word.includes('=') && valueFlags.has(word)) index += 1
+    if (word.startsWith('-')) index += consumesValue(word, args[index + 1], valueFlags) ? 1 : 0
+    else if (!/^\d+(\.\d+)?$/.test(word)) out.push(word)
   }
   return out
 }
@@ -44,65 +69,112 @@ function runsNodeTest(args) {
   return args.some((word) => word === '--test' || String(word).startsWith('--test='))
 }
 
+// `node a.test.mjs` runs one file; `node <runner> a.test.mjs b.test.mjs` hands a runner several.
+function nodeScriptScope(targets) {
+  const [script, ...rest] = targets
+  if (script === undefined || lintTool(script)) return OTHER
+  if (TEST_FILE.test(script)) return countScope([script])
+  const files = rest.filter((word) => TEST_FILE.test(word))
+  return files.length > 1 ? countScope(files) : OTHER
+}
+
 function nodeScope(args) {
   const targets = positionals(args, NODE_VALUE_FLAGS)
-  if (!runsNodeTest(args)) {
-    const files = targets.filter((word) => TEST_FILE.test(word))
-    if (files.length > 1) return countScope(files)
-    return targets.length > 0 && TEST_FILE.test(targets[0]) ? countScope([targets[0]]) : OTHER
-  }
+  if (!runsNodeTest(args)) return nodeScriptScope(targets)
   if (targets.length === 0) return { kind: 'suite', files: [] }
   // A directory or a glob node expands itself covers a whole tree.
   if (targets.some((word) => word.includes('*') || !SCRIPT_FILE.test(word))) return { kind: 'suite', files: targets }
   return countScope(targets)
 }
 
-// `vitest run a b`, `vitest a b` (filters), never `vitest list|bench|typecheck`.
-function vitestScope(args) {
-  const first = args[0]
-  if (first !== undefined && first !== 'run' && !String(first).startsWith('-')) return OTHER
-  const targets = positionals(first === 'run' ? args.slice(1) : args, VITEST_VALUE_FLAGS)
-  return targets.length === 0 ? { kind: 'suite', files: [] } : countScope(targets)
+// Filters a test runner receives: none, a directory or a glob select a whole suite or tree.
+function filterScope(targets) {
+  if (targets.length === 0 || targets.some(treeFilter)) return { kind: 'suite', files: targets }
+  return countScope(targets)
 }
 
-function packageScriptScope(manager, args) {
+// `vitest [run|watch|related] a b` (filters), never `vitest list|bench|init|typecheck`.
+function vitestScope(args) {
+  if (VITEST_NON_RUN.has(args[0])) return OTHER
+  return filterScope(positionals(VITEST_RUN.has(args[0]) ? args.slice(1) : args, VITEST_VALUE_FLAGS))
+}
+
+function packageScriptScope(args) {
   const script = args[0] === 'run' ? args[1] : args[0]
-  const rest = args.slice(args[0] === 'run' ? 2 : 1)
+  const rest = args.slice(args[0] === 'run' ? 2 : 1).filter((word) => word !== '--')
   if (script === 'vitest') return vitestScope(rest)
-  if (!SUITE_SCRIPTS.has(script)) return OTHER
-  const files = rest.filter((word) => TEST_FILE.test(word))
-  return files.length === 0 ? { kind: 'suite', files: [] } : countScope(files)
+  return SUITE_SCRIPTS.has(script) ? filterScope(positionals(rest, ANY_VALUE_FLAGS)) : OTHER
+}
+
+// env [-i] [-u NAME] [NAME=value...] command
+function unwrapEnv(rest) {
+  let index = 0
+  while (index < rest.length && rest[index].startsWith('-')) index += rest[index] === '-u' || rest[index] === '-C' ? 2 : 1
+  return rest.slice(index)
+}
+
+// timeout [-s SIGNAL] [-k DURATION] [--option=value...] DURATION command
+function unwrapTimeout(rest) {
+  let index = 0
+  while (index < rest.length && rest[index].startsWith('-')) index += rest[index] === '-s' || rest[index] === '-k' ? 2 : 1
+  return rest.slice(index + 1)
+}
+
+// `wt-suite-lock run [flags] -- command`, directly or as `node <path>/wt-suite-lock.mjs`: the covered command.
+function unwrapSuiteLock(words) {
+  const separator = words.indexOf('--')
+  return separator >= 0 ? words.slice(separator + 1) : null
+}
+
+// `pnpm -C dir ...` keeps the manager; `pnpm exec x` / `pnpm dlx x` hands over to x.
+function packageManagerStep(head, rest) {
+  if (DIR_OPTIONS.has(rest[0])) return [head, ...rest.slice(2)]
+  return rest[0] === 'exec' || rest[0] === 'dlx' ? rest : null
 }
 
 // One unwrapping step, or null when the head is the runner itself.
-function unwrapStep(head, rest) {
-  if (/^[A-Za-z_]\w*=/.test(head) || PREFIX_WRAPPERS.has(head)) return rest
-  if (head === 'timeout') return rest.slice(1)
-  if (!PACKAGE_MANAGERS.has(head)) return null
-  if (DIR_OPTIONS.has(rest[0])) return [head, ...rest.slice(2)]
-  return rest[0] === 'exec' || rest[0] === 'dlx' ? rest : null
+function unwrapStep(words) {
+  const [head, ...rest] = words
+  const base = baseName(head)
+  if (/^[A-Za-z_]\w*=/.test(head) || PLAIN_WRAPPERS.has(base)) return rest
+  if (base === 'env') return unwrapEnv(rest)
+  if (base === 'timeout') return unwrapTimeout(rest)
+  if (SUITE_LOCK_CLI.test(head) || (base === 'node' && SUITE_LOCK_CLI.test(rest[0] ?? ''))) return unwrapSuiteLock(rest)
+  return PACKAGE_MANAGERS.has(base) ? packageManagerStep(head, rest) : null
 }
 
 // Strips environment assignments and launch wrappers down to the runner's own argv.
 function unwrap(argv) {
   let words = argv.map(String)
   for (let step = 0; step < 12 && words.length > 0; step += 1) {
-    const next = unwrapStep(words[0], words.slice(1))
+    const next = unwrapStep(words)
     if (next === null) break
     words = next
   }
   return words
 }
 
-// A shell string: every test file it names counts (sequential runs under one lease), then each segment.
+// Quote-aware split of one shell segment into words, as the shell would hand them to the command.
+function shellWords(text) {
+  return [...text.matchAll(/'([^']*)'|"([^"]*)"|([^\s'"]+)/g)].map((match) => match[1] ?? match[2] ?? match[3])
+}
+
+// A shell string: each command segment is classified on its own and their test files add up, since
+// sequential runs share one lease. A lint or any other command names files without running them.
 function shellStringScope(text) {
-  const files = [...new Set(text.split(/[\s;&|()"']+/).filter((word) => TEST_FILE.test(word)))]
-  if (files.length > 1) return countScope(files)
+  const files = []
   for (const segment of text.split(/&&|\|\||;|\||\n/)) {
-    const scope = lightRunScope(segment.trim().split(/\s+/).filter(Boolean))
-    if (scope.kind === 'suite' || scope.kind === 'multi') return scope
+    const scope = lightRunScope(shellWords(segment.trim()))
+    if (scope.kind === 'suite') return scope
+    if (scope.kind !== 'other') files.push(...scope.files)
   }
-  return files.length === 1 ? countScope(files) : OTHER
+  return files.length === 0 ? OTHER : countScope([...new Set(files)])
+}
+
+// `bash -c`, `bash -lc`, `sh -ec`: the option word that carries `c`, followed by the command string.
+function shellCommandString(args) {
+  const index = args.findIndex((word) => /^-[a-z]+$/.test(word) && word.includes('c'))
+  return index >= 0 && typeof args[index + 1] === 'string' ? args[index + 1] : null
 }
 
 // { kind: 'single' | 'multi' | 'suite' | 'other', files }: how many test files a command covers.
@@ -110,12 +182,12 @@ export function lightRunScope(argv) {
   if (!Array.isArray(argv)) return OTHER
   const [head, ...rest] = unwrap(argv)
   if (head === undefined) return OTHER
-  const base = head.split('/').pop()
+  const base = baseName(head)
   if (base === 'node') return nodeScope(rest)
   if (base === 'vitest') return vitestScope(rest)
-  if (PACKAGE_MANAGERS.has(base)) return packageScriptScope(base, rest)
-  if (SHELLS.has(base) && rest[0] === '-c' && typeof rest[1] === 'string') return shellStringScope(rest[1])
-  return OTHER
+  if (PACKAGE_MANAGERS.has(base)) return packageScriptScope(rest)
+  const script = SHELLS.has(base) ? shellCommandString(rest) : null
+  return script === null ? OTHER : shellStringScope(script)
 }
 
 export function coversSeveralTestFiles(scope) {
@@ -160,7 +232,7 @@ export function guardLightRun({ command, route, env = process.env, write, log, n
   const scope = lightRunScope(command)
   if (!coversSeveralTestFiles(scope)) return { refused: false, end: () => {} }
   const mode = lightScopeMode(env)
-  write(lightScopeMessage({ scope, mode, advice: heavyJobAdvice({ command, scope, env }) }))
+  try { write(lightScopeMessage({ scope, mode, advice: heavyJobAdvice({ command, scope, env }) })) } catch { /* a closed stderr never stops the run */ }
   const id = log?.record({ ts: new Date(now()).toISOString(), route, mode, outcome: mode === 'refuse' ? 'refused' : 'warned',
     kind: scope.kind, fileCount: scope.files.length, files: scope.files.slice(0, FILE_LIST_CAP), project: env.WT_SUITE_LOCK_PROJECT?.trim() || null })
   return { refused: mode === 'refuse', end: (heldMs) => { if (id) log.end(id, heldMs) } }
