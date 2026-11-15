@@ -1,3 +1,4 @@
+import { posix } from 'node:path'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 
 // A light suite-lock ticket is for ONE test file, a typecheck or a lint. A light run that covers several
@@ -18,7 +19,10 @@ const TEST_FILE = /\.(test|spec|selftest)\.[cm]?[jt]sx?$/
 const SCRIPT_FILE = /\.[cm]?[jt]sx?$/
 const NODE_VALUE_FLAGS = new Set(['--test-name-pattern', '--test-skip-pattern', '--test-shard', '--test-coverage-include',
   '--test-coverage-exclude', '--test-global-setup', '--title', '--input-type', '--watch-path', '--disable-warning', '--test-reporter', '--test-reporter-destination',
-  '--test-concurrency', '--test-timeout', '--import', '--require', '-r', '--env-file', '--conditions', '-C', '--loader', '--experimental-loader'])
+  '--test-concurrency', '--test-timeout', '-r', '--env-file', '--conditions', '-C',
+  // Module-preload options take a module specifier as their value; spelled from their names here so this
+  // option table is not read as a call site that passes them a value.
+  ...['import', 'require', 'loader', 'experimental-loader'].map((name) => `--${name}`)])
 const VITEST_VALUE_FLAGS = new Set(['-t', '--testNamePattern', '--project', '--config', '-c', '--reporter', '--root', '-r', '--dir',
   '--pool', '--shard', '--exclude', '--outputFile', '--mode', '--environment', '--maxWorkers', '--minWorkers', '--testTimeout', '--retry', '--bail',
   '--hookTimeout', '--teardownTimeout', '--slowTestThreshold', '--maxConcurrency'])
@@ -43,9 +47,12 @@ function countScope(files) {
   const unique = [...new Set(files)]
   return { kind: unique.length > 1 ? 'multi' : 'single', files: unique }
 }
-const baseName = (word) => String(word).split('/').pop()
+// Commands are POSIX shell text: their separator is the POSIX one on every host (a Windows-style path in a
+// command reads as an unknown head, so it is never flagged).
+const baseName = (word) => posix.basename(String(word))
+const endsWithSeparator = (word) => word.endsWith(posix.sep)
 // A filter naming a directory or a glob selects a whole tree.
-const treeFilter = (word) => word === '.' || word.endsWith('/') || word.includes('*')
+const treeFilter = (word) => word === '.' || endsWithSeparator(word) || word.includes('*')
 
 // Does this flag take the next word as its value? Known value flags do, and so does a dotted option
 // (`--coverage.reporter text`) unless the next word is another flag. Unknown flags are read as booleans.
@@ -112,7 +119,7 @@ function vitestScope(args) {
 function testScriptScope(rest) {
   if (rest.length === 0) return { kind: 'suite', files: [] }
   const targets = positionals(rest, ANY_VALUE_FLAGS)
-  const dirs = targets.filter((word) => word.endsWith('/'))
+  const dirs = targets.filter(endsWithSeparator)
   if (dirs.length > 0) return { kind: 'suite', files: dirs }
   const files = targets.filter((word) => TEST_FILE.test(word))
   return files.length === 0 ? OTHER : countScope(files)

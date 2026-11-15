@@ -150,7 +150,8 @@ const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-suite-lock.mjs', im
 
 function runCli(args: string[], env: Record<string, string>, cwd: string): Promise<{ code: number | null; stderr: string; stdout: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK_PRIORITY: 'P1', WT_SUITE_LOCK_HEAVY_JOB: '', WT_SUITE_LOCK_LIGHT_SCOPE: '', ...env } })
+    // HOME, XDG_STATE_HOME and CLAUDE_CONFIG_DIR are sealed to the scratch dir: the CLI must never read the owner's state.
+    const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, HOME: cwd, XDG_STATE_HOME: cwd, CLAUDE_CONFIG_DIR: cwd, WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK_PRIORITY: 'P1', WT_SUITE_LOCK_HEAVY_JOB: '', WT_SUITE_LOCK_LIGHT_SCOPE: '', ...env } })
     let stderr = ''
     let stdout = ''
     child.stderr.on('data', (chunk) => { stderr += chunk })
