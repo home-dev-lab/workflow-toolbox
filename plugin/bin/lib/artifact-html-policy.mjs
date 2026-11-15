@@ -13,6 +13,7 @@ const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' d
 const INTERACTIVE_CSP = "default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
 
 // Every HTML mode, the unmarked default included, keyed by its marker name ('default' has no marker).
+/** @knipTestSeam Imported by toolkit/packages/build/test/artifact-server-csp.selftest.mjs. */
 export const HTML_PAGE_POLICIES = new Map([
   ['default', DEFAULT_HTML_CSP], ['rich', RICH_CSP], ['annotatable', ANNOTATABLE_CSP], ['interactive', INTERACTIVE_CSP],
 ])
