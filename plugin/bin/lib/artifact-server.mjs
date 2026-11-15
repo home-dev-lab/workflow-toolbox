@@ -8,6 +8,7 @@ import { retainProcessOwner, signalProcess } from './host/process-signal-boundar
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { artifactBinaryContext, runArtifactBinary } from './host/artifact-binaries.mjs'
 import { hostAdapter } from './host/adapter.mjs'
+import { ensureRetainedDirectories } from './host/artifact-retained-io.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
 export const ARTIFACT_SERVER_VERSION = JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
@@ -76,6 +77,12 @@ export function ensureSecureStateDir(options = {}) {
   if (enforceModes && (info.mode & 0o022) !== 0) throw new Error('artifact server state directory is group- or world-writable')
   if (enforceModes) chmodSync(stateDir, 0o700)
   const registrations = artifactRegistrationsDir(env, options.home, platform)
+  secureArtifactRegistrations(registrations, enforceModes)
+  ensureRetainedDirectories(stateDir, { platform })
+  return stateDir
+}
+
+function secureArtifactRegistrations(registrations, enforceModes) {
   mkdirSync(registrations, { recursive: true, mode: 0o700 })
   const registrationInfo = statSync(registrations)
   if (typeof process.getuid === 'function' && registrationInfo.uid !== process.getuid()) {
@@ -83,7 +90,6 @@ export function ensureSecureStateDir(options = {}) {
   }
   if (enforceModes && (registrationInfo.mode & 0o022) !== 0) throw new Error('artifact server registrations directory is group- or world-writable')
   if (enforceModes) chmodSync(registrations, 0o700)
-  return stateDir
 }
 
 export function atomicWriteJson(destination, value) {

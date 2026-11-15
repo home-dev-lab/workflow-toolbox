@@ -5,6 +5,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Artifact roots survive session departure and server restarts for a configurable 30-day window.
+  Retained mounts preserve their last-live deny policy and mount name; `status` marks them and
+  `forget <mount-name>` retires non-live roots at the next scan. Set `artifact_server_retain_days`
+  (or `WT_ARTIFACT_SERVER_RETAIN_DAYS`) to 0 for live-only serving. A running server is still required.
+
 ### Fixed
 
 - wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.

@@ -105,6 +105,13 @@
       "required": false,
       "description": "Comma- or newline-separated basename glob patterns added to the security deny list."
     },
+    "artifact_server_retain_days": {
+      "type": "number",
+      "title": "Artifact root retention",
+      "default": 30,
+      "required": false,
+      "description": "Days to retain previously registered roots after their last persisted live observation (0 disables; fractional values from 0 to 3650). Requires a running server."
+    },
     "planka_mcp_url": {
       "type": "string",
       "title": "Planka MCP URL for SDK pilots",

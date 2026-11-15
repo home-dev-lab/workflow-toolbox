@@ -17,7 +17,6 @@ import {
   artifactServerProcessStatus,
   artifactUid,
   artifactUrlResult,
-  assignArtifactMounts,
   atomicWriteJson,
   checkArtifactUrl,
   configuredArtifactPort,
@@ -43,6 +42,7 @@ import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { signalProcess } from './lib/host/process-signal-boundary.mjs'
+import { configuredArtifactRetainMs, forgetRetainedRoot, formatRetainedRoot, RetainedRootCatalog } from './lib/artifact-retained-roots.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
 
@@ -50,6 +50,7 @@ Usage:
   wt-artifact-server serve
   wt-artifact-server url <path> [--remote] [--check]
   wt-artifact-server status
+  wt-artifact-server forget [--] <mount-name>
   wt-artifact-server stop [--force]
   wt-artifact-server restart [--force]
 
@@ -58,6 +59,7 @@ Configuration:
   WT_ARTIFACT_SERVER_PORT           first candidate port (default: per-user 48000-48999)
   WT_ARTIFACT_SERVER_ROOTS          path-delimited name=path or bare-path list
   WT_ARTIFACT_SERVER_IDLE_GRACE_S   dead-session grace (default: 600)
+  WT_ARTIFACT_SERVER_RETAIN_DAYS    retained-root window, 0 disables (default: 30)
   WT_ARTIFACT_SERVER_DENY           comma-separated additional denied basename patterns
 
 Options:
@@ -275,13 +277,15 @@ function idleGraceMs() {
 
 class ArtifactService {
   constructor() {
-    ensureSecureStateDir()
+    const stateDir = ensureSecureStateDir()
     this.requestedPort = configuredArtifactPort()
     this.startToken = process.env.WT_ARTIFACT_SERVER_START_TOKEN ?? randomUUID()
     this.tailscale = detectTailscale(this.requestedPort)
     this.retryTailnet = createTailnetRetry({ detect: detectTailnetInWorker })
     this.registrations = new Map()
     this.mountAssignments = new Map()
+    this.retainedRoots = new RetainedRootCatalog(stateDir, configuredArtifactRetainMs())
+    this.retainedRoots.seed(this.mountAssignments)
     this.shuttingDown = false
     this.discovery = undefined
     this.pollTimer = undefined
@@ -300,18 +304,18 @@ class ArtifactService {
     }
   }
 
-  liveRoots() {
+  liveRootCandidates() {
     const candidates = []
     for (const [registrationId, registration] of this.registrations) {
       if (!registration.live) continue
       for (const root of registration.roots) candidates.push({ ...root, registrationId, deny: registration.deny })
     }
-    return assignArtifactMounts(candidates, this.mountAssignments)
+    return candidates
   }
 
-  writeDiscovery(roots = this.liveRoots()) {
+  writeDiscovery(roots = this.retainedRoots.servedRoots()) {
     if (!this.discovery) return
-    this.discovery.roots = roots.map((root) => ({ name: root.name, path: root.canonical }))
+    this.discovery.roots = roots.map((root) => ({ name: root.name, path: root.canonical, retained: root.retained, lastLiveAt: root.lastLiveAt }))
     this.discovery.mounts = [...this.mountAssignments].map(([canonical, name]) => ({ name, path: canonical }))
     atomicWriteJson(artifactDiscoveryPath(), this.discovery)
   }
@@ -404,7 +408,7 @@ class ArtifactService {
     }
     if (liveCount > 0) this.noLiveSince = null
     else this.noLiveSince ??= now
-    this.writeDiscovery()
+    this.writeDiscovery(this.retainedRoots.scan(this.liveRootCandidates(), this.mountAssignments, now))
     if (this.isIdle(liveCount, cleanRemoval, now, nextDeadline)) await this.shutdown('idle')
   }
 
@@ -473,7 +477,7 @@ class ArtifactService {
       } else send(response, method, 404, 'Not Found\n')
       return
     }
-    const roots = this.liveRoots()
+    const roots = this.retainedRoots.servedRoots()
     if (segments.length === 0) {
       const links = roots.map((root) => `<li><a href="${encodeURIComponent(root.name)}/">${escapeHtml(root.name)}/</a></li>`).join('')
       send(response, method, 200, htmlPage(path.posix.sep, `<h1>Artifact roots</h1><ul>${links}</ul>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
@@ -760,14 +764,28 @@ async function statusCommand() {
   if (!state) return 'artifact server: stopped'
   const probe = await probeArtifactServer(state.port)
   if (probe.kind !== 'ours' || probe.health.pid !== state.pid) return 'artifact server: stopped (stale state)'
-  const roots = state.roots.map((root) => `${root.name}=${root.path}`).join(', ') || '(none)'
+  const roots = state.roots.map(formatRetainedRoot).join(', ') || '(none)'
   return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\n${formatTailnetStatus(state)}\nroots: ${roots}`
+}
+
+function forgetCommand(args) {
+  const names = args[0] === '--' ? args.slice(1) : args
+  if (names.length !== 1) {
+    process.stderr.write('usage: wt-artifact-server forget [--] <mount-name>\n')
+    process.exitCode = 2
+    return
+  }
+  try { process.stdout.write(`${forgetRetainedRoot(names[0], ensureSecureStateDir())}\n`) } catch (error) {
+    process.stderr.write(`${error.message}\n`)
+    process.exitCode = 1
+  }
 }
 
 const argv = process.argv.slice(2)
 handleHelpFlag(argv, HELP, {
   valueFlags: [],
   booleanFlags: ['--check', '--force', '--remote'],
+  endOfOptions: argv[0] === 'forget',
 })
 const [command, ...args] = argv
 // `serve` takes no arguments: an extra token is refused (usage, exit 2) instead of being ignored while a
@@ -775,11 +793,12 @@ const [command, ...args] = argv
 if (command === undefined || (command === 'serve' && args.length === 0)) await serve()
 else if (command === 'url') await urlCommand(args)
 else if (command === 'status' && args.length === 0) process.stdout.write(`${await statusCommand()}\n`)
+else if (command === 'forget') forgetCommand(args)
 else if ((command === 'stop' || command === 'restart') && args.every((arg) => arg === '--force')) {
   const result = await controlCommand(command, args.includes('--force'))
   ;(result.ok ? process.stdout : process.stderr).write(`${result.message}\n`)
   if (!result.ok) process.exitCode = 1
 } else {
-  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] [--check] | status | stop [--force] | restart [--force]]\n')
+  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] [--check] | status | forget [--] <mount-name> | stop [--force] | restart [--force]]\n')
   process.exitCode = 2
 }

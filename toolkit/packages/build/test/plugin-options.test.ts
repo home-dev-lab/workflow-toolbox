@@ -14,6 +14,15 @@ import * as EXECUTOR_DEFAULTS_MODULE from '../../../../plugin/bin/lib/executor-d
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
+it.each([
+  { title: 'plugin option wins', option: 0.5, env: '31', value: 0.5, source: 'plugin option' },
+  { title: 'environment fallback', option: undefined, env: '31', value: 31, source: 'env' },
+  { title: 'default', option: undefined, env: undefined, value: 30, source: 'default' },
+])('artifact retention: $title', ({ option, env, value, source }) => {
+  const f = fixture({ pluginConfigs: { 'workflow-toolbox@local': { options: { artifact_server_retain_days: option } } } })
+  if (env !== undefined) f.env.WT_ARTIFACT_SERVER_RETAIN_DAYS = env
+  expect(resolveWorkflowToolboxOption('artifact_server_retain_days', { env: f.env })).toEqual({ value, source })
+})
 it.each(['second_opinion', 'opencode_envelope', 'opencode_verify'])('displays the admission env-first precedence for %s', prefix => {
   const option = `${prefix}_admission`
   const envKey = `WT_${prefix.toUpperCase()}_ADMISSION`

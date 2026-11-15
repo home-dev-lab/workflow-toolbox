@@ -205,7 +205,7 @@ function monitorStateFailure(stateHome: string, monitor: ChildProcess, reason: s
   return new Error(`${reason}; last stdout=${JSON.stringify(lastOutputLine(output.stdout()))}; last stderr=${JSON.stringify(lastOutputLine(output.stderr()))}; server-processes=${JSON.stringify(processes)}; last state=${JSON.stringify(readState(stateHome))}`)
 }
 
-type RootRecord = { name: string, path: string }
+type RootRecord = { name: string, path: string, retained?: boolean, lastLiveAt?: number }
 type Discovery = {
   version: string
   pid: number
@@ -345,6 +345,7 @@ syncBuiltinESMExports()
     // Interop fixtures replace PATH and must declare WSL independently of the real host.
     WSL_DISTRO_NAME: extra.PATH ? 'fixture' : process.env.WSL_DISTRO_NAME,
     WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1',
+    WT_ARTIFACT_SERVER_RETAIN_DAYS: '30',
     WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1', ...extra,
     NODE_OPTIONS: `${extra.NODE_OPTIONS ?? process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}`,
   }
@@ -2301,10 +2302,13 @@ function expectDuplicateRootNameRefused(project: string, reports: string, worktr
   expect(duplicate.stderr).toMatch(/duplicate root name/i)
 }
 
-async function expectFirstProjectLeft(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }) {
-  const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(expected.projectTwo, '.claude', 'reports'))
+async function expectFirstProjectLeft(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }, retention: string) {
+  const firstPath = join(expected.projectOne, '.claude', 'reports')
+  const left = await waitForState(stateHome, (state) => retention === '0'
+    ? state.roots.length === 1 && state.roots[0]?.path === join(expected.projectTwo, '.claude', 'reports')
+    : state.roots.length === 2 && state.roots.find((root) => root.path === firstPath)?.retained === true)
     .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
-  expect(left.roots[0]!.name).toBe(expected.secondName)
+  expect(left.roots.find((root) => root.path === join(expected.projectTwo, '.claude', 'reports'))?.name).toBe(expected.secondName)
   expect(left.mounts).toEqual(expect.arrayContaining([
     { name: expected.firstName, path: join(expected.projectOne, '.claude', 'reports') },
     { name: expected.secondName, path: join(expected.projectTwo, '.claude', 'reports') },
@@ -2313,7 +2317,8 @@ async function expectFirstProjectLeft(stateHome: string, expected: { projectOne:
 }
 
 async function expectRejoinedNames(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }) {
-  const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
+  const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2 &&
+    state.roots.find((root) => root.path === join(expected.projectOne, '.claude', 'reports'))?.retained === false)
   expect(rejoined.roots.find((root) => root.path === join(expected.projectOne, '.claude', 'reports'))?.name).toBe(expected.firstName)
   expect(rejoined.roots.find((root) => root.path === join(expected.projectTwo, '.claude', 'reports'))?.name).toBe(expected.secondName)
 }
@@ -2420,7 +2425,8 @@ describe('review decisions: filesystem roots and URLs', () => {
     const state = await waitForState(stateHome, (value) => value.roots.length === 2)
     const prefix = basename(project)
     expect(state.roots).toEqual(expect.arrayContaining([
-      { name: `${prefix}-reports`, path: reports }, { name: `${prefix}-worktrees`, path: worktrees },
+      expect.objectContaining({ name: `${prefix}-reports`, path: reports, retained: false, lastLiveAt: expect.any(Number) }),
+      expect.objectContaining({ name: `${prefix}-worktrees`, path: worktrees, retained: false, lastLiveAt: expect.any(Number) }),
     ]))
     expect(state.roots.some((root) => root.path === process.env.HOME)).toBe(false)
 
@@ -2494,7 +2500,7 @@ describe('review decisions: filesystem roots and URLs', () => {
 })
 
 describe('review decisions: filesystem roots and URLs', () => {
-  it('[V2] keeps first-assigned mount URLs when projects join, leave, and rejoin', async () => {
+  it.each(['30', '0'])('[V2] keeps first-assigned mount URLs when projects join, leave, and rejoin (retention %s)', async (retention) => {
     const { projectOne, projectTwo, reportOne } = twoProjectsWithOneReportEach()
     const stateHome = temporaryDir('stable-state')
     const reservation = await reservePort()
@@ -2503,6 +2509,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     const shutdownOne = join(stateHome, 'monitor-one.shutdown')
     const common = {
       WT_ARTIFACT_SERVER_PORT: String(port),
+      WT_ARTIFACT_SERVER_RETAIN_DAYS: retention,
       WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC: join(stateHome, 'sweep-diagnostic.jsonl'),
     }
     const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, {
@@ -2521,7 +2528,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(secondName).not.toBe(firstName)
 
     await requestCleanMonitorStop(monitorOne, shutdownOne)
-    await expectFirstProjectLeft(stateHome, { projectOne, projectTwo, firstName, secondName })
+    await expectFirstProjectLeft(stateHome, { projectOne, projectTwo, firstName, secondName }, retention)
 
     spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
     await expectRejoinedNames(stateHome, { projectOne, projectTwo, firstName, secondName })
