@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,8 @@ const pluginRoot = fileURLToPath(new URL('../../../../../../plugin/', import.met
 // The snapshot pins the Claude Code version whose declarations it copies (`hostVersion`).
 const renderPropsPin = JSON.parse(readFileSync(join(hookDir, 'render-props.snapshot.json'), 'utf8'));
 const renderPropsSnapshot = renderPropsPin.components;
+// The schema lock reads this committed copy of the host declarations, never the installed one.
+const renderPropsDeclarations = join(hookDir, 'render-props.host.d.ts');
 
 function declaredKeys(source, typeName) {
   const match = source.match(new RegExp(`export\\s+type\\s+${typeName}\\s*=\\s*\\{([\\s\\S]*?)\\n\\s*\\};`));
@@ -35,9 +37,18 @@ function parsedRenderProps(source) {
   };
 }
 
-// Names every prop the installed host adds or drops against the snapshot, the pinned version, and
-// the remedy; null when they match.
-function renderPropsDrift(installed, pin, declarationPath) {
+// Names every prop the installed host adds or drops against the snapshot, the installed and pinned
+// versions, and the remedy; null when they match.
+function renderPropsDrift(installed, pin, declarationPath, installedVersion) {
+  const changes = renderPropsChanges(installed, pin);
+  if (!changes.length) return null;
+  return `host declarations (${declarationPath}, installed Claude Code ${installedVersion}) differ from render-props.snapshot.json, pinned at Claude Code ${pin.hostVersion}: ${changes.join('; ')}. `
+    + 'Remedy: check that the pane does not need the changed props; to refresh, copy the installed BoxProps, BoxHoverProps, TextProps, TextHoverProps, ButtonProps and LinkProps into render-props.host.d.ts with its version line, '
+    + 'then copy the props into render-props.snapshot.json and set its hostVersion to that version.'
+    + (installedVersion === pin.hostVersion ? ' The installed engine is the pinned version: the declarations changed without an engine update.' : '');
+}
+
+function renderPropsChanges(installed, pin) {
   const changes = [];
   for (const name of new Set([...Object.keys(installed), ...Object.keys(pin.components)])) {
     for (const field of ['props', 'hover']) {
@@ -46,9 +57,34 @@ function renderPropsDrift(installed, pin, declarationPath) {
       if (added.length || dropped.length) changes.push(`${name}.${field}${added.map((key) => ` +${key}`).join('')}${dropped.map((key) => ` -${key}`).join('')}`);
     }
   }
-  if (!changes.length) return null;
-  return `installed host declarations (${declarationPath}) differ from render-props.snapshot.json, pinned at Claude Code ${pin.hostVersion}: ${changes.join('; ')}. `
-    + 'Remedy: check that the pane does not need the changed props, then copy the installed props into render-props.snapshot.json and set its hostVersion to the installed `claude --version`.';
+  return changes;
+}
+
+// The version the installed engine reports, or a named unknown. A scratch config dir keeps the
+// probe away from the person's own configuration.
+function installedClaudeVersion() {
+  if (process.env.WT_WIR_HOST_VERSION) return process.env.WT_WIR_HOST_VERSION;
+  const configDir = mkdtempSync(join(tmpdir(), 'wir-claude-version-'));
+  try {
+    const result = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } });
+    const version = result.status === 0 ? result.stdout.match(/\d+\.\d+\.\d+\S*/)?.[0] : undefined;
+    return version || `unknown (claude --version ${result.error ? result.error.code : `exited ${result.status}`})`;
+  } finally { rmSync(configDir, { recursive: true, force: true }); }
+}
+
+function installedDeclarationsPath() {
+  return process.env.WT_WIR_HOST_DECLARATIONS || join(process.env.WT_HOST_CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+    'plugins', 'marketplaces', 'claude-code-plugins', 'mods', 'types', 'claude-code.d.ts');
+}
+
+// The drift message for the installed declarations, or null when they match the snapshot. A host
+// that renamed one of the six types is a drift too, not a crash of the suite.
+function installedRenderPropsDrift(declaration) {
+  let installed;
+  try { installed = parsedRenderProps(readFileSync(declaration, 'utf8')); }
+  catch (error) { return `host declarations (${declaration}, installed Claude Code ${installedClaudeVersion()}) no longer parse as the render props: ${error.message}. Remedy: refresh render-props.host.d.ts and render-props.snapshot.json from them.`; }
+  // The engine is probed only on a drift, so a matching host spawns nothing.
+  return renderPropsChanges(installed, renderPropsPin).length ? renderPropsDrift(installed, renderPropsPin, declaration, installedClaudeVersion()) : null;
 }
 
 function validateElementProps(name, props) {
@@ -179,29 +215,40 @@ async function test(name, fn) {
   catch (error) { failures.push(name); console.log(`FAIL ${name}: ${error.message}`); }
 }
 
-await test('[blank pane fix schema lock] checked-in render props match the installed host declarations', async () => {
+await test('[blank pane fix schema lock] checked-in render props match the committed host declarations', async () => {
   for (const component of Object.values(renderPropsSnapshot)) {
     assert.deepEqual(component.props, [...component.props].sort());
     if (component.hover) assert.deepEqual(component.hover, [...component.hover].sort());
   }
-  const declaration = join(process.env.WT_HOST_CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'plugins', 'marketplaces', 'claude-code-plugins', 'mods', 'types', 'claude-code.d.ts');
-  if (!existsSync(declaration)) return;
-  const installed = parsedRenderProps(readFileSync(declaration, 'utf8'));
-  const drift = renderPropsDrift(installed, renderPropsPin, declaration);
+  const source = readFileSync(renderPropsDeclarations, 'utf8');
+  assert.equal(source.match(/^\/\/ Claude Code (\S+):/)?.[1], renderPropsPin.hostVersion, 'render-props.host.d.ts must name the pinned version on its first line');
+  const committed = parsedRenderProps(source);
+  const drift = renderPropsDrift(committed, renderPropsPin, renderPropsDeclarations, renderPropsPin.hostVersion);
   assert.ok(drift === null, drift);
-  assert.deepEqual(installed, renderPropsSnapshot);
+  assert.deepEqual(committed, renderPropsSnapshot);
 });
-await test('[blank pane fix schema lock] a host drift names the pinned version, every changed prop, and the remedy', async () => {
+await test('[blank pane fix schema lock] a host drift names both versions, every changed prop, and the remedy', async () => {
   assert.match(renderPropsPin.hostVersion, /^\d+\.\d+\.\d+$/);
-  assert.equal(renderPropsDrift(renderPropsSnapshot, renderPropsPin, '/host.d.ts'), null);
+  assert.equal(renderPropsDrift(renderPropsSnapshot, renderPropsPin, '/host.d.ts', '9.9.9'), null);
   const installed = structuredClone(renderPropsSnapshot);
   installed.Box.props = [...installed.Box.props, 'role'].sort();
   installed.Link.props = installed.Link.props.filter((key) => key !== 'label');
-  const message = renderPropsDrift(installed, renderPropsPin, '/host.d.ts');
+  const message = renderPropsDrift(installed, renderPropsPin, '/host.d.ts', '9.9.9');
   assert.equal(typeof message, 'string', 'a host drift must produce a failure message');
-  assert.ok(message.includes(`pinned at Claude Code ${renderPropsPin.hostVersion}`), message);
+  assert.ok(message.includes(`pinned at Claude Code ${renderPropsPin.hostVersion}`) && message.includes('installed Claude Code 9.9.9'), message);
   assert.ok(message.includes('Box.props +role') && message.includes('Link.props -label'), message);
-  assert.ok(message.includes('/host.d.ts') && message.includes('Remedy:') && message.includes('hostVersion'), message);
+  assert.ok(message.includes('/host.d.ts') && message.includes('Remedy:') && message.includes('render-props.host.d.ts') && message.includes('hostVersion'), message);
+});
+// The one case that reads the installed host declarations. A drift is printed as a WARN line and
+// passes, so an update of the host alone never turns the suite red; WT_WIR_HOST_DRIFT_STRICT=1 makes
+// it fail, for whoever refreshes the committed copy.
+await test('[host drift detector] installed host declarations against the pinned render props', async () => {
+  const declaration = installedDeclarationsPath();
+  if (!existsSync(declaration)) { console.log(`NOTE host drift detector: no host declarations at ${declaration}`); return; }
+  const drift = installedRenderPropsDrift(declaration);
+  if (drift === null) return;
+  if (process.env.WT_WIR_HOST_DRIFT_STRICT === '1') assert.fail(drift);
+  console.log(`WARN host drift (set WT_WIR_HOST_DRIFT_STRICT=1 to fail on it): ${drift}`);
 });
 
 await test('stale liveness metadata is ignored when a fresh worktree keeps the row live', async () => {
