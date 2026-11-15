@@ -115,11 +115,13 @@ async function exactPolicies() {
   }
 }
 
-// Parsed like a browser: directive names and keyword sources compared case-insensitively, the first occurrence of a
-// repeated directive wins.
+// Parsed like a browser: tokens split on ASCII whitespace only, directive names and keyword sources compared
+// case-insensitively, the first occurrence of a repeated directive wins. A browser drops a directive holding any other
+// character, so the policy must be printable ASCII for this reading to match the browser's.
 function directives(policy) {
+  assert.match(policy, /^[\x20-\x7e]*$/, `policy is printable ASCII: ${JSON.stringify(policy)}`)
   const parsed = new Map()
-  for (const [name, ...values] of policy.toLowerCase().split(';').map((part) => part.trim().split(/\s+/))) {
+  for (const [name, ...values] of policy.toLowerCase().split(';').map((part) => part.trim().split(/[\t\n\f\r ]+/))) {
     if (name && !parsed.has(name)) parsed.set(name, values)
   }
   return parsed
