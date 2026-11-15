@@ -12,7 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
 
 ### Changed
-- Every HTML page the artifact server serves can now be annotated in Orca without a marker: unmarked HTML uses `sandbox allow-scripts` with `script-src 'none'`, so the browser's injected annotation tool runs while page scripts stay blocked and the opaque origin is kept. Rich, annotatable and interactive policies are unchanged.
+- Unmarked HTML pages from the artifact server no longer block Orca's annotation tool: they are served with `sandbox allow-scripts` and `script-src 'none'`, so the browser's injected script can run while page scripts, inline handlers and `javascript:` URLs stay blocked and the page keeps its opaque origin. Scripting enabled for the document also lets a meta refresh navigate on its own and hides `<noscript>` content. Rich, annotatable, interactive and non-HTML policies are unchanged.
 
 ## [0.200.1] - 2026-11-13
 

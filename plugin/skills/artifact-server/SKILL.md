@@ -74,8 +74,8 @@ server cannot infer the proxy-owned prefix; artifact authors must use document-r
 ## Adding diagrams
 
 Use `interactive` for a trusted HTML report you authored whose page scripts need more than rich
-mode's inline-only sandbox, such as loading a same-origin script file. Annotation in Orca works in
-every HTML mode, so it is no reason to choose interactive. Put `<!-- wt-artifact-server: interactive -->` on its first line,
+mode's inline-only sandbox, such as loading a same-origin script file. Orca's annotation can
+inject into every HTML mode, so annotation is no reason to choose interactive. Put `<!-- wt-artifact-server: interactive -->` on its first line,
 entirely within the first 256 bytes. For anything you did not author, keep raw mode. Interactive
 mode has no sandbox: it permits inline and same-origin scripts, including **any file served by
 the server**, while blocking connections, forms, objects, base changes, and framing.
@@ -218,11 +218,14 @@ the tailnet.
   not bypass it.
 - Markdown raw HTML is escaped. `.txt`, `.log`, and `.json` are escaped. HTML is unchanged and,
   by default, runs no page script: its policy, `sandbox allow-scripts` with `script-src 'none'`,
-  keeps the opaque origin and the sandbox's limits on popups, downloads, forms, and navigation,
-  while CSP blocks every inline script, event handler, and `javascript:` URL. The sandbox admits
-  scripts only so that the browser's own injected tools can run: Orca's annotation arms itself by
-  injecting a script, which a sandbox without `allow-scripts` refuses. Every HTML mode can
-  therefore be annotated in Orca without a marker. An HTML file whose first non-whitespace content is the
+  keeps the opaque origin and the sandbox's limits on popups, downloads, forms, and navigating
+  other windows, while CSP blocks every inline script, event handler, and `javascript:` URL. The
+  sandbox admits scripts only so that the browser's own injected tools can run: Orca's annotation
+  arms itself by injecting a script, which a sandbox without `allow-scripts` refuses, so no HTML
+  mode needs a marker for that injection. Enabling scripting for the document also lets a
+  `<meta http-equiv="refresh">` navigate the page by itself, possibly to a marked page whose
+  scripts run, lets `autofocus` take focus, and hides `<noscript>` content; no header restores
+  those while the injection is allowed. An HTML file whose first non-whitespace content is the
   visible `<!-- wt-artifact-server: rich -->` marker opts into inline scripts, still without
   same-origin authority, network connections, or external images. The marker travels inside the
   file; an extension can be lost on rename, while a sibling policy file can drift away. Rich mode

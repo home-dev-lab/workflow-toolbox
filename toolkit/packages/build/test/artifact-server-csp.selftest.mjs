@@ -18,7 +18,7 @@ const ANNOTATABLE = "default-src 'none'; script-src 'none'; img-src 'self' data:
 const INTERACTIVE = "default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
 // Unmarked HTML: the sandbox allows scripts so the browser's own annotation injection can run, and CSP blocks every
 // page script instead (the same no-script guarantee, with the opaque origin kept).
-const DEFAULT_HTML = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+const DEFAULT_HTML = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 // Each HTML mode's policy before every mode became annotatable: no mode may change its page-script permission or
 // lose the opaque-origin sandbox it had.
 const POLICIES_BEFORE = new Map([['default', RAW], ['rich', RICH], ['annotatable', ANNOTATABLE], ['interactive', INTERACTIVE]])
@@ -115,34 +115,49 @@ async function exactPolicies() {
   }
 }
 
+// Browsers honour the first occurrence of a repeated directive, so a later duplicate is ignored here too.
 function directives(policy) {
-  return new Map(policy.split(';').map((part) => part.trim().split(/\s+/)).map(([name, ...values]) => [name, values]))
+  const parsed = new Map()
+  for (const [name, ...values] of policy.split(';').map((part) => part.trim().split(/\s+/))) {
+    if (!parsed.has(name)) parsed.set(name, values)
+  }
+  return parsed
 }
 
-// The sources a page's own scripts may come from: none under a sandbox without allow-scripts, otherwise script-src,
-// falling back to default-src.
+// The sources a page's own scripts may come from, for elements and for inline handlers: none under a sandbox
+// without allow-scripts, otherwise the specific directive, then script-src, then default-src.
 function pageScriptSources(policy) {
   const parsed = directives(policy)
-  if (parsed.has('sandbox') && !parsed.get('sandbox').includes('allow-scripts')) return ["'none'"]
-  return parsed.get('script-src') ?? parsed.get('default-src')
+  if (parsed.has('sandbox') && !parsed.get('sandbox').includes('allow-scripts')) return { elem: ["'none'"], attr: ["'none'"] }
+  const script = parsed.get('script-src') ?? parsed.get('default-src')
+  return { elem: parsed.get('script-src-elem') ?? script, attr: parsed.get('script-src-attr') ?? script }
+}
+
+function assertModePolicy(mode, served) {
+  const parsed = directives(served)
+  const sandbox = parsed.get('sandbox')
+  assert.ok(!sandbox || sandbox.includes('allow-scripts'), `${mode}: a sandbox without allow-scripts stops the browser's annotation injection: ${served}`)
+  assert.ok(!sandbox?.includes('allow-same-origin'), `${mode}: never pair the sandbox with the real origin`)
+  const before = POLICIES_BEFORE.get(mode)
+  assert.ok(before, `${mode}: a new HTML mode records its baseline in POLICIES_BEFORE`)
+  assert.deepEqual(pageScriptSources(served), pageScriptSources(before), `${mode}: page-script permission is unchanged`)
+  const sandboxBefore = directives(before).get('sandbox')
+  assert.equal(Boolean(sandbox), Boolean(sandboxBefore), `${mode}: keeps or lacks the opaque-origin sandbox as before`)
+  const lifted = (sandbox ?? []).filter((flag) => flag !== 'allow-scripts' && !sandboxBefore.includes(flag))
+  assert.deepEqual(lifted, [], `${mode}: lifts no sandbox restriction other than scripts`)
+  for (const directive of ['default-src', 'connect-src', 'base-uri', 'form-action']) {
+    assert.deepEqual(parsed.get(directive), ["'none'"], `${mode}: ${directive} 'none'`)
+  }
 }
 
 async function everyModeAnnotatable() {
+  const missing = [...POLICIES_BEFORE.keys()].filter((mode) => !HTML_PAGE_POLICIES.has(mode))
+  assert.deepEqual(missing, [], 'every HTML mode that existed before is still served')
   for (const [mode, policy] of HTML_PAGE_POLICIES) {
     const marker = MODE_MARKERS.get(mode) ?? `<!-- wt-artifact-server: ${mode} -->`
     const served = (await page(`mode-${mode}.html`, `${marker}<title>${mode}</title>`)).headers.get('content-security-policy')
     assert.equal(served, policy, `${mode}: the marker selects its own policy`)
-    const parsed = directives(served)
-    assert.ok(!parsed.has('sandbox') || parsed.get('sandbox').includes('allow-scripts'),
-      `${mode}: a sandbox without allow-scripts stops the browser's annotation injection: ${served}`)
-    assert.ok(!parsed.get('sandbox')?.includes('allow-same-origin'), `${mode}: never pair the sandbox with the real origin`)
-    const before = POLICIES_BEFORE.get(mode)
-    assert.ok(before, `${mode}: a new HTML mode records its baseline in POLICIES_BEFORE`)
-    assert.deepEqual(pageScriptSources(served), pageScriptSources(before), `${mode}: page-script permission is unchanged`)
-    assert.equal(parsed.has('sandbox'), directives(before).has('sandbox'), `${mode}: keeps or lacks the opaque-origin sandbox as before`)
-    for (const directive of ['default-src', 'connect-src', 'base-uri', 'form-action']) {
-      assert.deepEqual(parsed.get(directive), ["'none'"], `${mode}: ${directive} 'none'`)
-    }
+    assertModePolicy(mode, served)
   }
 }
 

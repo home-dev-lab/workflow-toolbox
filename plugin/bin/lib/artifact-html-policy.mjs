@@ -4,8 +4,10 @@ export const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style
 // Unmarked HTML runs no page script, but its sandbox allows scripts: a sandbox without allow-scripts also stops
 // the browser's own injected tools (Orca's annotation arms through webContents.executeJavaScript), whereas CSP
 // script-src 'none' blocks every page script, handler and javascript: URL while leaving that injection alone.
-// The opaque origin and the remaining sandbox restrictions (popups, downloads, forms, navigation) stay.
-const DEFAULT_HTML_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+// The opaque origin and the sandbox's popup, download, form and top-navigation restrictions stay. allow-scripts
+// also lifts the automatic-features restriction, so a meta refresh or autofocus now works, and <noscript>
+// content is hidden; no header restores those while the injection is allowed.
+const DEFAULT_HTML_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 const INTERACTIVE_CSP = "default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
