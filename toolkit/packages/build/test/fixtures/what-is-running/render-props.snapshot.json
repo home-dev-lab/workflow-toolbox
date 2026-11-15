@@ -1,17 +1,20 @@
 {
-  "Box": {
-    "props": ["alignItems", "alignSelf", "backgroundColor", "borderColor", "borderDimColor", "borderStyle", "bottom", "columnGap", "display", "flexDirection", "flexGrow", "flexShrink", "flexWrap", "gap", "height", "hover", "justifyContent", "key", "left", "margin", "marginBottom", "marginLeft", "marginRight", "marginTop", "marginX", "marginY", "minHeight", "minWidth", "overflow", "padding", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop", "paddingX", "paddingY", "position", "right", "rowGap", "top", "width"],
-    "hover": ["backgroundColor", "borderColor", "borderDimColor", "borderStyle", "bottom", "display", "left", "right", "scope", "top"]
-  },
-  "Text": {
-    "props": ["backgroundColor", "bold", "color", "dimColor", "hover", "inverse", "italic", "strikethrough", "underline", "wrap"],
-    "hover": ["backgroundColor", "bold", "color", "dimColor", "inverse", "italic", "scope", "strikethrough", "underline"]
-  },
-  "Button": {
-    "props": ["action", "autoFocus", "dimColor", "hotkey", "hover", "key", "label", "onPress", "plain"],
-    "hover": ["backgroundColor", "bold", "color", "dimColor", "inverse", "italic", "scope", "strikethrough", "underline"]
-  },
-  "Link": {
-    "props": ["href", "label"]
+  "hostVersion": "2.1.325",
+  "components": {
+    "Box": {
+      "props": ["alignItems", "alignSelf", "backgroundColor", "borderColor", "borderDimColor", "borderStyle", "bottom", "columnGap", "display", "flexDirection", "flexGrow", "flexShrink", "flexWrap", "gap", "height", "hover", "justifyContent", "key", "left", "margin", "marginBottom", "marginLeft", "marginRight", "marginTop", "marginX", "marginY", "minHeight", "minWidth", "overflow", "padding", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop", "paddingX", "paddingY", "position", "right", "rowGap", "top", "width"],
+      "hover": ["backgroundColor", "borderColor", "borderDimColor", "borderStyle", "bottom", "display", "left", "right", "scope", "top"]
+    },
+    "Text": {
+      "props": ["backgroundColor", "bold", "color", "dimColor", "dir", "hover", "inverse", "italic", "mono", "size", "strikethrough", "tabular", "underline", "weight", "wrap"],
+      "hover": ["backgroundColor", "bold", "color", "dimColor", "inverse", "italic", "scope", "strikethrough", "underline"]
+    },
+    "Button": {
+      "props": ["action", "autoFocus", "dimColor", "hotkey", "hover", "key", "label", "onPress", "plain", "role", "variant"],
+      "hover": ["backgroundColor", "bold", "color", "dimColor", "inverse", "italic", "scope", "strikethrough", "underline"]
+    },
+    "Link": {
+      "props": ["href", "label"]
+    }
   }
 }
