@@ -10,6 +10,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.
   Its preload now safely rolls back only its own changes and confirms compiler sharing during entry execution, including preserved symlink entries.
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
+
+### Changed
+- Every HTML page the artifact server serves can now be annotated in Orca without a marker: unmarked HTML uses `sandbox allow-scripts` with `script-src 'none'`, so the browser's injected annotation tool runs while page scripts stay blocked and the opaque origin is kept. Rich, annotatable and interactive policies are unchanged.
+
 ## [0.200.1] - 2026-11-13
 
 Patch release: fixes the two native-Windows test defects listed under Known issues in 0.200.0.

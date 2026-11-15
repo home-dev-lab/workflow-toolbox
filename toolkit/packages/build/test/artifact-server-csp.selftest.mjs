@@ -9,12 +9,20 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { isInvokedDirectly } from '../../../../plugin/bin/lib/host/entry-guard.mjs'
+import { HTML_PAGE_POLICIES } from '../../../../plugin/bin/lib/artifact-html-policy.mjs'
 
 const SERVER = fileURLToPath(new URL('../../../../plugin/bin/wt-artifact-server.mjs', import.meta.url))
 const RAW = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
 const RICH = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const ANNOTATABLE = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 const INTERACTIVE = "default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+// Unmarked HTML: the sandbox allows scripts so the browser's own annotation injection can run, and CSP blocks every
+// page script instead (the same no-script guarantee, with the opaque origin kept).
+const DEFAULT_HTML = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+// Each HTML mode's policy before every mode became annotatable: no mode may change its page-script permission or
+// lose the opaque-origin sandbox it had.
+const POLICIES_BEFORE = new Map([['default', RAW], ['rich', RICH], ['annotatable', ANNOTATABLE], ['interactive', INTERACTIVE]])
+const MODE_MARKERS = new Map([['default', '']])
 const GENERATED = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 const INTERACTIVE_MARKER = '<!-- wt-artifact-server: interactive -->'
 const MERMAID_PATH = '/__wt-artifact-server/mermaid.min.js'
@@ -98,12 +106,43 @@ async function page(file, source, method = 'GET') {
 
 async function exactPolicies() {
   for (const [name, marker, expected] of [
-    ['plain', '', RAW], ['rich', '<!-- wt-artifact-server: rich -->', RICH],
+    ['plain', '', DEFAULT_HTML], ['rich', '<!-- wt-artifact-server: rich -->', RICH],
     ['annotatable', MARKER, ANNOTATABLE],
   ]) {
     const response = await page(`${name}.html`, `${marker}<title>Review</title>`)
     assert.equal(response.headers.get('content-security-policy'), expected, `${name} CSP`)
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff')
+  }
+}
+
+function directives(policy) {
+  return new Map(policy.split(';').map((part) => part.trim().split(/\s+/)).map(([name, ...values]) => [name, values]))
+}
+
+// The sources a page's own scripts may come from: none under a sandbox without allow-scripts, otherwise script-src,
+// falling back to default-src.
+function pageScriptSources(policy) {
+  const parsed = directives(policy)
+  if (parsed.has('sandbox') && !parsed.get('sandbox').includes('allow-scripts')) return ["'none'"]
+  return parsed.get('script-src') ?? parsed.get('default-src')
+}
+
+async function everyModeAnnotatable() {
+  for (const [mode, policy] of HTML_PAGE_POLICIES) {
+    const marker = MODE_MARKERS.get(mode) ?? `<!-- wt-artifact-server: ${mode} -->`
+    const served = (await page(`mode-${mode}.html`, `${marker}<title>${mode}</title>`)).headers.get('content-security-policy')
+    assert.equal(served, policy, `${mode}: the marker selects its own policy`)
+    const parsed = directives(served)
+    assert.ok(!parsed.has('sandbox') || parsed.get('sandbox').includes('allow-scripts'),
+      `${mode}: a sandbox without allow-scripts stops the browser's annotation injection: ${served}`)
+    assert.ok(!parsed.get('sandbox')?.includes('allow-same-origin'), `${mode}: never pair the sandbox with the real origin`)
+    const before = POLICIES_BEFORE.get(mode)
+    assert.ok(before, `${mode}: a new HTML mode records its baseline in POLICIES_BEFORE`)
+    assert.deepEqual(pageScriptSources(served), pageScriptSources(before), `${mode}: page-script permission is unchanged`)
+    assert.equal(parsed.has('sandbox'), directives(before).has('sandbox'), `${mode}: keeps or lacks the opaque-origin sandbox as before`)
+    for (const directive of ['default-src', 'connect-src', 'base-uri', 'form-action']) {
+      assert.deepEqual(parsed.get(directive), ["'none'"], `${mode}: ${directive} 'none'`)
+    }
   }
 }
 
@@ -124,14 +163,14 @@ async function markerDetection() {
   const cases = [
     [' \n\t<!-- WT-ARTIFACT-SERVER: ANNOTATABLE -->', ANNOTATABLE],
     [' '.repeat(256 - Buffer.byteLength(MARKER)) + MARKER, ANNOTATABLE],
-    [' '.repeat(257 - Buffer.byteLength(MARKER)) + MARKER, RAW],
-    [' '.repeat(256) + MARKER, RAW],
-    ['\u2003'.repeat(80) + MARKER, RAW],
-    ['<html>' + MARKER, RAW],
-    ['<!-- another comment -->' + MARKER, RAW],
-    ['<!-- wt-artifact-server: annotatable-rich -->', RAW],
+    [' '.repeat(257 - Buffer.byteLength(MARKER)) + MARKER, DEFAULT_HTML],
+    [' '.repeat(256) + MARKER, DEFAULT_HTML],
+    ['\u2003'.repeat(80) + MARKER, DEFAULT_HTML],
+    ['<html>' + MARKER, DEFAULT_HTML],
+    ['<!-- another comment -->' + MARKER, DEFAULT_HTML],
+    ['<!-- wt-artifact-server: annotatable-rich -->', DEFAULT_HTML],
     [' \n<!-- WT-ARTIFACT-SERVER: RICH -->', RICH],
-    [' '.repeat(256) + '<!-- wt-artifact-server: rich -->', RAW],
+    [' '.repeat(256) + '<!-- wt-artifact-server: rich -->', DEFAULT_HTML],
   ]
   for (const [index, [prefix, expected]] of cases.entries()) {
     const response = await page(`prefix-${index}.html`, `${prefix}<p>Review</p>`)
@@ -161,11 +200,11 @@ async function interactiveMarkers() {
   for (const [prefix, expected] of [
     [' \n<!-- WT-ARTIFACT-SERVER: INTERACTIVE -->', INTERACTIVE],
     [' '.repeat(256 - Buffer.byteLength(INTERACTIVE_MARKER)) + INTERACTIVE_MARKER, INTERACTIVE],
-    [' '.repeat(257 - Buffer.byteLength(INTERACTIVE_MARKER)) + INTERACTIVE_MARKER, RAW],
-    [' '.repeat(250) + INTERACTIVE_MARKER, RAW],
-    ['\u2003'.repeat(80) + INTERACTIVE_MARKER, RAW],
-    ['<html>' + INTERACTIVE_MARKER, RAW],
-    ['<!-- earlier -->' + INTERACTIVE_MARKER, RAW],
+    [' '.repeat(257 - Buffer.byteLength(INTERACTIVE_MARKER)) + INTERACTIVE_MARKER, DEFAULT_HTML],
+    [' '.repeat(250) + INTERACTIVE_MARKER, DEFAULT_HTML],
+    ['\u2003'.repeat(80) + INTERACTIVE_MARKER, DEFAULT_HTML],
+    ['<html>' + INTERACTIVE_MARKER, DEFAULT_HTML],
+    ['<!-- earlier -->' + INTERACTIVE_MARKER, DEFAULT_HTML],
   ]) {
     const response = await page('interactive-prefix.html', `${prefix}<p>Report</p>`)
     assert.equal(response.headers.get('content-security-policy'), expected, `interactive marker ${JSON.stringify(prefix)}`)
@@ -288,6 +327,7 @@ export function registerArtifactCspTests({ before, after, test }) {
   before(startServer)
   after(stopServer)
   test('plain, rich, and annotatable HTML produce their exact CSP headers', exactPolicies)
+  test('every HTML mode, unmarked included, is annotatable and keeps its page-script permission', everyModeAnnotatable)
   test('a real server serves annotatable GET and HEAD without sandbox or page-script permission', annotatableResponses)
   test('HTML opt-ins require a complete first-content marker within the first 256 bytes', markerDetection)
   test('interactive HTML has the exact script-enabled unsandboxed GET and HEAD policy', interactiveResponses)
