@@ -545,13 +545,15 @@ describe('relative module URL separator exemption', () => {
 })
 
 describe('shipped host primitive declarations and quality gate', () => {
+  // The suite's one full plugin scan: 4.6 s quiet, 8.4–9.7 s with 24 CPU burners on 20 cores, 32.7 s with 60.
+  // Single-scan tests took 20.5–27.2 s in a full suite at load ~17 and failed the 20 s default; 60 s is 1.8x the worst.
   it('pins each declared file and primitive to the tree that ships', () => {
     const allowance = loadHostPrimitiveAllowList()
     const result = checkHostPrimitives(PLUGIN_ROOT, allowance)
 
     expect(result.violations).toEqual([])
     expect(hostPrimitiveCounts(result.findings)).toEqual(allowance)
-  })
+  }, 60_000)
 
   it('is a distinct quality gate rather than part of ordinary lint', () => {
     const manifest = JSON.parse(readFileSync(join(TOOLKIT_ROOT, 'package.json'), 'utf8')) as {
