@@ -42,10 +42,10 @@ function parsedRenderProps(source) {
 function renderPropsDrift(installed, pin, declarationPath, installedVersion) {
   const changes = renderPropsChanges(installed, pin);
   if (!changes.length) return null;
-  return `host declarations (${declarationPath}, installed Claude Code ${installedVersion}) differ from render-props.snapshot.json, pinned at Claude Code ${pin.hostVersion}: ${changes.join('; ')}. `
+  return `host declarations (${declarationPath}, installed Claude Code ${installedVersion} per the claude on PATH) differ from render-props.snapshot.json, pinned at Claude Code ${pin.hostVersion}: ${changes.join('; ')}. `
     + 'Remedy: check that the pane does not need the changed props; to refresh, copy the installed BoxProps, BoxHoverProps, TextProps, TextHoverProps, ButtonProps and LinkProps into render-props.host.d.ts with its version line, '
     + 'then copy the props into render-props.snapshot.json and set its hostVersion to that version.'
-    + (installedVersion === pin.hostVersion ? ' The installed engine is the pinned version: the declarations changed without an engine update.' : '');
+    + (installedVersion === pin.hostVersion ? ' The claude on PATH reports the pinned version: the declarations may have been updated separately from the engine.' : '');
 }
 
 function renderPropsChanges(installed, pin) {
@@ -60,16 +60,23 @@ function renderPropsChanges(installed, pin) {
   return changes;
 }
 
-// The version the installed engine reports, or a named unknown. A scratch config dir keeps the
-// probe away from the person's own configuration.
+// The version the claude on PATH reports, or a named unknown; never throws. A scratch config dir
+// keeps the probe away from the person's own configuration, and SIGKILL ends a wrapper that
+// ignores SIGTERM at the timeout.
 function installedClaudeVersion() {
   if (process.env.WT_WIR_HOST_VERSION) return process.env.WT_WIR_HOST_VERSION;
-  const configDir = mkdtempSync(join(tmpdir(), 'wir-claude-version-'));
+  let configDir;
   try {
-    const result = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10_000, env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } });
-    const version = result.status === 0 ? result.stdout.match(/\d+\.\d+\.\d+\S*/)?.[0] : undefined;
+    configDir = mkdtempSync(join(tmpdir(), 'wir-claude-version-'));
+    const result = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } });
+    const stdout = result.status === 0 ? result.stdout : '';
+    const version = stdout.match(/(\d+\.\d+\.\d+\S*) \(Claude Code\)/)?.[1] ?? stdout.match(/\d+\.\d+\.\d+\S*/)?.[0];
     return version || `unknown (claude --version ${result.error ? result.error.code : `exited ${result.status}`})`;
-  } finally { rmSync(configDir, { recursive: true, force: true }); }
+  } catch (error) {
+    return `unknown (claude --version probe failed: ${error.code ?? error.message})`;
+  } finally {
+    try { if (configDir) rmSync(configDir, { recursive: true, force: true }); } catch { /* a leftover scratch dir is not a drift */ }
+  }
 }
 
 function installedDeclarationsPath() {
@@ -245,7 +252,9 @@ await test('[blank pane fix schema lock] a host drift names both versions, every
 await test('[host drift detector] installed host declarations against the pinned render props', async () => {
   const declaration = installedDeclarationsPath();
   if (!existsSync(declaration)) { console.log(`NOTE host drift detector: no host declarations at ${declaration}`); return; }
-  const drift = installedRenderPropsDrift(declaration);
+  let drift;
+  try { drift = installedRenderPropsDrift(declaration); }
+  catch (error) { drift = `host drift detector could not compare ${declaration}: ${error.message}`; }
   if (drift === null) return;
   if (process.env.WT_WIR_HOST_DRIFT_STRICT === '1') assert.fail(drift);
   console.log(`WARN host drift (set WT_WIR_HOST_DRIFT_STRICT=1 to fail on it): ${drift}`);

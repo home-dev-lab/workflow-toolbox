@@ -74,6 +74,31 @@ describe('what-is-running render-props lock and host drift detector', () => {
     expect(result.stdout).toContain('Box.props +overflowX')
   })
 
+  it('the drift detector turns unreadable declarations into a warning, not a failure', () => {
+    const result = runSelftest('[host drift detector]', { WT_WIR_HOST_DECLARATIONS: scratch, WT_WIR_HOST_VERSION: '9.9.9-test' })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toContain('WARN host drift')
+    expect(result.stdout).toContain('no longer parse')
+  })
+
+  it.skipIf(process.platform === 'win32')('the drift detector ends a version probe that ignores SIGTERM', () => {
+    const bin = join(scratch, 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'claude'), "#!/bin/sh\ntrap '' TERM\nexec sleep 40\n", { mode: 0o755 })
+    const startedAt = Date.now()
+    const result = runSelftest('[host drift detector]', { WT_WIR_HOST_DECLARATIONS: drifted, WT_WIR_HOST_VERSION: '', PATH: `${bin}:${process.env.PATH}` })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toContain('installed Claude Code unknown (claude --version ETIMEDOUT')
+    expect(Date.now() - startedAt).toBeLessThan(30_000)
+  }, 60_000)
+
+  it('the real host drift detector passes whatever the installed declarations say, and shows its warning', () => {
+    const result = runSelftest('[host drift detector]', {})
+    for (const line of result.stdout.split('\n')) if (line.startsWith('WARN host drift')) console.warn(line)
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  }, 30_000)
+
   it('the drift detector is silent when the installed declarations match the committed copy', () => {
     const result = runSelftest('[host drift detector]', { WT_WIR_HOST_DECLARATIONS: DECLARATIONS_FIXTURE, WT_WIR_HOST_VERSION: '9.9.9-test' })
     expect(result.status, result.stdout + result.stderr).toBe(0)
