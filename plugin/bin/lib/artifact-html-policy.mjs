@@ -6,7 +6,7 @@ export const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style
 // script-src 'none' blocks every page script, handler and javascript: URL while leaving that injection alone.
 // The opaque origin and the sandbox's popup, download, form and top-navigation restrictions stay. allow-scripts
 // also lifts the automatic-features restriction, so a meta refresh or autofocus now works, and <noscript>
-// content is hidden; no header restores those while the injection is allowed.
+// content is hidden.
 const DEFAULT_HTML_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"

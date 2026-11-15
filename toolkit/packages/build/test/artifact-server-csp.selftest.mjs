@@ -115,38 +115,41 @@ async function exactPolicies() {
   }
 }
 
-// Browsers honour the first occurrence of a repeated directive, so a later duplicate is ignored here too.
+// Parsed like a browser: directive names and keyword sources compared case-insensitively, the first occurrence of a
+// repeated directive wins.
 function directives(policy) {
   const parsed = new Map()
-  for (const [name, ...values] of policy.split(';').map((part) => part.trim().split(/\s+/))) {
-    if (!parsed.has(name)) parsed.set(name, values)
+  for (const [name, ...values] of policy.toLowerCase().split(';').map((part) => part.trim().split(/\s+/))) {
+    if (name && !parsed.has(name)) parsed.set(name, values)
   }
   return parsed
 }
 
-// The sources a page's own scripts may come from, for elements and for inline handlers: none under a sandbox
-// without allow-scripts, otherwise the specific directive, then script-src, then default-src.
-function pageScriptSources(policy) {
-  const parsed = directives(policy)
-  if (parsed.has('sandbox') && !parsed.get('sandbox').includes('allow-scripts')) return { elem: ["'none'"], attr: ["'none'"] }
-  const script = parsed.get('script-src') ?? parsed.get('default-src')
-  return { elem: parsed.get('script-src-elem') ?? script, attr: parsed.get('script-src-attr') ?? script }
+// Directives a mode may gain over its baseline: each only in its most restrictive form.
+const RESTRICTIVE_ADDITIONS = new Map([['script-src', ["'none'"]], ['connect-src', ["'none'"]], ['base-uri', ["'none'"]], ['form-action', ["'none'"]]])
+
+function assertSandbox(mode, now, was) {
+  const sandbox = now.get('sandbox')
+  assert.ok(!sandbox || sandbox.includes('allow-scripts'), `${mode}: a sandbox without allow-scripts stops the browser's annotation injection`)
+  assert.ok(!sandbox?.includes('allow-same-origin'), `${mode}: never pair the sandbox with the real origin`)
+  assert.equal(Boolean(sandbox), was.has('sandbox'), `${mode}: keeps or lacks the opaque-origin sandbox as before`)
+  const lifted = (sandbox ?? []).filter((flag) => !was.get('sandbox').includes(flag))
+  assert.ok(lifted.every((flag) => flag === 'allow-scripts'), `${mode}: lifts no sandbox restriction other than scripts: ${lifted}`)
+  if (lifted.length > 0) assert.deepEqual(now.get('script-src') ?? now.get('default-src'), ["'none'"], `${mode}: scripts the sandbox now admits are blocked by CSP`)
 }
 
+// No mode gains a permission: every baseline directive is unchanged and any new directive only restricts.
 function assertModePolicy(mode, served) {
-  const parsed = directives(served)
-  const sandbox = parsed.get('sandbox')
-  assert.ok(!sandbox || sandbox.includes('allow-scripts'), `${mode}: a sandbox without allow-scripts stops the browser's annotation injection: ${served}`)
-  assert.ok(!sandbox?.includes('allow-same-origin'), `${mode}: never pair the sandbox with the real origin`)
   const before = POLICIES_BEFORE.get(mode)
   assert.ok(before, `${mode}: a new HTML mode records its baseline in POLICIES_BEFORE`)
-  assert.deepEqual(pageScriptSources(served), pageScriptSources(before), `${mode}: page-script permission is unchanged`)
-  const sandboxBefore = directives(before).get('sandbox')
-  assert.equal(Boolean(sandbox), Boolean(sandboxBefore), `${mode}: keeps or lacks the opaque-origin sandbox as before`)
-  const lifted = (sandbox ?? []).filter((flag) => flag !== 'allow-scripts' && !sandboxBefore.includes(flag))
-  assert.deepEqual(lifted, [], `${mode}: lifts no sandbox restriction other than scripts`)
-  for (const directive of ['default-src', 'connect-src', 'base-uri', 'form-action']) {
-    assert.deepEqual(parsed.get(directive), ["'none'"], `${mode}: ${directive} 'none'`)
+  const now = directives(served)
+  const was = directives(before)
+  assertSandbox(mode, now, was)
+  for (const [name, values] of was) {
+    if (name !== 'sandbox') assert.deepEqual(now.get(name), values, `${mode}: ${name} unchanged`)
+  }
+  for (const [name, values] of now) {
+    if (!was.has(name)) assert.deepEqual(values, RESTRICTIVE_ADDITIONS.get(name), `${mode}: only a restrictive ${name} may be added`)
   }
 }
 

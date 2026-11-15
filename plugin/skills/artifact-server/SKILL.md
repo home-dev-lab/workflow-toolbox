@@ -224,8 +224,8 @@ the tailnet.
   arms itself by injecting a script, which a sandbox without `allow-scripts` refuses, so no HTML
   mode needs a marker for that injection. Enabling scripting for the document also lets a
   `<meta http-equiv="refresh">` navigate the page by itself, possibly to a marked page whose
-  scripts run, lets `autofocus` take focus, and hides `<noscript>` content; no header restores
-  those while the injection is allowed. An HTML file whose first non-whitespace content is the
+  scripts run, lets `autofocus` take focus, and hides `<noscript>` content: `allow-scripts` lifts
+  the sandbox's automatic-features restriction together with its script restriction. An HTML file whose first non-whitespace content is the
   visible `<!-- wt-artifact-server: rich -->` marker opts into inline scripts, still without
   same-origin authority, network connections, or external images. The marker travels inside the
   file; an extension can be lost on rename, while a sibling policy file can drift away. Rich mode
