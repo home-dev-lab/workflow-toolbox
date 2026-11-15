@@ -199,6 +199,14 @@ export default tseslint.config(
     },
   },
   {
+    files: ['plugin/bin/lib/host/lane-silence-worker.mjs', '../plugin/bin/lib/host/lane-silence-worker.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
     files: ['plugin/bin/lib/host/lane-admission-lock.mjs', 'plugin/bin/lib/host/lane-launch-admission.mjs',
       '../plugin/bin/lib/host/lane-admission-lock.mjs', '../plugin/bin/lib/host/lane-launch-admission.mjs'],
     rules: {

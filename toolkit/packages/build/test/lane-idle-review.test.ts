@@ -317,15 +317,21 @@ describe('idle review counterexamples', () => {
     } finally { h.cleanup() }
   })
 
-  it('preserves timeout extensions for a stalled descendant with idle enforcement off', async () => {
+  it.each([false, true])('uses silence rather than descendant presence for timeout defaults (busy=%s)', async (busy) => {
     const h = harness(0, procSnapshot())
     h.watch.clear()
     const endGroup = vi.fn()
+    if (busy) h.readSnapshot.mockImplementation(() => procSnapshot(String(Math.floor(performance.now() * 0.03))))
     let state: Record<string, unknown> = { runId: 'test-run', extensions: [] }
-    const deadline = createLaneDeadline({ ...h.options, opts: { ...h.options.opts, idleWindow: 1 }, child: { pid: 4 }, args: [], runId: 'test-run', transitionBoundMs: 0, decisionFile: join(h.root, 'decision.json'), modules: { latestWorktreeWrite: h.latestWrite, hostAdapter: { readProcessSnapshot: h.readSnapshot }, argvSummary: () => 'child', readLogTail: () => '', processEvidenceStatus: () => 'live' }, current: () => state, writeState: (extra: Record<string, unknown>) => { state = { ...state, ...extra } }, endGroup, cleanupBrief: vi.fn(), journal: vi.fn() })
+    const deadline = createLaneDeadline({ ...h.options, opts: { ...h.options.opts, idleWindow: 1 }, child: { pid: 4, laneSandbox: { suiteBroker: {} } }, readSuiteQueue: async () => ({ runId: 'test-run', status: 'running', inFlight: 0, since: Date.now(), observedAt: Date.now(), queuedMs: 0 }), authorizeTimeout: async () => ({ terminate: true }), cancelTimeout: async () => ({ cancelled: true }), args: [], runId: 'test-run', transitionBoundMs: 0, decisionFile: join(h.root, 'decision.json'), modules: { latestWorktreeWrite: h.latestWrite, hostAdapter: { readProcessSnapshot: h.readSnapshot }, argvSummary: () => 'child', readLogTail: () => '', processEvidenceStatus: () => 'live' }, current: () => state, writeState: (extra: Record<string, unknown>) => { state = { ...state, ...extra } }, endGroup, cleanupBrief: vi.fn(), journal: vi.fn() })
     try {
       await vi.advanceTimersByTimeAsync(7000)
-      expect(state, 'stalled descendants must retain the base timeout default').toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
+      if (!busy) {
+        expect(state).toMatchObject({ defaultDecision: 'abandon', extensionCount: 0 })
+        expect(endGroup).toHaveBeenCalledWith(126, expect.objectContaining({ receiptLines: ['TERMINATION=timeout'] }))
+        return
+      }
+      expect(state).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
       await vi.advanceTimersByTimeAsync(14_000)
       expect(state).toMatchObject({ state: 'running', extensionCount: 3 })
       expect(endGroup).not.toHaveBeenCalled()

@@ -14,7 +14,7 @@ export function createBrokerQueueState(runId) {
     if (next !== status) { since = Date.now() - (queued ? 0 : Math.max(0, now - validUntil)); status = next }
     validUntil = rows.length ? Math.min(...rows.map((row) => row.at + QUEUE_FRESH_MS)) : now
     const renewalAgeMs = queued ? Math.max(0, now - validUntil + QUEUE_FRESH_MS) : 0
-    return { runId, status, since, queuedMs, renewalAgeMs, observedAt: Date.now() - renewalAgeMs }
+    return { runId, status, since, queuedMs, renewalAgeMs, observedAt: Date.now() - renewalAgeMs, inFlight: requests.size }
   }
   const track = () => {
     if (fenced) throw new Error('lane timeout authorized; further suite-lock admission refused')

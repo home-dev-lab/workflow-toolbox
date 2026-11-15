@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs'
 import { activityEvidence, baseActivityEvidence, deadlineLine, idleVerdict } from '../lane-deadline-core.mjs'
 import { bestEffortLaneDiagnostic } from './lane-diagnostics.mjs'
+import { createSilenceTracker } from './lane-silence-worker.mjs'
 
 function logSize(log) {
   try { return statSync(log).size } catch { return null }
@@ -89,6 +90,7 @@ function faultChanged(row, previous) {
 function refreshIdle(ctx) {
   const evidence = readActivity(ctx)
   const nowMs = ctx.monotonicNow()
+  ctx.silenceTracker.observe(evidence, nowMs)
   refreshDeadlineActivity(ctx, evidence, nowMs)
   const changed = activityChanged(ctx, evidence)
   // Unknown time cannot establish continuous silence; recovery starts a fresh known window.
@@ -135,11 +137,13 @@ function tickIdle(ctx) {
 export function createIdleWatch(options) {
   const monotonicNow = options.monotonicNow ?? (() => performance.now())
   const ctx = { ...options, monotonicNow, lastActivityMs: monotonicNow(), lastActivityWallMs: options.launchedAtMs, size: logSize(options.opts.log), maxSilentSeconds: 0, warned: false, unknownWarned: false, closed: false }
+  ctx.silenceTracker = createSilenceTracker({ ...options, monotonicNow }, ctx.size)
   // Account only for our own bytes. Child output between ticks is still detected, while receipts
   // cannot turn their own silent stretch into activity or postpone an enforced idle stop.
   const emit = (line) => {
     if (bestEffortLaneDiagnostic('lane receipt write', () => options.appendLine(line)) && ctx.size !== null) {
       const bytes = Buffer.byteLength(`${line}\n`)
+      ctx.silenceTracker.receipt(bytes)
       ctx.size += bytes
       if (ctx.deadlineActivity?.size !== undefined) ctx.deadlineActivity.size += bytes
     }
@@ -149,6 +153,11 @@ export function createIdleWatch(options) {
   const interval = setInterval(() => tickIdle(ctx), Math.min(60, options.opts.idleWindow / 4) * 1000)
   interval.unref()
   return {
+    silence: () => {
+      if (!ctx.silenceTracker.fresh()) refreshIdle(ctx)
+      return ctx.silenceTracker.verdict()
+    },
+    markActivity: (source) => ctx.silenceTracker.markActivity(source),
     refresh: () => refreshIdle(ctx),
     refreshDeadline: () => refreshDeadline(ctx),
     emit,
@@ -188,6 +197,7 @@ function baseActivityChanged(ctx, evidence) {
 function refreshBaseIdle(ctx) {
   const evidence = readBaseActivity(ctx)
   const nowMs = ctx.monotonicNow()
+  ctx.silenceTracker.observe(evidence, nowMs)
   const changed = baseActivityChanged(ctx, evidence)
   // Unknown time cannot establish continuous silence; recovery starts a fresh known window.
   if (changed || evidence.descendants?.length || evidence.status === 'unknown' || ctx.status === 'unknown') {
@@ -214,16 +224,26 @@ function tickBaseIdle(ctx) {
 export function createBaseIdleWatch(options) {
   const monotonicNow = options.monotonicNow ?? (() => performance.now())
   const ctx = { ...options, monotonicNow, lastActivityMs: monotonicNow(), lastActivityWallMs: options.launchedAtMs, size: logSize(options.opts.log), maxSilentSeconds: 0, warned: false, unknownWarned: false, closed: false }
+  ctx.silenceTracker = createSilenceTracker({ ...options, monotonicNow }, ctx.size)
   // Account only for our own bytes. Child output between ticks is still detected, while receipts
   // cannot turn their own silent stretch into activity or postpone an enforced idle stop.
   const emit = (line) => {
-    if (bestEffortLaneDiagnostic('lane receipt write', () => options.appendLine(line)) && ctx.size !== null) ctx.size += Buffer.byteLength(`${line}\n`)
+    if (bestEffortLaneDiagnostic('lane receipt write', () => options.appendLine(line)) && ctx.size !== null) {
+      const bytes = Buffer.byteLength(`${line}\n`)
+      ctx.size += bytes
+      ctx.silenceTracker.receipt(bytes)
+    }
   }
   ctx.emit = emit
   refreshBaseIdle(ctx)
   const interval = setInterval(() => tickBaseIdle(ctx), Math.min(60, options.opts.idleWindow / 4) * 1000)
   interval.unref()
   return {
+    silence: () => {
+      if (!ctx.silenceTracker.fresh()) refreshBaseIdle(ctx)
+      return ctx.silenceTracker.verdict()
+    },
+    markActivity: (source) => ctx.silenceTracker.markActivity(source),
     refresh: () => refreshBaseIdle(ctx),
     emit,
     lastActivityAt: () => new Date(ctx.lastActivityWallMs).toISOString(),

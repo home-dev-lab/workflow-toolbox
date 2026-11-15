@@ -33,7 +33,11 @@ function supervision(root, record, readRegularFile, classify) {
 }
 
 function decisionDetail(saved) {
-  return `owner=${saved.owner} decision required; lane remains live; last write ${saved.evidence?.lastWriteAt ?? 'unknown'}; process ${saved.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(saved.evidence?.logTail ?? '')}; default=${saved.defaultDecision} at ${saved.decisionDueAt}`
+  return `owner=${saved.owner} decision required; lane remains live; last write ${saved.evidence?.lastWriteAt ?? 'unknown'}; process ${saved.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(saved.evidence?.logTail ?? '')}; default=${saved.defaultDecision} at ${saved.decisionDueAt}; ${silenceDetail(saved.evidence)}`
+}
+
+function silenceDetail(evidence) {
+  return evidence?.silence ? `silence=${evidence.silence.status} quiet=${Math.floor(evidence.silence.quietSeconds)}s` : 'silence=unknown'
 }
 
 function timeoutDetail(saved, verdict) {

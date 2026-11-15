@@ -17,6 +17,21 @@ import { classifyIdleHelper, IDLE_HELPER_SAFE_TO_STOP_SECONDS } from '../../../.
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const WATCHER = resolve(__dirname, '../../../../plugin/bin/wt-lane-orphan-watch.mjs')
+it.each([true, false])('names lane decision silence (evidence=%s)', (known) => withTempDir((root) => {
+  const fixture = join(root, 'helpers.json'); writeFileSync(fixture, '[]')
+  const supervision = join(laneHostDir(root), 'supervision-critic-Z'); mkdirSync(supervision, { recursive: true })
+  writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '10-20' }))
+  writeFileSync(join(supervision, '10-20.json'), JSON.stringify({
+    runId: '10-20', state: 'decision-needed', owner: 'session', ownerSessionId: 'slot-owner', worktree: root,
+    workerPid: 2_147_483_646, childPid: 2_147_483_647, workerArgv: [], defaultDecision: 'abandon',
+    evidence: known ? { silence: { status: 'silent', quietSeconds: 1234.9 } } : {},
+  }))
+  const result = spawnSync(process.execPath, [WATCHER, '--project', root, '--once'], { encoding: 'utf8',
+    env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'slot-owner', XDG_STATE_HOME: join(root, 'state'), WT_LANE_WATCH_TEST_HELPERS: fixture } })
+  expect(result.status, result.stderr).toBe(0)
+  expect(result.stdout).toContain(known ? 'silence=silent quiet=1234s' : 'silence=unknown')
+}))
+
 const LIB = resolve(__dirname, '../../../../plugin/bin/lib')
 const PROCFS_URL = pathToFileURL(join(LIB, 'host/procfs.mjs')).href
 const ORPHANS_URL = pathToFileURL(join(LIB, 'lane-watcher-orphans.mjs')).href

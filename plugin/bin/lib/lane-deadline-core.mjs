@@ -31,6 +31,33 @@ export function idleVerdict({ nowMs, lastActivityMs, windowSeconds, enforceSecon
   return { silentSeconds, warn: known && silentSeconds >= windowSeconds, stop: known && enforceSeconds > 0 && silentSeconds >= enforceSeconds }
 }
 
+const LINUX_USER_HZ = 100
+const SILENT_CPU_FRACTION = 0.05
+
+export function silenceVerdict({ nowMs, lastActivityMs, windowSeconds, samples, logKnown = true, capReason = null }) {
+  const quietSeconds = Math.max(0, (nowMs - lastActivityMs) / 1000)
+  const cpuFraction = trailingCpuFraction(samples, nowMs, windowSeconds)
+  if (quietSeconds < windowSeconds) return { status: 'active', quietSeconds, cpuFraction, reason: 'recent observed activity' }
+  if (cpuFraction !== null && cpuFraction >= SILENT_CPU_FRACTION) return { status: 'active', quietSeconds, cpuFraction, reason: 'family CPU active in trailing window' }
+  const unknownReason = silenceUnknownReason(capReason, logKnown, cpuFraction)
+  if (unknownReason) return { status: 'log-silent', quietSeconds, cpuFraction, reason: unknownReason }
+  return { status: 'silent', quietSeconds, cpuFraction, reason: 'flat log and low family CPU in trailing window' }
+}
+
+function trailingCpuFraction(samples, nowMs, windowSeconds) {
+  const boundary = nowMs - windowSeconds * 1000
+  const trailing = samples.filter((sample) => sample.monotonicMs > boundary && sample.monotonicMs <= nowMs)
+  const anchor = samples.findLast((sample) => sample.monotonicMs <= boundary)
+  if (!anchor?.known || !trailing.length || !trailing.every((sample) => sample.known)) return null
+  return trailing.reduce((sum, sample) => sum + sample.familyTickDelta, 0) / LINUX_USER_HZ / windowSeconds
+}
+
+function silenceUnknownReason(capReason, logKnown, cpuFraction) {
+  if (capReason) return capReason
+  if (!logKnown) return 'run log size unavailable'
+  return cpuFraction === null ? 'CPU window unknown or incomplete' : null
+}
+
 export function deadlineLine(kind, fields) {
   return `${kind} ${Object.entries(fields).map(([key, value]) => `${key}=${value}`).join(' ')}`
 }

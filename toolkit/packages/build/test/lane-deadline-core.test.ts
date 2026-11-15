@@ -7,7 +7,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 // @ts-expect-error ESM runtime module
-import { activityEvidence, idleVerdict, liveDescendants, unattendedMaxSeconds } from '../../../../plugin/bin/lib/lane-deadline-core.mjs'
+import { activityEvidence, idleVerdict, liveDescendants, silenceVerdict, unattendedMaxSeconds } from '../../../../plugin/bin/lib/lane-deadline-core.mjs'
+
+describe('pure silence verdict', () => {
+  const samples = (ticks = 0, known = true) => [{ monotonicMs: 0, familyTickDelta: 0, known: true }, { monotonicMs: 1000, familyTickDelta: ticks, known }]
+  it.each([
+    ['recent output', 1, samples(), 'active'],
+    ['CPU boundary', 0, samples(5), 'active'],
+    ['silent at boundary', 0, samples(), 'silent'],
+    ['unknown sample', 0, samples(0, false), 'log-silent'],
+    ['short coverage', 0, samples().slice(1), 'log-silent'],
+  ])('%s', (_name, lastActivityMs, evidence, status) => {
+    expect(silenceVerdict({ nowMs: 1000, lastActivityMs, windowSeconds: 1, samples: evidence }).status).toBe(status)
+  })
+  it('uses the trailing window rather than diluting recent CPU over a long quiet span', () => {
+    const evidence = [{ monotonicMs: 99000, familyTickDelta: 9000, known: true }, { monotonicMs: 100000, familyTickDelta: 30, known: true }]
+    expect(silenceVerdict({ nowMs: 100000, lastActivityMs: 0, windowSeconds: 1, samples: evidence })).toMatchObject({ status: 'active', cpuFraction: 0.3 })
+    evidence[1]!.familyTickDelta = 0
+    expect(silenceVerdict({ nowMs: 100000, lastActivityMs: 0, windowSeconds: 1, samples: evidence })).toMatchObject({ status: 'silent', cpuFraction: 0 })
+  })
+})
 
 describe('lane deadline core', () => {
   it('calculates the unattended default maximum including every grace window', () => {

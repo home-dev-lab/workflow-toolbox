@@ -103,6 +103,7 @@ export const spawningTestFiles = [
   'packages/build/test/lane-queue-deadline.test.ts',
   'packages/build/test/lane-sandbox.test.ts',
   'packages/build/test/lane-saturation-hook.test.ts',
+  'packages/build/test/lane-silence-linux.test.ts',
   'packages/build/test/lane-supervisor-core.test.ts',
   'packages/build/test/lesson-harvest-hook.test.ts',
   'packages/build/test/lesson-harvest.test.ts',

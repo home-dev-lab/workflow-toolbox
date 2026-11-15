@@ -106,11 +106,19 @@ it('T2 a lifecycle transitions on the receipt published by its extended lane', a
 })
 
 it('T1 retains owned snapshot and open timeline, refusing a duplicate launch', async () => {
-  const f = fixture(); expect(await f.run({ kind: 'lane', phase: 'tdd' })).toContain('TIMEOUT')
+  const f = fixture(); const initial = await f.run({ kind: 'lane', phase: 'tdd' })
+  expect(initial).toContain('TIMEOUT'); expect(initial).toContain('silence=unknown')
   expect(f.records[0]!.ended_at, 'TIMEOUT must leave the timeline lane open').toBeNull()
   expect(f.state.ownedLanes.size).toBe(1); expect(fs.existsSync(f.info().snapshot)).toBe(true)
   expect(await f.run({ kind: 'lane', phase: 'tdd' })).toContain('lane tdd is owned and live')
   expect(f.records).toHaveLength(1)
+})
+
+it('names silence in the owned lane decision prompt', async () => {
+  const f = fixture()
+  const source = fs.readFileSync(f.launcher, 'utf8').replace('evidence:{}', "evidence:{silence:{status:'silent',quietSeconds:1200.9}}")
+  fs.writeFileSync(f.launcher, source)
+  expect(await f.run({ kind: 'lane', phase: 'tdd' })).toContain('silence=silent quiet=1200s')
 })
 
 it('T2 extends the same wait, ignoring the answered decision until consumed', async () => {

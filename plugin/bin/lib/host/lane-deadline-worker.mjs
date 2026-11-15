@@ -56,9 +56,20 @@ function decisionJournal(ctx, decision, source, request = {}) {
 }
 
 function refreshedGraceDefault(ctx, defaultDecision) {
-  if (defaultDecision !== 'abandon' || !ctx.idleDefault || ctx.extensionCount >= ctx.opts.maxExtensions) return defaultDecision
-  const verdict = ctx.idle.refresh()
-  return !verdict.warn && ctx.extensionCount < ctx.opts.maxExtensions ? 'extend' : 'abandon'
+  if (ctx.extensionCount >= ctx.opts.maxExtensions) return 'abandon'
+  const idleWarn = defaultDecision === 'abandon' && ctx.idleDefault && refreshedIdleWarn(ctx)
+  const silence = ctx.idle.silence()
+  ctx.silentDefault = silence.status === 'silent'
+  return idleWarn || ctx.silentDefault ? 'abandon' : 'extend'
+}
+
+function refreshedIdleWarn(ctx) {
+  const now = ctx.monotonicNow()
+  if (ctx.graceRefreshedAt === undefined || now - ctx.graceRefreshedAt >= Math.min(60, ctx.opts.idleWindow / 4) * 1000) {
+    ctx.graceIdleWarn = ctx.idle.refresh().warn
+    ctx.graceRefreshedAt = now
+  }
+  return ctx.graceIdleWarn
 }
 
 async function graceDecision(ctx, defaultDecision, evidence) {
@@ -67,8 +78,13 @@ async function graceDecision(ctx, defaultDecision, evidence) {
     if (isQueued(ctx.queue) || !await cancelExtensionFence(ctx)) return
     extendLane(ctx, 'grace-default', () => ctx.opts.timeout, { evidence }, () => decisionJournal(ctx, 'extend', 'grace-default', { reason: 'no owner decision within grace' }))
   } else {
-    await automaticAbandon(ctx, 'grace-default', evidence, undefined, { reason: ctx.idleDefault ? 'lane idle at timeout' : 'extension ceiling reached' })
+    await automaticAbandon(ctx, 'grace-default', evidence, undefined, { reason: defaultAbandonReason(ctx) })
   }
+}
+
+function defaultAbandonReason(ctx) {
+  if (ctx.silentDefault) return 'lane silent at timeout'
+  return ctx.idleDefault ? 'lane idle at timeout' : 'extension ceiling reached'
 }
 
 async function enterDecision(ctx, reason = 'timeout-bound', extra = {}) {
@@ -78,15 +94,27 @@ async function enterDecision(ctx, reason = 'timeout-bound', extra = {}) {
   ctx.grace = { timeoutAt, defaultDecision: 'abandon', dueAt: decisionDueMs }
   if (await consumePreemptiveExtension(ctx)) return
   const verdict = ctx.idle.refresh()
+  const silence = ctx.idle.silence()
   const activity = ctx.deadlineWrite(ctx.opts.dir)
-  const evidence = { lastWriteAt: activity.status === 'known' && activity.at ? new Date(activity.at).toISOString() : 'unknown', activityStatus: activity.status, activityBounded: activity.bounded, logTail: ctx.modules.readLogTail(ctx.opts.log), process: ctx.modules.processEvidenceStatus(ctx.child.pid) }
+  const evidence = { lastWriteAt: activity.status === 'known' && activity.at ? new Date(activity.at).toISOString() : 'unknown', activityStatus: activity.status, activityBounded: activity.bounded, logTail: ctx.modules.readLogTail(ctx.opts.log), process: ctx.modules.processEvidenceStatus(ctx.child.pid), silence }
   ctx.idleDefault = verdict.warn
-  const defaultDecision = !ctx.idleDefault && ctx.extensionCount < ctx.opts.maxExtensions ? 'extend' : 'abandon'
+  ctx.silentDefault = silence.status === 'silent'
+  ctx.graceRefreshedAt = undefined
+  const defaultDecision = timeoutDefault(ctx)
   ctx.grace = { timeoutAt, defaultDecision, evidence, dueAt: decisionDueMs }
   ctx.writeState({ state: 'decision-needed', timeoutAt, decisionDueAt, extensionCount: ctx.extensionCount, defaultDecision, evidence, reason, ...extra })
-  ctx.idle.emit(deadlineLine('LANE_DECISION_NEEDED', { timeoutAt, decisionDueAt, defaultDecision }))
+  ctx.idle.emit(deadlineLine('LANE_DECISION_NEEDED', { timeoutAt, decisionDueAt, defaultDecision, silence: silence.status, quietSeconds: Math.floor(silence.quietSeconds) }))
   if (ctx.idleDefault) ctx.idle.emit(deadlineLine('LANE_NOT_EXTENDED', { reason: 'idle', silentSeconds: Math.floor(verdict.silentSeconds) }))
+  emitSilentDefault(ctx, silence)
   ctx.journal({ event: 'decision-needed', ...laneEvent(ctx), reason, evidence: { ...evidence, timeoutAt, extensionCount: ctx.extensionCount, defaultDecision } })
+}
+
+function timeoutDefault(ctx) {
+  return !ctx.idleDefault && !ctx.silentDefault && ctx.extensionCount < ctx.opts.maxExtensions ? 'extend' : 'abandon'
+}
+
+function emitSilentDefault(ctx, silence) {
+  if (ctx.silentDefault) ctx.idle.emit(deadlineLine('LANE_NOT_EXTENDED', { reason: 'silent', quietSeconds: Math.floor(silence.quietSeconds), cpuPercent: (silence.cpuFraction * 100).toFixed(2) }))
 }
 
 function isCurrentDecision(ctx, decision, current) {
@@ -229,6 +257,7 @@ async function runDeadlineTick(ctx) {
     const queue = await readLaneQueue(ctx)
     if (ctx.stopped) return
     accountQueueTime(ctx, queue)
+    markQueueActivity(ctx, queue)
     bestEffortLaneDiagnostic('deadline queue state', () => recordPause(ctx))
     if (ctx.idleStopRequested) {
       ctx.idleStopRequested = false
@@ -241,6 +270,10 @@ async function runDeadlineTick(ctx) {
     } else if (timeoutDue(ctx, queue)) await enterDecision(ctx)
   } catch (error) { retry = true; await deadlineFailure(ctx, error) }
   finally { ctx.tickInFlight = false; scheduleDeadline(ctx, retry) }
+}
+
+function markQueueActivity(ctx, queue) {
+  if (isQueued(queue) || queue?.inFlight > 0) ctx.idle.markActivity('suite-lock-request')
 }
 
 async function retryTimeoutFence(ctx) {
@@ -287,7 +320,7 @@ export function createLaneDeadline(options) {
     clearTimeout(ctx.timer)
     ctx.idle.clear()
   }
-  const watchOptions = { ...options, writeState: (extra) => { if (!terminationDue(ctx)) return options.writeState(extra) }, latestWrite: ctx.deadlineWrite, readSnapshot: () => ctx.modules.hostAdapter.readProcessSnapshot(), stop: () => { ctx.idleStopRequested = true; if (!ctx.tickInFlight) scheduleDeadline(ctx) } }
+  const watchOptions = { ...options, silenceCapReason: silenceCapReason(options.child), readSilenceSnapshot: options.readSilenceSnapshot ?? (() => idleSnapshot(options.modules)), writeState: (extra) => { if (!terminationDue(ctx)) return options.writeState(extra) }, latestWrite: ctx.deadlineWrite, readSnapshot: () => ctx.modules.hostAdapter.readProcessSnapshot(), stop: () => { ctx.idleStopRequested = true; if (!ctx.tickInFlight) scheduleDeadline(ctx) } }
   ctx.idle = ctx.opts.idleTimeout > 0 ? idleDeadlineWatch(watchOptions) : createBaseIdleWatch(watchOptions)
   armTimeout(ctx, ctx.opts.timeout)
   scheduleDeadline(ctx)
@@ -303,6 +336,12 @@ function retryableStateWriter(options) {
       throw error
     }
   }
+}
+
+function silenceCapReason(child) {
+  if (!child.laneSandbox?.suiteBroker) return 'no suite broker; filesystem lock wait is unobserved'
+  if (child.laneSandbox.endpoints?.length) return 'relayed loopback model endpoint; host inference CPU is unobserved'
+  return null
 }
 
 function idleDeadlineWatch(options) {
