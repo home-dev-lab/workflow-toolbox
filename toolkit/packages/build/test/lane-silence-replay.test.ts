@@ -211,6 +211,9 @@ describe('silence tracker review round 2', () => {
       expect(watch.verdict()).toMatchObject({ status: 'silent' })
     } finally { done() }
   })
+})
+
+describe('silence tracker review round 2, newest time and CPU window', () => {
   it('counts a moving newest time as activity when the newest file is not the log and no fingerprint exists', () => {
     const { watch, log, done } = logTracker()
     try {
