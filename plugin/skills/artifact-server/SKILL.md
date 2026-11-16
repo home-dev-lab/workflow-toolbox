@@ -79,8 +79,12 @@ entirely within the first 256 bytes. For anything you did not author, keep raw m
 mode has no sandbox: it permits inline and same-origin scripts, including **any file served by
 the server**, while blocking connections, forms, objects, base changes, and framing.
 
+`url` refuses HTML with scripts/imports its mode blocks: exit 6, no URL, and no `--check` fetch.
+Follow its remedy, or re-run with `--allow-locked` to link a deliberately locked page with warnings.
+It never changes the page's mode or how it is served.
+
 Load Mermaid by inlining the pinned bundle or with a page-relative
-`<script src="__wt-artifact-server/mermaid.min.js">`. Recipes, and what `url` warns about, are in
+`<script src="__wt-artifact-server/mermaid.min.js">`. Recipes and detection limits are in
 [references/adding-diagrams.md](references/adding-diagrams.md).
 
 For Markdown, use an info string of exactly `mermaid`:

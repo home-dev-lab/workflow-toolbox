@@ -3022,7 +3022,7 @@ describe('HTML script warnings', () => {
   it.each(SCRIPT_WARNING_CASES)('audits $mode HTML: $body', async ({ mode, body, findings }) => {
     const fixture = checkFixture('script-warning', () => 'https://reports.example/artifacts', 48001)
     writeFileSync(fixture.artifact, `${mode === 'raw' ? '' : `<!-- wt-artifact-server: ${mode} -->\n`}${body}`)
-    const result = await runCli(['url', fixture.artifact], fixture.env)
+    const result = await runCli(['url', fixture.artifact, '--allow-locked'], fixture.env)
     expect(result.code).toBe(0)
     expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
     expect(result.stderr.trim().split('\n').filter(Boolean)).toHaveLength(findings.length)
@@ -3039,7 +3039,7 @@ describe('HTML script warnings output channels', () => {
     const fixture = checkFixture('script-htm', () => null, 48001)
     const file = join(fixture.artifact, '..', 'plan.HTM')
     writeFileSync(file, '<script>ok()</script>')
-    const result = await runCli(['url', file], fixture.env)
+    const result = await runCli(['url', file, '--allow-locked'], fixture.env)
     expect(result.stderr).toContain('plan.HTM is served in raw mode; its CSP blocks 1 inline scripts')
     expect(result.stdout).toBe('http://localhost:48001/reports/plan.HTM\n')
     expect(result.code).toBe(0)
@@ -3060,7 +3060,7 @@ describe('HTML script warnings output channels', () => {
     await closeServer(server)
     const fixture = checkFixture('script-warning-unreachable', () => null, port)
     writeFileSync(fixture.artifact, '<script>ok()</script>')
-    const result = await runCli(['url', fixture.artifact, '--check'], fixture.env)
+    const result = await runCli(['url', fixture.artifact, '--check', '--allow-locked'], fixture.env)
     expect(result.stderr).toMatch(/^warning: plan.html is served in raw mode;[^\n]+\ncheck: unreachable /)
     expect(result.code).toBe(4)
   })
@@ -3070,11 +3070,225 @@ describe('HTML script warnings output channels', () => {
     try {
       const fixture = checkFixture('script-warning-check', () => null, port)
       writeFileSync(fixture.artifact, '<script>ok()</script>')
-      const result = await runCli(['url', fixture.artifact, '--check'], fixture.env)
+      const result = await runCli(['url', fixture.artifact, '--check', '--allow-locked'], fixture.env)
       expect(result.stderr).toMatch(/^warning: plan.html is served in raw mode;[^\n]+\ncheck: reachable \(HTTP 200, from local\)\n$/)
       expect(result.stdout).toBe(`http://localhost:${port}/reports/plan.html\n`)
       expect(result.code).toBe(0)
     } finally { await closeServer(server) }
+  })
+})
+
+function scriptUrlFixture(body: string, extension = 'html') {
+  const fixture = checkFixture('script-url', () => 'https://reports.example/artifacts', 48001)
+  const file = join(fixture.artifact, '..', `plan.${extension}`)
+  writeFileSync(file, body)
+  return { ...fixture, file }
+}
+
+function expectScriptRefusal(result: Awaited<ReturnType<typeof runCli>>, modeText: string) {
+  expect(result.code).toBe(6)
+  expect(result.stdout).toBe('')
+  expect(result.stderr).toContain(`Refusing URL: plan.html ${modeText}; its CSP blocks`)
+  expect(result.stderr).toContain('<!-- wt-artifact-server: interactive --> on its first line')
+  expect(result.stderr).toContain('--allow-locked')
+}
+
+describe('HTML script URL refusal', () => {
+  it('refuses unmarked inline scripts before printing a link and names both remedies', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expectScriptRefusal(result, 'has no mode marker')
+    expect(result.stderr).toContain('1 inline scripts')
+    expect(result.stderr).not.toContain('raw mode')
+  })
+
+  it('refuses an unmarked diagram with a CDN loader and inline initializer', async () => {
+    const fixture = scriptUrlFixture('<pre class="mermaid">flowchart LR A-->B</pre><script src="https://cdn.example/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true})</script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expectScriptRefusal(result, 'has no mode marker')
+    expect(result.stderr).toContain('1 script sources')
+    expect(result.stderr).toContain('1 inline scripts')
+    expect(result.stderr).toContain('1 Mermaid diagram renderings')
+  })
+
+  it('refuses an annotatable page whose mode blocks its inline script', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: annotatable -->\n<script>ok()</script>')
+    expectScriptRefusal(await runCli(['url', fixture.file], fixture.env), 'is in annotatable mode')
+  })
+
+  it('refuses a rich page whose mode blocks its external script', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: rich -->\n<script src="local.js"></script>')
+    expectScriptRefusal(await runCli(['url', fixture.file], fixture.env), 'is in rich mode')
+  })
+})
+
+describe('HTML script URL refusal script policies', () => {
+  it('links interactive inline scripts and the same-origin bundled loader', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: interactive -->\n<script src="__wt-artifact-server/mermaid.min.js"></script><script>ok()</script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expect(result).toEqual({ code: 0, stdout: 'http://localhost:48001/reports/plan.html\n', stderr: '' })
+  })
+
+  it('refuses interactive cross-origin scripts and names self-hosting rather than another marker', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: interactive -->\n<script src="https://cdn.example/mermaid.min.js"></script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expect(result.code).toBe(6)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain('plan.html is in interactive mode; its CSP blocks 1 script sources')
+    expect(result.stderr).toContain('Self-host scripts under a registered root')
+    expect(result.stderr).toContain('__wt-artifact-server/mermaid.min.js')
+    expect(result.stderr).toContain('--allow-locked')
+    expect(result.stderr).toContain('Its recognized mode marker is <!-- wt-artifact-server: interactive -->, which admits inline and same-origin scripts only')
+    expect(result.stderr).not.toContain('put <!-- wt-artifact-server: interactive --> on its first line')
+  })
+
+  it('refuses a blocked module import even when inline scripts are allowed', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: rich -->\n<script type="module">import "/local.js"</script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expectScriptRefusal(result, 'is in rich mode')
+    expect(result.stderr).toContain('1 imports')
+  })
+})
+
+describe('HTML script URL refusal origins and allowed pages', () => {
+  it('uses the remote document origin to refuse an otherwise local script URL', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: interactive -->\n<script src="http://localhost:48001/a.js"></script>')
+    const result = await runCli(['url', fixture.file, '--remote'], fixture.env)
+    expect(result.code).toBe(6)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain('1 script sources')
+  })
+
+  it('links a script on the remote document origin', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: interactive -->\n<script src="https://reports.example/a.js"></script>')
+    const result = await runCli(['url', fixture.file, '--remote'], fixture.env)
+    expect(result).toEqual({ code: 0, stdout: 'https://reports.example/artifacts/reports/plan.html\n', stderr: '' })
+  })
+
+  it('links an unmarked script-free page', async () => {
+    const fixture = scriptUrlFixture('<p>Report</p>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expect(result).toEqual({ code: 0, stdout: 'http://localhost:48001/reports/plan.html\n', stderr: '' })
+  })
+
+  it('links an annotatable script-free page', async () => {
+    const fixture = scriptUrlFixture('<!-- wt-artifact-server: annotatable -->\n<details><summary>Report</summary>Details</details>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expect(result).toEqual({ code: 0, stdout: 'http://localhost:48001/reports/plan.html\n', stderr: '' })
+  })
+
+  it('allows an intentionally locked page and keeps the existing warning', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>')
+    const result = await runCli(['url', fixture.file, '--allow-locked'], fixture.env)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
+    expect(result.stderr).toMatch(/^warning: plan.html is served in raw mode; its CSP blocks 1 inline scripts\./)
+    expect(result.stderr).not.toContain('Refusing URL')
+  })
+})
+
+describe('HTML script URL refusal output channels', () => {
+  it('never runs the requested check for a refused page', async () => {
+    let requests = 0
+    const server = createServer((_request, response) => { requests += 1; response.end('ok') })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
+      const fixture = checkFixture('script-refusal-check', () => null, address.port)
+      writeFileSync(fixture.artifact, '<script>ok()</script>')
+      const result = await runCli(['url', fixture.artifact, '--check'], fixture.env)
+      expect(requests).toBe(0)
+      expectScriptRefusal(result, 'has no mode marker')
+      expect(result.stderr).not.toContain('check:')
+    } finally { await closeServer(server) }
+  })
+
+  it('never refuses Markdown containing a script element', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>', 'md')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expect(result).toEqual({ code: 0, stdout: 'http://localhost:48001/reports/plan.md\n', stderr: '' })
+  })
+
+  it('refuses uppercase HTM targets too', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>', 'HTM')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expect(result.code).toBe(6)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toContain('plan.HTM has no mode marker')
+  })
+
+  it('accepts --allow-locked as a boolean alongside --help', async () => {
+    const result = await runCli(['url', '--allow-locked', '--help'], baseEnv(temporaryDir('script-url-help')))
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain('[--allow-locked]')
+    expect(result.stdout).toContain('6 means the HTML mode blocks scripts')
+    expect(result.stderr).toBe('')
+  })
+})
+
+describe('HTML script URL refusal over every audited case', () => {
+  // The warning table runs with --allow-locked; the same pages without it must refuse exactly when they warn.
+  it.each(SCRIPT_WARNING_CASES)('refuses $mode HTML without --allow-locked when it warns: $body', async ({ mode, body, findings }) => {
+    const fixture = checkFixture('script-refusal-table', () => 'https://reports.example/artifacts', 48001)
+    writeFileSync(fixture.artifact, `${mode === 'raw' ? '' : `<!-- wt-artifact-server: ${mode} -->\n`}${body}`)
+    const result = await runCli(['url', fixture.artifact], fixture.env)
+    if (findings.length === 0) {
+      expect(result).toEqual({ code: 0, stdout: 'http://localhost:48001/reports/plan.html\n', stderr: '' })
+      return
+    }
+    expect(result.code).toBe(6)
+    expect(result.stdout).toBe('')
+    for (const finding of findings) expect(result.stderr).toContain(finding)
+    expect(result.stderr).toContain('--allow-locked')
+  })
+})
+
+describe('HTML script URL refusal follows symlinks like the server', () => {
+  it('links a .html alias whose target the server serves as text', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>', 'txt')
+    const alias = join(fixture.file, '..', 'alias.html')
+    symlinkSync(fixture.file, alias)
+    const result = await runCli(['url', alias], fixture.env)
+    expect(result).toEqual({ code: 0, stdout: 'http://localhost:48001/reports/plan.txt\n', stderr: '' })
+  })
+
+  it('links an alias whose target is a dotfile named .html, which the server serves without an HTML policy', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>', 'txt')
+    const target = join(fixture.file, '..', '.html')
+    writeFileSync(target, '<script>ok()</script>')
+    const alias = join(fixture.file, '..', 'alias.txt')
+    symlinkSync(target, alias)
+    const result = await runCli(['url', alias], fixture.env)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+  })
+
+  it('refuses a .txt alias whose target the server serves as HTML', async () => {
+    const fixture = scriptUrlFixture('<script>ok()</script>')
+    const alias = join(fixture.file, '..', 'alias.txt')
+    symlinkSync(fixture.file, alias)
+    const result = await runCli(['url', alias], fixture.env)
+    expect(result.code).toBe(6)
+    expect(result.stdout).toBe('')
+  })
+})
+
+describe('HTML script URL refusal remedy for cross-origin loaders', () => {
+  it('tells an unmarked page with a CDN loader that the marker alone will not admit it', async () => {
+    const fixture = scriptUrlFixture('<pre class="mermaid">flowchart LR A-->B</pre><script src="https://cdn.example/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true})</script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expectScriptRefusal(result, 'has no mode marker')
+    expect(result.stderr).toContain('stay blocked with that marker too')
+    expect(result.stderr).toContain('Self-host scripts under a registered root')
+    expect(result.stderr).toContain('__wt-artifact-server/mermaid.min.js')
+  })
+
+  it('names only the marker when the marker alone would admit every script', async () => {
+    const fixture = scriptUrlFixture('<script src="local.js"></script><script>ok()</script>')
+    const result = await runCli(['url', fixture.file], fixture.env)
+    expectScriptRefusal(result, 'has no mode marker')
+    expect(result.stderr).not.toContain('stay blocked with that marker too')
   })
 })
 

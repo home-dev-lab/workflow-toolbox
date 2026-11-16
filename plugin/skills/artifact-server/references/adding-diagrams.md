@@ -1,4 +1,4 @@
-# Adding diagrams: recipes and url warnings
+# Adding diagrams: recipes and url script checks
 
 This copy-ready command writes an HTML example with one inline Mermaid bundle, one initializer,
 and a diagram. Set `CLAUDE_PLUGIN_ROOT` to the installed plugin directory in a normal shell.
@@ -32,14 +32,22 @@ Instead of inlining the bundle, interactive HTML can load the server's own pinne
 This document-relative bundle URL works from any page depth, including nested report directories:
 the server recognizes its reserved segment at any depth.
 
-For HTML targets, `wt-artifact-server url` warns on stderr when textual script/import detection
-finds code the page's mode blocks. Each warning names the mode, blocked kind and count, and the
-interactive marker (or rich for inline-only scripts). Interactive pages with blocked external URLs
-are directed to self-host scripts under a registered root. A Mermaid class adds a source-text hint.
-Warnings precede `--check` output, leave stdout as the URL alone, and never change the exit code.
-Markdown and other non-HTML targets do not produce these warnings.
+For `.html` and `.htm` targets, `wt-artifact-server url` checks for scripts/imports the page's mode
+blocks before printing a link, even without `--check`. Any finding refuses the URL with exit 6:
+stdout stays empty and `--check` does not run. Stderr names the page, its mode (or absence of a
+marker), and the blocked kinds and counts. A Mermaid class adds a source-text hint.
 
-The check is advice read from the page text, not a browser: the CSP header the server sends decides
+For a trusted page you authored, put `<!-- wt-artifact-server: interactive -->` on its first line.
+Interactive pages with blocked cross-origin scripts or imports must self-host them under a
+registered root instead; the bundled Mermaid path above works without a CDN. A marker alone does
+not admit a CDN loader. There is no automatic mode change, and serving policies stay the same.
+
+If the page is deliberately locked, re-run the same command with `--allow-locked`. It prints the
+URL alone on stdout and keeps the existing warnings on stderr, before any `--check` result;
+the warnings do not change the exit code. Markdown and all other non-HTML targets are never
+refused by this check. An unreadable HTML file retains ordinary URL resolution without a refusal.
+
+The check is best-effort page-text detection, not a browser: the CSP header the server sends decides
 what runs. It does not resolve character references in URLs, import maps, or comments inside
 `import()`, and it treats scripts inside `<template>` as live, so a page can still be blocked
-without a warning, or warned about code that never runs.
+without a finding, or refused for code that never runs. Use `--allow-locked` for a deliberate exception.

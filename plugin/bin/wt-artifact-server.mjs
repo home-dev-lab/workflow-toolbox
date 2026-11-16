@@ -49,7 +49,7 @@ const HELP = `wt-artifact-server - serve registered artifacts through local or t
 
 Usage:
   wt-artifact-server serve
-  wt-artifact-server url <path> [--remote] [--check]
+  wt-artifact-server url <path> [--remote] [--check] [--allow-locked]
   wt-artifact-server status
   wt-artifact-server stop [--force]
   wt-artifact-server restart [--force]
@@ -68,6 +68,9 @@ Options:
               --remote) and report on stderr: exit 0 reachable, 4 unreachable,
               5 unverified; 3 means no URL could be printed, 2 is a usage error.
               A remote URL is checked from the host tailscale runs on, not from a peer.
+  --allow-locked  print the URL even when the HTML mode blocks detected scripts;
+              keep the script warnings. Without it, exit 6 means the HTML mode blocks scripts
+              (no URL printed and --check is not run).
   --help, -h  print this text and exit 0
 `
 
@@ -622,19 +625,46 @@ function requireLiveStatus(status) {
 
 function liveDecision(status) { return status === 'unknown' ? 'unknown-keep-live' : 'running-keep-live' }
 
-const URL_FLAGS = new Set(['--remote', '--check'])
+const URL_FLAGS = new Set(['--remote', '--check', '--allow-locked'])
 
 // CSP 'self' is the origin of the document's own URL, so only the URL handed out counts as same-origin.
-async function warnBlockedScripts(file, url) {
-  if (!/\.html?$/i.test(file)) return
+async function htmlScriptAudit(file, url) {
   try {
+    // The server picks the serving policy from the resolved target, so a symlinked alias is judged by what it serves.
+    if (!['.html', '.htm'].includes(path.extname(realpathSync(file)).toLowerCase())) return null
     const bytes = await readArtifactAsset(file)
     const mode = htmlModeOf(bytes.toString('utf8', 0, 256))
     const allowedOrigins = [new URL(url).origin]
-    for (const finding of blockedScriptFindings(bytes.toString('utf8'), mode, { allowedOrigins })) {
-      process.stderr.write(`${scriptWarning(path.basename(file), mode, finding)}\n`)
-    }
+    const html = bytes.toString('utf8')
+    const findings = blockedScriptFindings(html, mode, { allowedOrigins })
+    // What the interactive marker alone would still leave blocked (cross-origin scripts and imports).
+    const blockedWhenInteractive = mode !== 'interactive' && findings.length > 0
+      && blockedScriptFindings(html, 'interactive', { allowedOrigins }).length > 0
+    return { basename: path.basename(file), mode, findings, blockedWhenInteractive }
   } catch { /* Unreadable pages must not change URL resolution or its exit code. */ }
+  return null
+}
+
+function refuseBlockedScripts(audit, allowLocked) {
+  if (!audit?.findings.length || allowLocked) return false
+  const modeText = ['rich', 'annotatable', 'interactive'].includes(audit.mode)
+    ? `is in ${audit.mode} mode` : 'has no mode marker'
+  const blocked = audit.findings.map((finding) => `${finding.count} ${finding.kind}`).join(', ')
+  const selfHost = 'Self-host scripts under a registered root; the bundled Mermaid URL is __wt-artifact-server/mermaid.min.js.'
+  const marker = 'For a page you wrote and trust, put <!-- wt-artifact-server: interactive --> on its first line.'
+  const remedy = audit.mode === 'interactive'
+    ? `Its recognized mode marker is <!-- wt-artifact-server: interactive -->, which admits inline and same-origin scripts only. ${selfHost}`
+    : audit.blockedWhenInteractive ? `${marker}\nIts cross-origin scripts or imports stay blocked with that marker too. ${selfHost}` : marker
+  process.stderr.write(`Refusing URL: ${audit.basename} ${modeText}; its CSP blocks ${blocked}.\n${remedy}\nRe-run the url command with --allow-locked if the page is meant to stay locked. (Best-effort text check; the CSP header decides.)\n`)
+  process.exitCode = 6
+  return true
+}
+
+function warnBlockedScripts(audit) {
+  if (!audit) return
+  for (const finding of audit.findings) {
+    process.stderr.write(`${scriptWarning(audit.basename, audit.mode, finding)}\n`)
+  }
 }
 
 async function urlCommand(args) {
@@ -642,7 +672,7 @@ async function urlCommand(args) {
   const positionals = args.filter((value) => !URL_FLAGS.has(value))
   // One path and the url flags only: a second path is refused, never silently dropped.
   if (positionals.length > 1) {
-    process.stderr.write('usage: wt-artifact-server url <path> [--remote] [--check]\n')
+    process.stderr.write('usage: wt-artifact-server url <path> [--remote] [--check] [--allow-locked]\n')
     process.exitCode = 2
     return
   }
@@ -650,8 +680,10 @@ async function urlCommand(args) {
   if (!argument) { process.stderr.write('url requires a path\n'); process.exitCode = 3; return }
   const result = artifactUrlResult(path.resolve(argument), { remote })
   if (result.url === null) { process.stderr.write(`${result.reason}\n`); process.exitCode = 3; return }
+  const audit = await htmlScriptAudit(path.resolve(argument), result.url)
+  if (refuseBlockedScripts(audit, args.includes('--allow-locked'))) return
   process.stdout.write(`${result.url}\n`)
-  await warnBlockedScripts(path.resolve(argument), result.url)
+  warnBlockedScripts(audit)
   if (!args.includes('--check')) return
   const check = await checkArtifactUrl(result.url, { remote, via: result.via })
   process.stderr.write(`${formatArtifactCheck(check)}\n`)
@@ -782,7 +814,7 @@ async function statusCommand() {
 const argv = process.argv.slice(2)
 handleHelpFlag(argv, HELP, {
   valueFlags: [],
-  booleanFlags: ['--check', '--force', '--remote'],
+  booleanFlags: ['--allow-locked', '--check', '--force', '--remote'],
 })
 const [command, ...args] = argv
 // `serve` takes no arguments: an extra token is refused (usage, exit 2) instead of being ignored while a
@@ -795,6 +827,6 @@ else if ((command === 'stop' || command === 'restart') && args.every((arg) => ar
   ;(result.ok ? process.stdout : process.stderr).write(`${result.message}\n`)
   if (!result.ok) process.exitCode = 1
 } else {
-  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] [--check] | status | stop [--force] | restart [--force]]\n')
+  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] [--check] [--allow-locked] | status | stop [--force] | restart [--force]]\n')
   process.exitCode = 2
 }
