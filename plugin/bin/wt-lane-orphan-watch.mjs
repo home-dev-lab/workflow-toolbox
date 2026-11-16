@@ -76,9 +76,9 @@ function records(project, staging = stagingLaneDirs(project)) {
     for (const slot of supervisionSlots(worktree)) {
       const paths = supervisionPaths(worktree, null, slot)
       let currentRunId = null
-      try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch {}
+      try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch { /* no current-run pointer */ }
       let names = []
-      try { names = readdirSync(paths.dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
+      try { names = readdirSync(paths.dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch { /* no supervision directory */ }
       if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
       for (const name of names) try {
         const record = JSON.parse(readFileSync(path.join(paths.dir, name), 'utf8'))
@@ -87,7 +87,7 @@ function records(project, staging = stagingLaneDirs(project)) {
           __supervisionSlot: { value: slot },
         })
         out.push(record)
-      } catch {}
+      } catch { /* unreadable record: skip it */ }
     }
   }
   return out

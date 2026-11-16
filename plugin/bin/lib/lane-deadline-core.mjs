@@ -37,6 +37,7 @@ const SILENT_CPU_FRACTION = 0.05
 export function silenceVerdict({ nowMs, lastActivityMs, windowSeconds, samples, logKnown = true, capReason = null }) {
   const quietSeconds = Math.max(0, (nowMs - lastActivityMs) / 1000)
   const cpuFraction = trailingCpuFraction(samples, nowMs, windowSeconds)
+  if (trailingFamilyChanged(samples, nowMs, windowSeconds)) return { status: 'active', quietSeconds, cpuFraction, reason: 'process family changed in trailing window' }
   if (quietSeconds < windowSeconds) return { status: 'active', quietSeconds, cpuFraction, reason: 'recent observed activity' }
   if (cpuFraction !== null && cpuFraction >= SILENT_CPU_FRACTION) return { status: 'active', quietSeconds, cpuFraction, reason: 'family CPU active in trailing window' }
   const unknownReason = silenceUnknownReason(capReason, logKnown, cpuFraction)
@@ -49,7 +50,17 @@ function trailingCpuFraction(samples, nowMs, windowSeconds) {
   const trailing = samples.filter((sample) => sample.monotonicMs > boundary && sample.monotonicMs <= nowMs)
   const anchor = samples.findLast((sample) => sample.monotonicMs <= boundary)
   if (!anchor?.known || !trailing.length || !trailing.every((sample) => sample.known)) return null
+  // Include the entire boundary-crossing delta: this conservatively overcounts CPU by
+  // one observation interval (normally min(60 s, window/4); delayed ticks can widen it).
   return trailing.reduce((sum, sample) => sum + sample.familyTickDelta, 0) / LINUX_USER_HZ / windowSeconds
+}
+
+function trailingFamilyChanged(samples, nowMs, windowSeconds) {
+  const boundary = nowMs - windowSeconds * 1000
+  const anchor = samples.findLast((sample) => sample.monotonicMs <= boundary)
+  const window = [anchor, ...samples.filter((sample) => sample.monotonicMs > boundary && sample.monotonicMs <= nowMs)]
+  const known = window.filter((sample) => sample?.known)
+  return known.some((sample) => sample.familyIdentity !== known[0].familyIdentity)
 }
 
 function silenceUnknownReason(capReason, logKnown, cpuFraction) {
@@ -59,7 +70,8 @@ function silenceUnknownReason(capReason, logKnown, cpuFraction) {
 }
 
 export function deadlineLine(kind, fields) {
-  return `${kind} ${Object.entries(fields).map(([key, value]) => `${key}=${value}`).join(' ')}`
+  const pairs = Object.entries(fields).map(([key, value]) => `${key}=${value}`)
+  return [kind, ...pairs].join(' ')
 }
 
 export function laneBoundLine(opts, maxSeconds) {

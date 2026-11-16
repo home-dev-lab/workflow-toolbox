@@ -28,7 +28,7 @@ function supervision(root, record, readRegularFile, classify) {
     return { saved: null, verdict: { status: worker.status === 'gone' ? 'gone' : 'unknown', reason: worker.reason } }
   }
   let saved = null
-  try { saved = JSON.parse(readRegularFile(supervisionPaths(root, record.runId, record.slot).record)) } catch {}
+  try { saved = JSON.parse(readRegularFile(supervisionPaths(root, record.runId, record.slot).record)) } catch { /* no saved record: keep null */ }
   return { saved, verdict: classify(saved) }
 }
 

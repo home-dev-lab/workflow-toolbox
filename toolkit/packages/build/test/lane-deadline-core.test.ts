@@ -26,6 +26,10 @@ describe('pure silence verdict', () => {
     evidence[1]!.familyTickDelta = 0
     expect(silenceVerdict({ nowMs: 100000, lastActivityMs: 0, windowSeconds: 1, samples: evidence })).toMatchObject({ status: 'silent', cpuFraction: 0 })
   })
+  it.each(['anchor', 'middle', 'latest'])('rejects a changed CPU family at the %s, including a changed anchor', (where) => {
+    const evidence = [0, 500, 1000].map((monotonicMs, index) => ({ monotonicMs, known: true, familyTickDelta: 0, familyIdentity: index === ['anchor', 'middle', 'latest'].indexOf(where) ? '4:1,5:2' : '4:1' }))
+    expect(silenceVerdict({ nowMs: 1000, lastActivityMs: 0, windowSeconds: 1, samples: evidence })).toMatchObject({ status: 'active', reason: 'process family changed in trailing window' })
+  })
 })
 
 describe('lane deadline core', () => {

@@ -1,4 +1,5 @@
 import { activityEvidence, silenceVerdict } from '../lane-deadline-core.mjs'
+import { statSync } from 'node:fs'
 
 function cpuSample(ctx) {
   try {
@@ -12,26 +13,27 @@ function cpuSample(ctx) {
 
 function familyDelta(ctx, rows) {
   const current = new Map()
-  const pids = new Set(rows.map((row) => row.pid))
   let delta = 0
   for (const row of rows) {
     const key = `${row.pid}:${row.startIdentity}`
-    const previous = ctx.baselines.get(key) ?? 0
-    if (row.cpuTicks < previous) return { known: false, familyTickDelta: 0 }
-    delta += row.cpuTicks - previous
-    current.set(key, { pid: row.pid, cpuTicks: row.cpuTicks })
+    const previous = ctx.baselines.get(key)
+    if (previous !== undefined && row.cpuTicks < previous) return { known: false, familyTickDelta: 0 }
+    if (previous !== undefined) delta += row.cpuTicks - previous
+    current.set(key, row.cpuTicks)
   }
-  for (const row of ctx.previous.values()) if (!pids.has(row.pid)) delta -= row.cpuTicks
-  for (const [key, row] of current) ctx.baselines.set(key, row.cpuTicks)
-  ctx.previous = current
-  return { known: true, familyTickDelta: Math.max(0, delta) }
+  ctx.baselines = current
+  return { known: true, familyTickDelta: delta, familyIdentity: JSON.stringify([...current.keys()].sort()) }
+}
+
+function observeLog(ctx, size, nowMs) {
+  ctx.logKnown = Number.isFinite(size)
+  // Output seen after the last full sample is still activity: its quiet time clamps to zero in the verdict.
+  if (ctx.logKnown && size !== ctx.size) ctx.lastActivityMs = nowMs
+  if (ctx.logKnown) ctx.size = size
 }
 
 function observe(ctx, evidence, nowMs) {
-  const size = evidence.size
-  ctx.logKnown = Number.isFinite(size)
-  if (ctx.logKnown && size !== ctx.size) ctx.lastActivityMs = nowMs
-  if (ctx.logKnown) ctx.size = size
+  observeLog(ctx, evidence.size, nowMs)
   observeWorktree(ctx, evidence, nowMs)
   ctx.samples.push({ monotonicMs: nowMs, ...cpuSample(ctx) })
   const boundary = nowMs - ctx.options.opts.idleWindow * 1000
@@ -40,20 +42,38 @@ function observe(ctx, evidence, nowMs) {
 }
 
 function observeWorktree(ctx, evidence, nowMs) {
-  const worktree = evidence.deadlineWorktree ?? evidence.worktree
-  // The log has its own receipt-adjusted channel, including when it is the scan's newest file.
-  if (worktree?.path && worktree.path === ctx.options.opts.log) return
-  if (worktree?.status === 'known' && !worktree.bounded) {
-    const fingerprint = JSON.stringify([worktree.at, worktree.fingerprint])
-    if (fingerprint !== ctx.fingerprint) ctx.lastActivityMs = nowMs
-    ctx.fingerprint = fingerprint
-  }
+  const worktree = evidence.worktree ?? evidence.deadlineWorktree
+  if (worktree?.status !== 'known' || worktree.bounded) return
+  // A receipt moves the log's mtime, so a newest time is compared only when the newest file is not the log
+  // (or an alias of it). A fingerprint is always compared; this assumes it leaves out the log's own metadata,
+  // as the idle scan's exclusions do. Each value keeps its own history, so a switch of the newest path alone
+  // is not activity.
+  const logNewest = sameLogIdentity(worktree.path, ctx.options.opts.log)
+  const fingerprintChanged = observeFingerprint(ctx, worktree.fingerprint)
+  if (fingerprintChanged || (!logNewest && worktree.at !== ctx.worktreeAt)) ctx.lastActivityMs = nowMs
+  if (!logNewest) ctx.worktreeAt = worktree.at
+}
+
+function observeFingerprint(ctx, value) {
+  if (value === undefined) return false
+  const fingerprint = JSON.stringify(value), changed = fingerprint !== ctx.fingerprint
+  ctx.fingerprint = fingerprint
+  return changed
+}
+
+function sameLogIdentity(file, log) {
+  if (!file) return false
+  try {
+    const candidate = statSync(file, { bigint: true }), source = statSync(log, { bigint: true })
+    return candidate.dev === source.dev && candidate.ino === source.ino
+  } catch { return false }
 }
 
 export function createSilenceTracker(options, size) {
-  const ctx = { options, size, logKnown: Number.isFinite(size), lastActivityMs: options.monotonicNow(), samples: [], baselines: new Map(), previous: new Map(), sampledAt: -Infinity }
+  const ctx = { options, size, logKnown: Number.isFinite(size), lastActivityMs: options.monotonicNow(), samples: [], baselines: new Map(), sampledAt: -Infinity }
   return {
     observe: (evidence, nowMs) => observe(ctx, evidence, nowMs),
+    observeLog: (size) => observeLog(ctx, size, options.monotonicNow()),
     receipt: (bytes) => { if (ctx.size !== null) ctx.size += bytes },
     markActivity: () => { ctx.lastActivityMs = options.monotonicNow() },
     fresh: () => options.monotonicNow() - ctx.sampledAt < Math.min(60, options.opts.idleWindow / 4) * 1000,

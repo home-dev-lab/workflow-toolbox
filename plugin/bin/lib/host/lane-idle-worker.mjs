@@ -155,6 +155,7 @@ export function createIdleWatch(options) {
   return {
     silence: () => {
       if (!ctx.silenceTracker.fresh()) refreshIdle(ctx)
+      ctx.silenceTracker.observeLog(logSize(ctx.opts.log))
       return ctx.silenceTracker.verdict()
     },
     markActivity: (source) => ctx.silenceTracker.markActivity(source),
@@ -241,6 +242,7 @@ export function createBaseIdleWatch(options) {
   return {
     silence: () => {
       if (!ctx.silenceTracker.fresh()) refreshBaseIdle(ctx)
+      ctx.silenceTracker.observeLog(logSize(ctx.opts.log))
       return ctx.silenceTracker.verdict()
     },
     markActivity: (source) => ctx.silenceTracker.markActivity(source),

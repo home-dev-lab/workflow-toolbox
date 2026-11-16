@@ -60,16 +60,12 @@ function refreshedGraceDefault(ctx, defaultDecision) {
   const idleWarn = defaultDecision === 'abandon' && ctx.idleDefault && refreshedIdleWarn(ctx)
   const silence = ctx.idle.silence()
   ctx.silentDefault = silence.status === 'silent'
+  if (defaultDecision === 'extend') return 'extend'
   return idleWarn || ctx.silentDefault ? 'abandon' : 'extend'
 }
 
 function refreshedIdleWarn(ctx) {
-  const now = ctx.monotonicNow()
-  if (ctx.graceRefreshedAt === undefined || now - ctx.graceRefreshedAt >= Math.min(60, ctx.opts.idleWindow / 4) * 1000) {
-    ctx.graceIdleWarn = ctx.idle.refresh().warn
-    ctx.graceRefreshedAt = now
-  }
-  return ctx.graceIdleWarn
+  return ctx.idle.refresh().warn
 }
 
 async function graceDecision(ctx, defaultDecision, evidence) {
@@ -99,7 +95,6 @@ async function enterDecision(ctx, reason = 'timeout-bound', extra = {}) {
   const evidence = { lastWriteAt: activity.status === 'known' && activity.at ? new Date(activity.at).toISOString() : 'unknown', activityStatus: activity.status, activityBounded: activity.bounded, logTail: ctx.modules.readLogTail(ctx.opts.log), process: ctx.modules.processEvidenceStatus(ctx.child.pid), silence }
   ctx.idleDefault = verdict.warn
   ctx.silentDefault = silence.status === 'silent'
-  ctx.graceRefreshedAt = undefined
   const defaultDecision = timeoutDefault(ctx)
   ctx.grace = { timeoutAt, defaultDecision, evidence, dueAt: decisionDueMs }
   ctx.writeState({ state: 'decision-needed', timeoutAt, decisionDueAt, extensionCount: ctx.extensionCount, defaultDecision, evidence, reason, ...extra })
