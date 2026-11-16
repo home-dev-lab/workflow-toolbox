@@ -24,14 +24,22 @@ jobs:
     timeout-minutes: 10
     env:
       WT_RUNNER_IMAGE: ${{ matrix.os }}
-      WT_OPENCODE_PROBE_ENTRY: .opencode-probe/node_modules/opencode-ai/bin/opencode
+      # opencode-ai 1.19.0 declares its binary as bin/opencode.exe, a native executable on every
+      # OS (no bin/opencode script exists to run through node).
+      WT_OPENCODE_PROBE_BIN: ${{ github.workspace }}/.opencode-probe/node_modules/opencode-ai/bin/opencode.exe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Install pinned OpenCode
-        run: npm install --prefix .opencode-probe opencode-ai@1.19.0
+        run: npm install --prefix .opencode-probe --ignore-scripts opencode-ai@1.19.0
+      # npm 11 skips dependency install scripts not covered by allowScripts, and without its
+      # postinstall bin/opencode.exe is a 479-byte stub. Run that postinstall explicitly so the
+      # step never depends on npm's script policy.
+      - name: Link the OpenCode platform binary
+        working-directory: .opencode-probe/node_modules/opencode-ai
+        run: node postinstall.mjs
       - name: Capture OpenCode directory spelling
         run: node probes/host-platform/opencode-dir-spelling.mjs probes/host-platform/evidence/${{ matrix.os }}/opencode-dir-spelling.json
       - name: Upload OpenCode evidence
