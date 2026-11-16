@@ -1,14 +1,31 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import ts from 'typescript'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error ESM census module
-import { scanHostPrimitives, sourceFiles } from '../../../scripts/host-primitive-census.mjs'
+import { loadHostPrimitiveAllowList, sourceFiles } from '../../../scripts/host-primitive-census.mjs'
 // @ts-expect-error Function-hook collector ships as JavaScript source text
 import { SNAPSHOT_PROGRAM } from '../../../../plugin/hooks/snapshot-program.js'
 
 const ROOT = resolve(import.meta.dirname, '../../../../plugin')
 const PROC_SEGMENTS = new Set(['stat', 'cmdline', 'status', 'cwd', 'environ', 'fd', 'fdinfo', 'uptime', 'loadavg'])
+const temporaryDirectories: string[] = []
+
+function procfsDeclarations(root?: string): string[] {
+  return [...loadHostPrimitiveAllowList(root).keys()].filter((key: string) => key.endsWith(':literal /proc'))
+}
+
+function fixtureDeclarations(file: string, primitive: string): string {
+  const root = mkdtempSync(join(tmpdir(), 'host-procfs-perimeter-'))
+  temporaryDirectories.push(root)
+  writeFileSync(join(root, file), JSON.stringify({ [primitive]: 1 }))
+  return root
+}
+
+afterEach(() => {
+  for (const root of temporaryDirectories.splice(0)) rmSync(root, { recursive: true, force: true })
+})
 
 function isProcRoot(node: ts.Node): boolean {
   return (ts.isStringLiteralLike(node) || ts.isTemplateHead(node)) && /^\/proc(?:\/|$)/.test(node.text)
@@ -36,7 +53,8 @@ function parsedViolations(file: string, source: string, descriptorsOnly = false)
 
 describe('procfs host perimeter', () => {
   it('keeps every census procfs literal inside the host boundary', () => {
-    const findings = scanHostPrimitives().findings.filter((finding: { primitive: string }) => finding.primitive === 'literal /proc')
+    const findings = procfsDeclarations()
+    // The census test "pins each declared file and primitive to the tree that ships" catches undeclared access.
     expect(findings, 'procfs root literals belong only to plugin/bin/lib/host').toEqual([])
   })
 
@@ -51,5 +69,22 @@ describe('procfs host perimeter', () => {
     const file = 'bin/lib/wake-floor-in-flight.mjs'
     const violations = parsedViolations(file, readFileSync(join(ROOT, file), 'utf8'), true)
     expect(violations, 'wake-floor must not construct stat, cmdline, environ, cwd, fd, or fdinfo paths').toEqual([])
+  })
+})
+
+describe('procfs declaration guard', () => {
+  it.each([
+    ['literal /proc', ['a.mjs:literal /proc']],
+    ['fs import', []],
+  ])('checks the declared primitive %s', (primitive, expected) => {
+    const root = fixtureDeclarations('a.mjs.json', primitive as string)
+
+    expect(procfsDeclarations(root)).toEqual(expected)
+  })
+
+  it.skipIf(process.platform === 'win32')('detects procfs in a colon-containing declaration filename', () => {
+    const root = fixtureDeclarations('a.mjs:b.mjs.json', 'literal /proc')
+
+    expect(procfsDeclarations(root)).toEqual(['a.mjs:b.mjs:literal /proc'])
   })
 })

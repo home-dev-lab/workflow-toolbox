@@ -3,12 +3,16 @@ import { tmpdir } from 'node:os'
 import { extname, join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error ESM census module
-import { scanHostPrimitives } from '../../../scripts/host-primitive-census.mjs'
+import { loadHostPrimitiveAllowList } from '../../../scripts/host-primitive-census.mjs'
 
 const ROOT = resolve(import.meta.dirname, '../../../../plugin')
 const GENERATED = new Set([join(ROOT, 'bin', 'wt-observe.mjs'), join(ROOT, 'bin', 'lib', 'vendor', 'yaml.mjs')])
 const RAW_PARENT_TABLE = /(?:\[['"]-eo['"],\s*['"]pid=,ppid=['"]\]|Get-CimInstance\s+Win32_Process[^\n]*ParentProcessId)/
 const temporaryDirectories: string[] = []
+
+function rawSignalDeclarations(root?: string): string[] {
+  return [...loadHostPrimitiveAllowList(root).keys()].filter((key: string) => key.endsWith(':process.kill'))
+}
 
 function sourceFiles(directory: string, hostRoot: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -37,7 +41,8 @@ afterEach(() => {
 
 describe('pid to parent-pid host perimeter', () => {
   it('keeps every raw signal and liveness primitive inside the host adapter', () => {
-    expect(scanHostPrimitives().findings.filter((finding: { primitive: string }) => finding.primitive === 'process.kill')).toEqual([])
+    // The census test "pins each declared file and primitive to the tree that ships" catches undeclared access.
+    expect(rawSignalDeclarations()).toEqual([])
   })
 
   it('keeps the raw process-table primitive inside the host adapter', () => {
@@ -70,5 +75,24 @@ describe('pid to parent-pid host perimeter', () => {
     writeFileSync(join(root, 'bin', 'lib', 'ordinary.mjs'), source)
 
     expect(processTableViolations(root)).toEqual(['bin/lib/ordinary.mjs'])
+  })
+})
+
+describe('raw signal declaration guard', () => {
+  it.each([
+    ['process.kill', ['a.mjs:process.kill']],
+    ['fs import', []],
+  ])('checks the declared primitive %s', (primitive, expected) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'a.mjs.json'), JSON.stringify({ [primitive as string]: 1 }))
+
+    expect(rawSignalDeclarations(root)).toEqual(expected)
+  })
+
+  it.skipIf(process.platform === 'win32')('detects raw signals in a colon-containing declaration filename', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'a.mjs:b.mjs.json'), '{"process.kill":1}')
+
+    expect(rawSignalDeclarations(root)).toEqual(['a.mjs:b.mjs:process.kill'])
   })
 })
