@@ -43,26 +43,27 @@ their deduplicated union. Each monitor owns its registration and removes it when
 There is no HTTP registration or other network control endpoint.
 
 Always ask the helper for a link. Never hand the user a file path: whoever proposes an artifact
-must provide its complete URL. Prefer the remote URL whenever one exists because it works both on
-the server machine and from another tailnet device; `localhost` only works on the server machine.
-Try `--remote` first, then fall back to the local command only when it exits 3. The helper picks the
-longest matching root and exits 3 outside all roots:
+must provide its complete URL. The remote URL works from any tailnet device; `localhost` only on
+the server machine. To hand a link over, run `url` with `--remote`; only when it exits 3 and its
+stderr says the server has no remote URL, run it without `--remote` and say it works only on this
+machine. Plain `url` prints the tailnet link when one exists, else the local one with the
+reason on stderr. The helper picks the longest matching root and exits 3 outside all roots:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md" --remote
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 ```
 
-`--remote` exits 3 when no tailnet URL is available. Read its stderr then: it names the reason the
-server recorded. Under WSL with Tailscale on Windows, only a Tailscale Serve route reaches the
-server, so a missing route means no tailnet URL, and the reason gives the command that creates it.
+On exit 3, stderr names the reason the server recorded. Use `--local` to force localhost for tools
+on this host (Playwright, curl); it cannot be combined with `--remote`. Under WSL with Tailscale on Windows, only a Tailscale
+Serve route reaches the server, so a missing route means no tailnet URL, and the reason gives the
+command that creates it.
 Add `--check` to fetch the printed URL. Read stdout for the URL alone and stderr for
 `check: reachable`, `check: unreachable` or `check: unverified` with its reason; the exit code is 0,
-4 or 5. With `--remote` the fetch runs on the host where Tailscale runs (through PowerShell when
-that is Windows); without it, the fetch targets the local URL. Read `reachable` as checked from the
-host Tailscale runs on, not from a peer. Restart the server after creating a Serve route: detection
-runs at startup only. In a normal shell, replace
-`${CLAUDE_PLUGIN_ROOT}` with the installed plugin root.
+4 or 5. When the printed URL is remote, the fetch runs on the host where Tailscale runs (through
+PowerShell when that is Windows), not from a peer; with `--local` or a local fallback, it targets
+the local URL. Restart the server after creating a Serve route: detection runs at startup only. In
+a normal shell, replace `${CLAUDE_PLUGIN_ROOT}` with the installed plugin root.
 
 The deliverable is the single file's complete URL, not the root index. Index browsing is only a
 local convenience and does not survive every path-mounted proxy: in particular, a trailing slash on
@@ -190,8 +191,8 @@ operator can configure the tailnet-only proxy manually:
 tailscale serve --bg --https=443 http://127.0.0.1:<port>
 ```
 
-When an exact proxy mapping is detected, `--remote` preserves its HTTPS hostname, non-default port,
-and mount path. Ambiguous tables or mappings to another backend fall back to the direct IP URL rather
+When an exact proxy mapping is detected, the printed remote URL keeps its HTTPS hostname,
+non-default port, and mount path. Ambiguous tables or mappings to another backend fall back to the direct IP URL rather
 than composing a plausible but wrong HTTPS link. Never use `tailscale funnel`, which would expose
 the server publicly.
 

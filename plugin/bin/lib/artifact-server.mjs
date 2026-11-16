@@ -331,6 +331,13 @@ function noRemoteUrlReason(discovery) {
   return typeof reason === 'string' && reason ? `artifact server has no remote URL: ${reason}` : 'artifact server has no remote URL'
 }
 
+function artifactUrlSelection(discovery, options) {
+  const remote = Boolean(options.remote || (options.preferRemote && Boolean(discovery.remoteUrl)))
+  const base = remote ? discovery.remoteUrl : discovery.baseUrl
+  const note = options.preferRemote && !remote ? `${noRemoteUrlReason(discovery)}; printed the local URL` : null
+  return { base, remote, note }
+}
+
 export function artifactUrlResult(absPath, options = {}) {
   if (typeof absPath !== 'string' || !path.isAbsolute(absPath)) return { url: null, reason: 'path must be absolute' }
   const discovery = readArtifactDiscovery(options)
@@ -349,9 +356,9 @@ export function artifactUrlResult(absPath, options = {}) {
   const root = matching[0]
   const relative = path.relative(root.real, candidate)
   const encoded = relative === '' ? '' : `/${relative.split(path.sep).map(encodeURIComponent).join('/')}`
-  const base = options.remote ? discovery.remoteUrl : discovery.baseUrl
+  const { base, remote, note } = artifactUrlSelection(discovery, options)
   if (!base) return { url: null, reason: noRemoteUrlReason(discovery) }
-  return { url: `${base}/${encodeURIComponent(root.name)}${encoded}`, reason: null, via: discovery.tailnetVia }
+  return { url: `${base}/${encodeURIComponent(root.name)}${encoded}`, reason: null, via: discovery.tailnetVia, remote, note }
 }
 
 export function artifactUrl(absPath, options = {}) {

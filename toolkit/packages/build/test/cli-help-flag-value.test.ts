@@ -308,7 +308,7 @@ describe('every cross-family review counterexample, with its expected outcome', 
     }
   })
 
-  it('PARSER: artifact-server `serve` takes no arguments, and `url` takes one path (and --remote) only', () => {
+  it('PARSER: artifact-server `serve` takes no arguments, and `url` takes one path (and its --remote, --local, --check flags) only', () => {
     for (const args of [['serve', 'extra'], ['serve', '--zz'], ['url', 'a', 'b'], ['url', '--zz', 'a'], ['url', 'a', '--zz']]) {
       const r = runCli('wt-artifact-server.mjs', args)
       expect(r.timedOut, `${args.join(' ')} did not return`).toBe(false)
@@ -613,7 +613,7 @@ describe('wt-grounding-sources refuses an unknown token instead of ignoring it',
 // take help away from a position every CLI accepts it in.
 // A boolean flag that only exists under one subcommand is exercised under it.
 const BOOLEAN_PREFIX: Record<string, Record<string, string[]>> = {
-  'wt-artifact-server.mjs': { '--remote': ['url'], '--force': ['stop'] },
+  'wt-artifact-server.mjs': { '--remote': ['url'], '--local': ['url'], '--force': ['stop'] },
   'wt-grounding-sources.mjs': { '--dry-run': ['init'], '--json': ['list'] },
   'wt-pilot-fidelity.mjs': { '--require-same-tree': ['verify'], '--require-clean-tree': ['verify'], '--require-head': ['verify'] },
   'wt-crossos-dispatch.mjs': { '--dry-run': ['run'] },

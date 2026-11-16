@@ -10,6 +10,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.
   Its preload now safely rolls back only its own changes and confirms compiler sharing during entry execution, including preserved symlink entries.
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
+
+### Changed
+- `wt-artifact-server url` now prints the tailnet URL (the Serve HTTPS name or the tailnet address) by default when one exists, and falls back to the local URL only when there is none, with the reason on stderr; `--check` then checks the printed URL, from the Tailscale host when it is the tailnet one. Use the new `--local` for tools on the same host (Playwright, curl, a local fetch); `--remote` still refuses to fall back. The session-start line now tells sessions to run `url <file> --remote` and hand over the tailnet link.
+
 ## [0.200.1] - 2026-11-13
 
 Patch release: fixes the two native-Windows test defects listed under Known issues in 0.200.0.
