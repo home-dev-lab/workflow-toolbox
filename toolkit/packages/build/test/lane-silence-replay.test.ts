@@ -221,7 +221,7 @@ describe('silence tracker review round 2', () => {
   it('does not let old CPU leave the trailing window on a clock advance with no new sample', () => {
     let now = 0, ticks = 0
     const watch = createSilenceTracker({ opts: { idleWindow: 1, log: 'run.log' }, childPid: 4, monotonicNow: () => now, readSilenceSnapshot: () => ({ processes: [{ pid: 4, ppid: 1, startIdentity: 1, cpuTicks: ticks }] }) }, 0)
-    for (const [at, cpu] of [[0, 0], [250, 5], [500, 5], [750, 5], [1050, 5]]) { now = at; ticks = cpu; watch.observe({ size: 0, worktree: { status: 'unknown', bounded: true } }, at) }
+    for (const [at, cpu] of [[0, 0], [250, 5], [500, 5], [750, 5], [1050, 5]] as Array<[number, number]>) { now = at; ticks = cpu; watch.observe({ size: 0, worktree: { status: 'unknown', bounded: true } }, at) }
     expect(watch.verdict()).toMatchObject({ status: 'active', reason: 'family CPU active in trailing window' })
     now = 1251
     expect(watch.verdict()).toMatchObject({ status: 'active', reason: 'family CPU active in trailing window', cpuFraction: 0.05 })
