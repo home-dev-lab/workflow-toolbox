@@ -13,7 +13,7 @@ import { quoteRemedyWord } from './remedy-quote.mjs'
 // Blind spot, by design: a script file (`bash x.sh`, `zsh .lane/g1.zsh`) and a shell string (`bash -c '...'`) are
 // opaque and never flagged. A guard that may refuse prefers a miss to a false hit: only well-understood runner
 // shapes are classified, and anything else reads as 'other'.
-export const LIGHT_SCOPE_PROBATION = 'flip the default to refuse after >= 20 firings over >= 3 days, each covering >= 2 test files, with 0 false hits'
+const LIGHT_SCOPE_PROBATION = 'flip the default to refuse after >= 20 firings over >= 3 days, each covering >= 2 test files, with 0 false hits'
 
 const TEST_FILE = /\.(test|spec|selftest)\.[cm]?[jt]sx?$/
 const SCRIPT_FILE = /\.[cm]?[jt]sx?$/
@@ -204,7 +204,7 @@ export function lightRunScope(argv) {
   return PACKAGE_MANAGERS.has(base) ? packageScriptScope(rest) : OTHER
 }
 
-export function coversSeveralTestFiles(scope) {
+function coversSeveralTestFiles(scope) {
   return scope.kind === 'multi' || scope.kind === 'suite'
 }
 
@@ -212,7 +212,7 @@ export function lightScopeMode(env = process.env) {
   return env.WT_SUITE_LOCK_LIGHT_SCOPE === 'refuse' ? 'refuse' : 'warn'
 }
 
-export function expectedMinutes(scope) {
+function expectedMinutes(scope) {
   if (scope.kind === 'suite') return SUITE_MINUTES
   return Math.max(1, Math.ceil((scope.files.length * SUITE_FILE_SECONDS) / 60))
 }
@@ -231,7 +231,7 @@ export function heavyJobAdvice({ command, scope, env = process.env }) {
   return { command: shellLine(words), reason: null }
 }
 
-export function lightScopeMessage({ scope, mode, advice }) {
+function lightScopeMessage({ scope, mode, advice }) {
   const what = scope.kind === 'suite' ? 'a whole test suite or directory' : `${scope.files.length} test files`
   const verdict = mode === 'refuse' ? 'refused' : 'warning (probation; refused once WT_SUITE_LOCK_LIGHT_SCOPE=refuse)'
   const reason = advice.reason ? ` (${advice.reason})` : ''
@@ -264,7 +264,7 @@ function firingLine(firing) {
   return `${firing.ts} ${firing.route} ${firing.outcome} ${firing.kind} ${firing.fileCount} file(s), ${hold}: ${files}${more}`
 }
 
-export function formatLightScopeFirings(firings) {
+function formatLightScopeFirings(firings) {
   const days = new Set(firings.map((firing) => String(firing.ts).slice(0, 10)))
   const head = `light-scope: ${firings.length} firing(s) over ${days.size} day(s); probation: ${LIGHT_SCOPE_PROBATION}\n`
   return head + firings.map((firing) => `${firingLine(firing)}\n`).join('')
