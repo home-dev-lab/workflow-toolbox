@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { canonicalDirectory } from './canonical-path.mjs'
-import { openCodeStoredDirectory } from './opencode-directory.mjs'
 
 export function usageDirectory(directory) {
   return canonicalDirectory(directory)
@@ -45,7 +44,7 @@ function executeSessionQuery(execFile, sqlite, dbPath, query) {
   try {
     return execFile(sqlite, ['-readonly', '-json', '--', dbPath, query], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024, timeout: 10_000, killSignal: 'SIGKILL' })
   } catch (error) {
-    if (error?.code === 'ENOENT') throw new Error(`${sqlite} not found`, { cause: error })
+    if (error?.code === 'ENOENT') throw new Error(`${sqlite} not found`)
     throw error
   }
 }
@@ -88,8 +87,7 @@ function captureReceipt({ sandbox, cwd, args, launch, startedAt, env, platform, 
   try {
     if (receipt.directory === null) throw new Error(launch.reason ?? 'worktree identity unavailable')
     if (!receipt.store) throw new Error('OpenCode session store path unavailable')
-    const directories = [...new Set([...launch.spellings, openCodeStoredDirectory(launch.realpath, platform ?? process.platform)])]
-    receipt.sessions = queryOpenCodeSessions({ dbPath: receipt.store, directories, startedAt, createdOnly: true, allSessions: receipt.store_kind === 'private', execFile: usageReader })
+    receipt.sessions = queryOpenCodeSessions({ dbPath: receipt.store, directories: launch.spellings, startedAt, createdOnly: true, allSessions: receipt.store_kind === 'private', execFile: usageReader })
     receipt.status = 'ok'
   } catch (error) {
     receipt.reason = error instanceof Error ? error.message : String(error)

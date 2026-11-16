@@ -1,4 +1,4 @@
-// OpenCode stores native Windows realpaths with forward slashes, preserving case.
-export function openCodeStoredDirectory(nativePath, platform = process.platform) {
-  return platform === 'win32' ? nativePath.replaceAll('\\', '/') : nativePath
+// RED PROOF ONLY: the fix is reverted; this stub keeps the tests importable and never maps separators.
+export function openCodeStoredDirectory(nativePath) {
+  return nativePath
 }

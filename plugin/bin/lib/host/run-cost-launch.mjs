@@ -1,5 +1,4 @@
 import path from 'node:path'
-import { openCodeStoredDirectory } from './opencode-directory.mjs'
 
 function launchWindowReason(launch, lane) {
   if (!Number.isFinite(launch.recorded_at) || !Number.isFinite(lane.started_at)) return 'OpenCode launch record has no finite invocation window'
@@ -7,21 +6,20 @@ function launchWindowReason(launch, lane) {
   return null
 }
 
-function launchSpellingReason(launch, platform) {
-  const pathApi = platform === 'win32' ? path.win32 : path.posix
-  if (typeof launch.realpath !== 'string' || !pathApi.isAbsolute(launch.realpath)) return 'OpenCode launch worktree identity unavailable'
+function launchSpellingReason(launch) {
+  if (typeof launch.realpath !== 'string' || !path.isAbsolute(launch.realpath)) return 'OpenCode launch worktree identity unavailable'
   if (typeof launch.requested !== 'string' || !Array.isArray(launch.spellings)) return 'OpenCode launch spellings unavailable'
   const evidenced = new Set([launch.realpath])
-  if (pathApi.isAbsolute(launch.requested)) evidenced.add(launch.requested)
+  if (path.isAbsolute(launch.requested)) evidenced.add(launch.requested)
   if (launch.spellings.length !== evidenced.size || launch.spellings.some((value) => !evidenced.delete(value))) return 'OpenCode launch spellings differ from recorded evidence'
   return null
 }
 
-function launchReason(launch, lane, platform) {
+function launchReason(launch, lane) {
   if (launch?.version !== 1) return 'OpenCode launch record version unavailable'
   if (launch.launch_for !== lane.usage_file) return 'OpenCode launch_for differs from lane usage_file'
   if (!['private', 'shared'].includes(launch.store_kind)) return 'OpenCode launch store_kind unavailable or unknown'
-  return launchWindowReason(launch, lane) ?? launchSpellingReason(launch, platform)
+  return launchWindowReason(launch, lane) ?? launchSpellingReason(launch)
 }
 
 function readLaunch(record, hostDir, readJson) {
@@ -34,17 +32,17 @@ function readLaunch(record, hostDir, readJson) {
   }
 }
 
-function applyLaunch(record, launch, canonical, platform) {
+function applyLaunch(record, launch, canonical) {
   record.launch = launch
   if (launch.realpath !== canonical) { record.blocked = true; record.reason = 'launch directory differs from report worktree realpath'; return }
-  record.queryDirectories = new Set([...launch.spellings, openCodeStoredDirectory(canonical, platform)])
+  record.queryDirectories = new Set(launch.spellings)
   if (record.absent && launch.store_kind === 'private') { record.blocked = true; record.reason = 'private OpenCode store was not captured'; return }
-  if (record.receipt?.alias_binding === 'stable') record.directories = new Set(record.queryDirectories)
+  if (record.receipt?.alias_binding === 'stable') record.directories = new Set(launch.spellings)
 }
 
-export function bindLaneLaunch(record, hostDir, canonical, readJson, platform = process.platform) {
-  record.directories = new Set([canonical, openCodeStoredDirectory(canonical, platform)])
-  record.queryDirectories = new Set(record.directories)
+export function bindLaneLaunch(record, hostDir, canonical, readJson) {
+  record.directories = new Set([canonical])
+  record.queryDirectories = new Set([canonical])
   if (record.family !== 'openai') return
   const evidence = readLaunch(record, hostDir, readJson)
   if (evidence.reason) { record.blocked = true; record.reason = evidence.reason; return }
@@ -55,15 +53,15 @@ export function bindLaneLaunch(record, hostDir, canonical, readJson, platform = 
     }
     return
   }
-  const reason = launchReason(evidence.launch, record.lane, platform)
+  const reason = launchReason(evidence.launch, record.lane)
   if (reason) { record.blocked = true; record.reason = reason; return }
-  applyLaunch(record, evidence.launch, canonical, platform)
+  applyLaunch(record, evidence.launch, canonical)
 }
 
-export function ambiguousReceiptRows(record, canonical, platform = process.platform) {
+export function ambiguousReceiptRows(record, canonical) {
   if (record.family !== 'openai' || !Array.isArray(record.receipt?.sessions)) return []
   return record.receipt.sessions.filter((row) => {
-    if (!row || row.directory === canonical || row.directory === openCodeStoredDirectory(canonical, platform)) return false
+    if (!row || row.directory === canonical) return false
     if (record.launch?.spellings.includes(row.directory)) return !record.directories.has(row.directory)
     return record.receipt.store_kind !== 'private'
   })
