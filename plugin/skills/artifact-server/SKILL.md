@@ -42,20 +42,21 @@ Files mount at `/<name>/...`. Different sessions can register different roots; t
 their deduplicated union. Each monitor owns its registration and removes it when that session exits.
 There is no HTTP registration or other network control endpoint.
 
-Always ask the helper for a link. Never hand the user a file path: whoever proposes an artifact
-must provide its complete URL. The remote URL works from any tailnet device; `localhost` only on
-the server machine. To hand a link over, run `url` with `--remote`; only when it exits 3 and its
-stderr says the server has no remote URL, run it without `--remote` and say it works only on this
-machine. Plain `url` prints the tailnet link when one exists, else the local one with the
-reason on stderr. The helper picks the longest matching root and exits 3 outside all roots:
+Never hand the user a file path: give the complete URL from the helper. The remote URL works from
+any tailnet device; `localhost` only on the server machine. To hand a link over, run `url` with
+`--remote`. Only when it exits 3 and its stderr says the server has no remote URL, run it without
+`--remote` and hand over what it prints; when stderr says it printed the local URL, say the link
+works only on this machine. The helper picks the longest matching root and exits 3 outside all
+roots:
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md" --remote
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 ```
 
-On exit 3, stderr names the reason the server recorded. Use `--local` to force localhost for tools
-on this host (Playwright, curl); it cannot be combined with `--remote`. Under WSL with Tailscale on Windows, only a Tailscale
+On exit 3, stderr names the reason: the one the server recorded when there is no remote URL, or the
+path problem. Use `--local` to force localhost for tools on this host (Playwright, curl); it cannot
+be combined with `--remote`. Under WSL with Tailscale on Windows, only a Tailscale
 Serve route reaches the server, so a missing route means no tailnet URL, and the reason gives the
 command that creates it.
 Add `--check` to fetch the printed URL. Read stdout for the URL alone and stderr for

@@ -78,7 +78,7 @@ describe('artifact server SessionStart context', () => {
     expect(output.hookSpecificOutput.additionalContext.split('\n')).toHaveLength(1)
     expect(output.hookSpecificOutput.additionalContext).toContain('wt-artifact-server.mjs\" url \"<absolute-file-path>\" --remote')
     expect(output.hookSpecificOutput.additionalContext).toContain('only when it exits 3')
-    expect(output.hookSpecificOutput.additionalContext).toContain('works only on this machine')
+    expect(output.hookSpecificOutput.additionalContext).toContain('when its stderr says it printed the local URL, say that the link works only on this machine')
 
     const url = spawnSync(process.execPath, [SERVER, 'url', report], {
       encoding: 'utf8', env: { ...process.env, XDG_STATE_HOME: stateHome },
@@ -120,6 +120,27 @@ describe('artifact server SessionStart context', () => {
     expect(fallback.status).toBe(0)
     expect(fallback.stdout).toBe(`http://localhost:${port}/reports/report.md\n`)
     expect(fallback.stderr).toBe('artifact server has no remote URL: tailscale reported no IPv4 address; printed the local URL\n')
+    expect(context).toContain('when its stderr says it printed the local URL')
+    expect(fallback.stderr).toContain('printed the local URL')
+  })
+
+  it('keeps the local-only caveat off a fallback that prints a tailnet link after a restart', async () => {
+    const { stateHome, report } = await liveServerFixture(null)
+    const hook = await runHook(stateHome)
+    const context = (JSON.parse(hook.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
+    const announced = String(/run (node .+?) and hand over/.exec(context)?.[1]).replace('<absolute-file-path>', report)
+    const shellEnv: NodeJS.ProcessEnv = { ...process.env, XDG_STATE_HOME: stateHome }
+    delete shellEnv.CLAUDE_PLUGIN_ROOT
+    expect(spawnSync(announced, { encoding: 'utf8', shell: true, env: shellEnv }).status).toBe(3)
+    const file = join(stateHome, 'wt-artifact-server', 'server.json')
+    const state = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    writeFileSync(file, JSON.stringify({ ...state, remoteUrl: 'https://host.tailnet.ts.net/artifacts', tailnetDetection: { status: 'available', reason: null } }))
+    chmodSync(file, 0o600)
+    const fallback = spawnSync(announced.replace(/ --remote$/, ''), { encoding: 'utf8', shell: true, env: shellEnv })
+    expect(fallback.status).toBe(0)
+    expect(fallback.stdout).toBe('https://host.tailnet.ts.net/artifacts/reports/report.md\n')
+    expect(fallback.stderr).not.toContain('printed the local URL')
+    expect(context).toMatch(/hand over what it prints; when its stderr says it printed the local URL, say that the link works only on this machine/)
   })
 
 })
