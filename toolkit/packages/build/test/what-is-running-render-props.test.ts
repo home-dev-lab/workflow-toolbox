@@ -21,7 +21,15 @@ function runSelftest(filter: string, env: Record<string, string>) {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 60_000,
-    env: { ...process.env, WT_WIR_HOST_DRIFT_STRICT: '', ...env, WT_WIR_SELFTEST_FILTER: filter, NODE_NO_WARNINGS: '1' },
+    env: {
+      ...process.env,
+      HOME: join(scratch, 'home'),
+      XDG_STATE_HOME: join(scratch, 'state'),
+      CLAUDE_CONFIG_DIR: join(scratch, 'config'),
+      CLAUDE_PLUGIN_DATA: join(scratch, 'plugin-data'),
+      NPM_CONFIG_PREFIX: join(scratch, 'npm'),
+      WT_WIR_HOST_DRIFT_STRICT: '', ...env, WT_WIR_SELFTEST_FILTER: filter, NODE_NO_WARNINGS: '1',
+    },
   })
 }
 
@@ -39,6 +47,7 @@ function writeDriftedHost(root: string) {
 
 beforeAll(() => {
   scratch = mkdtempSync(join(tmpdir(), 'wir-render-props-'))
+  for (const name of ['home', 'state', 'config', 'plugin-data', 'npm']) mkdirSync(join(scratch, name), { recursive: true })
   drifted = writeDriftedHost(scratch)
 })
 afterAll(() => { rmSync(scratch, { recursive: true, force: true }) })
@@ -81,6 +90,9 @@ describe('what-is-running render-props lock and host drift detector', () => {
     expect(result.stdout).toContain('no longer parse')
   })
 
+})
+
+describe('what-is-running host version probe and installed declarations', () => {
   it.skipIf(process.platform === 'win32')('the drift detector ends a version probe that ignores SIGTERM', () => {
     const bin = join(scratch, 'bin')
     mkdirSync(bin, { recursive: true })
@@ -93,7 +105,13 @@ describe('what-is-running render-props lock and host drift detector', () => {
   }, 60_000)
 
   it('the real host drift detector passes whatever the installed declarations say, and shows its warning', () => {
-    const result = runSelftest('[host drift detector]', {})
+    const result = runSelftest('[host drift detector]', {
+      HOME: process.env.HOME ?? '',
+      XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? '',
+      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? '',
+      CLAUDE_PLUGIN_DATA: process.env.CLAUDE_PLUGIN_DATA ?? '',
+      NPM_CONFIG_PREFIX: process.env.NPM_CONFIG_PREFIX ?? '',
+    })
     for (const line of result.stdout.split('\n')) if (line.startsWith('WARN host drift')) console.warn(line)
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain('tests: 1/1')

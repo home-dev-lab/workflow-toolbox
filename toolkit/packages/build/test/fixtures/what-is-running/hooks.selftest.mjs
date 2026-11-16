@@ -69,14 +69,22 @@ function installedClaudeVersion() {
   try {
     configDir = mkdtempSync(join(tmpdir(), 'wir-claude-version-'));
     const result = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } });
-    const stdout = result.status === 0 ? result.stdout : '';
-    const version = stdout.match(/(\d+\.\d+\.\d+\S*) \(Claude Code\)/)?.[1] ?? stdout.match(/\d+\.\d+\.\d+\S*/)?.[0];
-    return version || `unknown (claude --version ${result.error ? result.error.code : `exited ${result.status}`})`;
+    return parsedClaudeVersion(result);
   } catch (error) {
     return `unknown (claude --version probe failed: ${error.code ?? error.message})`;
   } finally {
-    try { if (configDir) rmSync(configDir, { recursive: true, force: true }); } catch { /* a leftover scratch dir is not a drift */ }
+    removeClaudeVersionConfig(configDir);
   }
+}
+
+function parsedClaudeVersion(result) {
+  const stdout = result.status === 0 ? result.stdout : '';
+  const version = stdout.match(/(\d+\.\d+\.\d+\S*) \(Claude Code\)/)?.[1] ?? stdout.match(/\d+\.\d+\.\d+\S*/)?.[0];
+  return version || `unknown (claude --version ${result.error ? result.error.code : `exited ${result.status}`})`;
+}
+
+function removeClaudeVersionConfig(configDir) {
+  try { if (configDir) rmSync(configDir, { recursive: true, force: true }); } catch { /* a leftover scratch dir is not a drift */ }
 }
 
 function installedDeclarationsPath() {
