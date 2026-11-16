@@ -75,22 +75,34 @@ function records(project, staging = stagingLaneDirs(project)) {
   for (const worktree of worktrees) {
     for (const slot of supervisionSlots(worktree)) {
       const paths = supervisionPaths(worktree, null, slot)
-      let currentRunId = null
-      try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch { /* no current-run pointer */ }
-      let names = []
-      try { names = readdirSync(paths.dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch { /* no supervision directory */ }
-      if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
-      for (const name of names) try {
-        const record = JSON.parse(readFileSync(path.join(paths.dir, name), 'utf8'))
-        Object.defineProperties(record, {
-          __recordWorktree: { value: worktree },
-          __supervisionSlot: { value: slot },
-        })
-        out.push(record)
-      } catch { /* unreadable record: skip it */ }
+      for (const name of supervisionRecordNames(paths)) {
+        const record = readSupervisionRecord(path.join(paths.dir, name), worktree, slot)
+        if (record) out.push(record)
+      }
     }
   }
   return out
+}
+
+// Record file names of one supervision slot, the current run's record first.
+function supervisionRecordNames(paths) {
+  let currentRunId = null
+  try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch { /* no current-run pointer */ }
+  let names = []
+  try { names = readdirSync(paths.dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch { /* no supervision directory */ }
+  if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
+  return names
+}
+
+function readSupervisionRecord(file, worktree, slot) {
+  try {
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    Object.defineProperties(record, {
+      __recordWorktree: { value: worktree },
+      __supervisionSlot: { value: slot },
+    })
+    return record
+  } catch { return null /* unreadable record: skip it */ }
 }
 
 async function continueSweeping(sweep, pollSeconds) {
