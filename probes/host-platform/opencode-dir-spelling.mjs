@@ -49,10 +49,21 @@ function pathReading(given, realpath) {
   try { return { value: realpath(given), error: null } } catch (error) { return { value: null, error: String(error.message) } }
 }
 
+// The path travels in an environment variable, never inside a command line: cmd.exe and Node's
+// argument quoting turned `for %I in ("<path>")` into `D:\"C:\...\"` on windows-latest.
 function shortSpelling(target) {
   if (platform() !== 'win32') return { given: target, reason: 'Windows short-name measurement is not applicable on this OS' }
-  const result = runToFile('cmd.exe', ['/d', '/s', '/c', `for %I in ("${target}") do @echo %~sI`], join(root, 'short.log'))
+  const result = runToFile('pwsh', ['-NoProfile', '-NonInteractive', '-Command',
+    '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:WT_LONG_PATH).ShortPath'], join(root, 'short.log'),
+  { env: { ...process.env, WT_LONG_PATH: target } })
   return { given: result.exitCode === 0 && result.raw.trim() ? result.raw.trim() : target, commandResult: result, reason: 'An identical spelling means no 8.3 alias was available.' }
+}
+
+// Windows resolves `..` against the spelling before any junction is followed, so `alias\..\leaf`
+// names a directory that does not exist and the OS itself refuses it. That is a measurement, not a
+// probe failure, but only for that case and only while the OS reports the path absent.
+function osUnresolvable(item) {
+  return item.lexicalDotDot && platform() === 'win32' && item.nativeRealpath.value === null && /ENOENT/.test(item.nativeRealpath.error ?? '')
 }
 
 try {
@@ -60,13 +71,16 @@ try {
   const alias = join(root, 'alias'); symlinkSync(target, alias, platform() === 'win32' ? 'junction' : 'dir')
   const short = shortSpelling(target)
   const version = runToFile(command, [...prefix, '--version'], join(root, 'version.log'), { env: isolatedEnv('version') })
-  const inputs = [target, realpathSync.native(target), alias, `${alias}${sep}..${sep}leaf`]
+  const dotDot = `${alias}${sep}..${sep}leaf`
+  const inputs = [target, realpathSync.native(target), alias, dotDot]
   if (platform() === 'win32') inputs.push(short.given)
+  const cases = inputs.map(measure).map((item) => ({ ...item, lexicalDotDot: item.given === dotDot }))
+    .map((item) => ({ ...item, osUnresolvable: osUnresolvable(item) }))
   const evidence = {
     provenance: provenance('opencode-dir-spelling', `node ${basename(import.meta.filename)} ${destination}`, join(root, 'provenance')),
-    version, shortSpelling: short, cases: inputs.map(measure),
-    classification: 'Each invocation has fresh HOME, USERPROFILE, APPDATA, LOCALAPPDATA and XDG directories, no inherited credentials, closed stdin and a timeout. An explicit credential-requiring model avoids the free-model default. Exit 1 is expected without provider credentials; session rows and directory= log lines are the measurement.',
+    version, shortSpelling: short, cases,
+    classification: 'Each invocation has fresh HOME, USERPROFILE, APPDATA, LOCALAPPDATA and XDG directories, no inherited credentials, closed stdin and a timeout. An explicit credential-requiring model avoids the free-model default. Exit 1 is expected without provider credentials; session rows and directory= log lines are the measurement. osUnresolvable marks the Windows `alias\\..\\leaf` case, where the OS resolves `..` lexically and the directory does not exist.',
   }
   writeEvidence(destination, evidence)
-  if (evidence.cases.some((item) => item.error || !item.store.rows.length)) process.exitCode = 1
+  if (cases.some((item) => item.error || (!item.store.rows.length && !item.osUnresolvable))) process.exitCode = 1
 } finally { rmSync(root, { recursive: true, force: true }) }

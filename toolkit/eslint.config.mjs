@@ -216,6 +216,18 @@ export default tseslint.config(
     },
   },
   {
+    files: ['plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common}.mjs',
+      '../plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common}.mjs',
+      'plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files,suite-lock-liveness}.mjs',
+      '../plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files,suite-lock-liveness}.mjs',
+      'scripts/generate-suite-lock-order-golden.mjs', 'toolkit/scripts/generate-suite-lock-order-golden.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
     // Warn-first areas use the same ceilings; a follow-up sets their warning ratchets.
     // Espree enforces JavaScript parse errors (the TypeScript parser permits top-level return).
     files: newAreaQualityFiles,

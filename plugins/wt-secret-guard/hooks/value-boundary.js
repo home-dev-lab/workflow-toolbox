@@ -10,19 +10,19 @@ export const isContextual = (kind) => CONTEXTUAL.has(kind);
 export const blankReferences = (value) => value.replace(WIDE_REFERENCE, (reference) => ' '.repeat(reference.length));
 export const referenceProof = (value) => STRICT.test(value);
 
-function passCandidates(text, candidate, base) {
-  return contextualMatches(candidate).map((item) => {
+function passCandidates(text, candidate, base, options) {
+  return contextualMatches(candidate, options).map((item) => {
     const start = candidate.indexOf(item.value);
     const finding = { kind: item.kind, value: text.slice(start, start + item.value.length), index: start };
     return { ...item, base, finding };
   });
 }
 
-export function discoverCandidates(text) {
+export function discoverCandidates(text, options) {
   const blanked = blankReferences(text);
-  const base = passCandidates(text, blanked, true);
+  const base = passCandidates(text, blanked, true, options);
   const ranges = [...text.matchAll(WIDE_REFERENCE)].map((match) => [match.index, match.index + match[0].length]);
-  const raw = passCandidates(text, text, false).filter((item) =>
+  const raw = passCandidates(text, text, false, options).filter((item) =>
     !base.some((previous) => previous.kind === item.kind && previous.keyStart === item.keyStart)
     && !ranges.some(([start, end]) => item.keyStart >= start && item.keyStart < end));
   return [...base, ...raw];
@@ -123,18 +123,18 @@ function allChecks(checks) {
     && checks.literal && checks.bracket && checks.backslash && checks.line && checks.eof;
 }
 
-export function boundaryFindings(text) {
+export function boundaryFindings(text, options) {
   const found = [];
-  for (const item of discoverCandidates(text)) {
+  for (const item of discoverCandidates(text, options)) {
     if (routeSMatch(text, item)) continue;
     if (item.base) {
       found.push(item.finding);
-      if ([...item.finding.value.matchAll(WIDE_REFERENCE)].length) found.push(...rawFindings(text, item));
+      if ([...item.finding.value.matchAll(WIDE_REFERENCE)].length) for (const raw of rawFindings(text, item)) found.push(raw);
     }
-    else found.push(...rawFindings(text, item));
+    else for (const raw of rawFindings(text, item)) found.push(raw);
   }
   for (const element of xmlElements(text)) {
-    if (!referenceProof(element.text)) found.push(...residueFindings(element.text, 'xml-element', element.start));
+    if (!referenceProof(element.text)) for (const raw of residueFindings(element.text, 'xml-element', element.start)) found.push(raw);
   }
   return found;
 }

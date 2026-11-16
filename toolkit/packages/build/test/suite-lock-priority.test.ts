@@ -20,6 +20,12 @@ import { currentPidNamespace } from '../../../../plugin/bin/lib/host/pid-namespa
 import { suiteLeaseArgvForProject, suiteLeaseClassFor, suiteLeaseClassForProject } from '../../../test-support/suite-lease.global-setup.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
+it('rejects invalid declared size and project before queueing', async () => {
+  const moduleUrl = new URL('../../../../plugin/bin/lib/suite-lock-priority.mjs', import.meta.url).href
+  const { suiteLockRankOptions } = await import(moduleUrl)
+  expect(() => suiteLockRankOptions({ size: 'XS' }, {})).toThrow('size must be S, M or L')
+  expect(() => suiteLockRankOptions({ project: 'forged\nline' }, {})).toThrow('without controls')
+})
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
 const WITH_LEASE = join(ROOT, 'toolkit/scripts/with-suite-lease.mjs')
 const roots: string[] = []
@@ -50,7 +56,7 @@ const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
 function waiter(root: string, name: string, order: string[], options: Record<string, unknown> = {}) {
   return acquireSuiteLock({ root, env: isolatedEnv(root), pollMs: 20, waitS: 30, argv: [name], ...options }).then((lease: { holder: unknown }) => {
     order.push(name)
-    releaseSuiteLock(lease)
+    releaseSuiteLock(lease, { served: true })
   })
 }
 
@@ -375,7 +381,7 @@ function registerReleaseOrdering() {
     }
     releaseSuiteLock(holder); await Promise.all(all)
     expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
-    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; p0-grants comes from the default-P1 tickets, which record the P0 counter at queue time').toEqual(['admissions', 'journal.jsonl', 'light-grants', 'p0-grants', 'queue.d'])
+    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; ordinary tickets record counters and completed exclusive project turns').toEqual(['admissions', 'journal.jsonl', 'light-grants', 'p0-grants', 'project-turns', 'queue.d', 'turn-seq'])
     expect(readLightCounter(root).grants).toBe(1)
   }, 20_000)
 

@@ -108,6 +108,12 @@ function stripHeredocBodies(text) {
   return kept.join('\n');
 }
 
+function appendHeredocLines(verb, removed, output, mentions) {
+  if (HEREDOC_PROSE_VERBS.has(verb)) {
+    for (const line of removed) if (isGuarded(line)) mentions.push(line.trim());
+  } else for (const line of removed) output.push(line);
+}
+
 function applyHeredocPolicy(original, stripped) {
   const source = original.split('\n'); const kept = stripped.split('\n'); const output = []; const mentions = [];
   let sourceIndex = 0; let keptIndex = 0;
@@ -121,9 +127,7 @@ function applyHeredocPolicy(original, stripped) {
     const openerRanges = ranges(opener);
     const openerRange = openerRanges.find((item) => heredocIndex >= item.start && heredocIndex <= item.end);
     const verb = leadingVerb(openerRange ? opener.slice(openerRange.start, openerRange.end) : opener);
-    if (HEREDOC_PROSE_VERBS.has(verb)) {
-      for (const line of removed) if (isGuarded(line)) mentions.push(line.trim());
-    } else output.push(...removed);
+    appendHeredocLines(verb, removed, output, mentions);
   }
   return { text: output.join('\n'), mentions };
 }

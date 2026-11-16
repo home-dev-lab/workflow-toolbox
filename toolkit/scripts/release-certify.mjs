@@ -28,7 +28,7 @@ export function sampleLoad({ platform = process.platform, cores = availableParal
   return { at: new Date().toISOString(), load, capacity, source }
 }
 
-export function runGate(name, root, lease, spawnGate = spawn) {
+export function runGate(name, root, lease, spawnGate = spawn, execution = {}) {
   return new Promise((resolve) => {
     // Under a broker lease the gate gets its own process group (POSIX), so a lost lease stops its whole tree.
     const group = Boolean(lease?.broker)
@@ -37,6 +37,7 @@ export function runGate(name, root, lease, spawnGate = spawn) {
     let lost = false
     let treeStopped = null
     let finished = false
+    child.once('spawn', () => { execution.started = true })
     const forward = (signal) => signalCoveredCommand(child, signal, { group })
     const interrupt = () => forward('SIGINT')
     const terminate = () => forward('SIGTERM')
@@ -52,6 +53,7 @@ export function runGate(name, root, lease, spawnGate = spawn) {
     lease.lost?.then((reason) => {
       if (finished) return
       lost = true
+      execution.lost = true
       process.stderr.write(`certification ${name}: broker lease lost (${reason || 'broker gone'}); stopping gate\n`)
       treeStopped = stopCoveredCommandTree(child, { group })
     })
@@ -62,24 +64,45 @@ export function runGate(name, root, lease, spawnGate = spawn) {
   })
 }
 
-export async function certify({ override = false, gates = ['typecheck', 'lint', 'quality', 'test'], root = process.cwd(), lockRoot, probe = sampleLoad, executeGate = runGate } = {}) {
+function certificationOptions({ override = false, gates = ['typecheck', 'lint', 'quality', 'test'], root = process.cwd(), lockRoot, probe = sampleLoad, executeGate = runGate }) {
+  return { override, gates, root, lockRoot, probe, executeGate }
+}
+
+function refuseCertification(record, override) {
+  if (!override && record.start.load !== null && record.start.load >= record.start.capacity) {
+    record.admission = `refused: load ${record.start.load} >= capacity ${record.start.capacity}; use pnpm certify -- --allow-high-load to override`
+    process.stderr.write(`${record.admission}\n`)
+    return true
+  }
+  return false
+}
+
+function admitCertification(record, override, receipt) {
+  record.admission = record.start.source === 'unavailable' ? 'admitted: load unavailable' : override ? 'admitted: explicit load override' : 'admitted: below threshold'
+  process.stderr.write(`certification: ${record.admission}; load=${record.start.load ?? 'unavailable'}, capacity=${record.start.capacity ?? 'unavailable'}; receipt=${receipt}\n`)
+}
+
+function certificationExit(record, gates) {
+  return record.gates.find((gate) => gate.exit !== 0)?.exit ?? (record.admission.startsWith('admitted') && record.gates.length === gates.length ? 0 : 75)
+}
+
+export async function certify(options = {}) {
+  const { override, gates, root, lockRoot, probe, executeGate } = certificationOptions(options)
   const record = { startedAt: new Date().toISOString(), threshold: 'one-minute load average < availableParallelism', override, admission: 'pending', start: null, end: null, gates: [], exit: 75 }
   const dir = join(root, '..', '.lane', 'certifications')
   mkdirSync(dir, { recursive: true })
   const receipt = join(dir, `${Date.now()}-${process.pid}.json`)
   let lease
+  const execution = { started: false, lost: false }
   try {
     lease = await acquireSuiteLock({ ...(lockRoot ? { root: lockRoot } : {}), argv: ['pnpm', 'certify'], onWait: (line) => process.stderr.write(`${line}\n`) })
     record.start = probe()
-    if (!override && record.start.load !== null && record.start.load >= record.start.capacity) {
-      record.admission = `refused: load ${record.start.load} >= capacity ${record.start.capacity}; use pnpm certify -- --allow-high-load to override`
-      process.stderr.write(`${record.admission}\n`)
-      return 75
-    }
-    record.admission = record.start.source === 'unavailable' ? 'admitted: load unavailable' : override ? 'admitted: explicit load override' : 'admitted: below threshold'
-    process.stderr.write(`certification: ${record.admission}; load=${record.start.load ?? 'unavailable'}, capacity=${record.start.capacity ?? 'unavailable'}; receipt=${receipt}\n`)
+    if (refuseCertification(record, override)) return 75
+    admitCertification(record, override, receipt)
     for (const gate of gates) {
-      const exit = await executeGate(gate, root, lease)
+      // Injected gates execute in-process; the default runner observes the child's spawn event.
+      if (executeGate !== runGate) execution.started = true
+      const exit = await executeGate(gate, root, lease, undefined, execution)
       record.gates.push({ name: gate, exit, finishedAt: new Date().toISOString() })
       if (exit !== 0) return exit
     }
@@ -90,11 +113,11 @@ export async function certify({ override = false, gates = ['typecheck', 'lint', 
     return 75
   } finally {
     record.end = probe()
-    record.exit = record.gates.find((gate) => gate.exit !== 0)?.exit ?? (record.admission.startsWith('admitted') && record.gates.length === gates.length ? 0 : 75)
+    record.exit = certificationExit(record, gates)
     try {
       writeFileSync(receipt, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
     } finally {
-      if (lease) releaseSuiteLock(lease)
+      if (lease) releaseSuiteLock(lease, { exit: record.exit, served: execution.started && !execution.lost })
     }
     process.stderr.write(`certification: receipt=${receipt} exit=${record.exit}\n`)
   }

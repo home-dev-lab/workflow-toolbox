@@ -1426,7 +1426,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toBe('control abandon submitted; lane tdd EXIT=missing')
     const firstPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const firstRecordPath = join(lifecycle.root, '.lane', 'supervision', `${firstPointer.runId}.json`)
-    for (let i = 0; i < 80 && !readFileSync(firstRecordPath, 'utf8').includes('abandoned'); i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
+    const abandonedAndCleaned = () => JSON.parse(readFileSync(firstRecordPath, 'utf8')).state === 'abandoned' && !existsSync(firstBrief)
+    const cleanedBy = performance.now() + 15_000
+    while (!abandonedAndCleaned() && performance.now() < cleanedBy) await new Promise((resolve) => setTimeout(resolve, 25))
     const firstRecord = JSON.parse(readFileSync(firstRecordPath, 'utf8'))
     expect(firstRecord.state).toBe('abandoned')
     expect(existsSync(firstBrief)).toBe(false)

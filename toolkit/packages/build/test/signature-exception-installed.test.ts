@@ -139,7 +139,7 @@ describe('installed owner exception consumption', () => {
     f.relay(); f.authorize()
     const first = f.push()
     expect(first.out).toContain('signature exception opened')
-    expect(first.status).not.toBe(0)
+    expect(first.status, first.out).not.toBe(0)
     expect(f.git('--git-dir', f.bare, 'rev-parse', 'main')).toBe(f.A)
     f.authorize()
     const second = f.push()
@@ -147,7 +147,8 @@ describe('installed owner exception consumption', () => {
     expect(second.out).toContain('already-used')
     rmSync(reject)
     f.relay(); f.authorize()
-    expect(f.push().status).toBe(0)
+    const third = f.push()
+    expect(third.status, third.out).toBe(0)
   })
 })
 
@@ -192,7 +193,8 @@ describe('installed owner exception advertised refs', () => {
     expect(result.status, result.out).not.toBe(0)
     expect(result.out).toContain('signature check refused')
     f.relay('refs/heads/target'); f.authorize()
-    expect(f.push('HEAD:refs/heads/target').status).toBe(0)
+    const retried = f.push('HEAD:refs/heads/target')
+    expect(retried.status, retried.out).toBe(0)
   })
 })
 
@@ -210,7 +212,8 @@ describe('installed owner exception pinning and configuration', () => {
     const args = [cli, 'pin', '--repo', f.local, '--attestation', file]
     const pinned = f.call(process.execPath, args)
     expect(pinned.status, pinned.out).toBe(0)
-    expect(f.call(process.execPath, [...args, '--add']).status).not.toBe(0)
+    const added = f.call(process.execPath, [...args, '--add'])
+    expect(added.status, added.out).not.toBe(0)
     expect(readdirSync(join(f.config.exceptionStateDir, 'inbox'))).toHaveLength(1)
     const status = f.call(process.execPath, [cli, 'status', '--repo', f.local])
     expect(status.status, status.out).toBe(0)
@@ -254,7 +257,7 @@ describe('installed owner exception target and dependency integrity', () => {
     f.git('remote', 'add', 'elsewhere', join(f.dir, 'other.git'))
     f.git('init', '-q', '--bare', join(f.dir, 'other.git'))
     const other = f.call(process.execPath, [cli, 'preview', '--repo', f.local, '--remote', 'elsewhere', '--ref', 'refs/heads/main', '--new', f.B])
-    expect(other.status).not.toBe(0)
+    expect(other.status, other.out).not.toBe(0)
     expect(existsSync(join(f.config.exceptionStateDir, 'claims'))).toBe(false)
   })
   it('hash-pins the new verifier dependencies and detects tampering', () => {

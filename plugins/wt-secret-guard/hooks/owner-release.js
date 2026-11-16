@@ -4,6 +4,7 @@
 import { isIssuedToken, knownTokens, randomId, releaseRefusalReason, releaseToken, reserveTokenId } from './token-vault.js';
 import { OWNER_CHANNEL_ADAPTERS } from './owner-channel.js';
 import { base64Utf8 } from './outbound-tools.js';
+import { INSPECTION_NODES, INSPECTION_TEXT } from './outbound-traversal.js';
 
 const confirmations = new Map();
 const privateCodes = new Set();
@@ -30,6 +31,7 @@ function expireConfirmations(now) {
 export function releaseGrammarRefusal(event) {
   if (confirmationKeyCollision(event)) return { deny: 'wt-secret-guard refused confirmation-code key collision.' };
   const strings = [...eventStrings(event)];
+  if (strings.some((item) => item.budget)) return { deny: 'wt-secret-guard refused input that is too large to inspect.' };
   if (strings.some(({ value }) => redactConfirmationCodes(value) !== value)) {
     return { deny: 'wt-secret-guard refused tool input carrying an active confirmation code.' };
   }
@@ -50,14 +52,35 @@ function rootPlace(root, name) {
   return { body: root && name === 'text', hostTool: root && name === 'tool' };
 }
 
+const hasObjectValue = (item) => item.value && typeof item.value === 'object';
+
 function* placedStrings(value, place, root) {
-  if (SCALAR_TYPES.has(typeof value)) { yield { value: String(value), key: false, ...place }; return; }
-  if (!value || typeof value !== 'object') return;
-  for (const [name, child] of Object.entries(value)) {
-    const childPlace = rootPlace(root, name);
-    yield { value: name, body: false, key: true, hostTool: childPlace.hostTool };
-    yield* placedStrings(child, childPlace, false);
+  const stack = [{ value, place, root }];
+  let nodes = 0;
+  let text = 0;
+  while (stack.length) {
+    const item = stack.pop();
+    if (item.entries) {
+      if (item.cursor < item.entries.length) placeChild(stack, item);
+      continue;
+    }
+    if (!item.place.key) nodes += 1;
+    if (SCALAR_TYPES.has(typeof item.value)) {
+      const scalar = String(item.value); text += scalar.length;
+      if (text <= INSPECTION_TEXT) yield { value: scalar, key: false, ...item.place };
+    } else if (hasObjectValue(item)) {
+      stack.push({ entries: Object.entries(item.value), cursor: 0, root: item.root });
+    }
+    if (nodes > INSPECTION_NODES || text > INSPECTION_TEXT) { yield { value: '', budget: true }; return; }
   }
+}
+
+function placeChild(stack, item) {
+  const [name, child] = item.entries[item.cursor++];
+  const childPlace = rootPlace(item.root, name);
+  stack.push(item, { value: child, place: childPlace, root: false });
+  // Count key text through the same scalar budget without changing its placement.
+  stack.push({ value: name, place: { body: false, key: true, hostTool: childPlace.hostTool }, root: false });
 }
 
 function grammarCount(text) {
@@ -100,9 +123,19 @@ function releaseLineAllowance(event, strings, grammar) {
 }
 
 export function confirmationKeyCollision(value) {
-  if (!value || typeof value !== 'object') return false;
-  const keys = Object.keys(value).map(redactConfirmationCodes);
-  return new Set(keys).size !== keys.length || Object.values(value).some(confirmationKeyCollision);
+  const pending = [value];
+  let nodes = 0;
+  while (pending.length) {
+    const current = pending.pop();
+    nodes += 1;
+    if (nodes > INSPECTION_NODES) return false; // The grammar walk returns the budget denial.
+    if (!current || typeof current !== 'object') continue;
+    const keys = Object.keys(current).map(redactConfirmationCodes);
+    if (new Set(keys).size !== keys.length) return true;
+    const children = Object.values(current);
+    for (let index = children.length - 1; index >= 0; index -= 1) pending.push(children[index]);
+  }
+  return false;
 }
 
 function confirmationCode() {

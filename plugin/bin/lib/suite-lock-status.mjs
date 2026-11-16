@@ -1,5 +1,5 @@
 import { displayArgv, displayText } from './suite-lock-display.mjs'
-import { effectiveLevel, numericLevel, orderSuiteLockTickets, waitedMilliseconds } from './suite-lock-order.mjs'
+import { effectiveLevel, numericLevel, orderSuiteLockTickets, rankSuiteLockTicket, waitedMilliseconds } from './suite-lock-order.mjs'
 import { suiteLockLightHoldSeconds, suiteLockLongHoldSeconds } from './suite-lock-priority.mjs'
 
 const finite = (value) => Number.isFinite(value) ? value : null
@@ -40,17 +40,19 @@ function queueEntry(ticket, position, now) {
     waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(safeArgv(record?.argv)) }
 }
 
-export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0Counter) {
+export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0Counter, rankState) {
   const live = tickets.filter((ticket) => !ticket.stale)
-  const ordered = orderSuiteLockTickets(live, counter, now, p0Counter)
+  const ordered = orderSuiteLockTickets(live, counter, now, p0Counter, rankState)
   const stale = tickets.filter((ticket) => ticket.stale).sort((left, right) => left.number - right.number)
+    .map((ticket) => ordered.levelOrder === 'rank-v4' && numericLevel(ticket.record?.level)
+      ? { ...ticket, ...rankSuiteLockTicket(ticket, { ...rankState, lightCounter: counter, now }) } : ticket)
   const ageMs = current.held ? waitedMilliseconds(current.holder?.startedAt, now) : null
   const longHoldBoundS = suiteLockLongHoldSeconds(env)
   const lightHoldBoundS = suiteLockLightHoldSeconds(env)
   return { ...current, holder: safeHolder(current.holder), ageMs, level: numericLevel(current.holder?.level) ? current.holder.level : null,
     lightPastClass: current.holder?.light === true && ageMs !== null && ageMs > lightHoldBoundS * 1000, lightHoldBoundS,
     longHold: ageMs !== null && ageMs > longHoldBoundS * 1000, longHoldBoundS, order: ordered.order, levelOrder: ordered.levelOrder,
-    queue: [...ordered.tickets, ...stale].map((ticket, index) => queueEntry(ticket, index + 1, now)) }
+    queue: [...ordered.tickets, ...stale].map((ticket, index) => ({ ...queueEntry(ticket, index + 1, now), reason: safeValue(ticket.reason) })) }
 }
 
 function formatSuiteLockDuration(ms) {
@@ -69,7 +71,7 @@ function queueKind(entry) {
   return entry.light ? 'light' : 'exclusive'
 }
 function queueLine(entry) {
-  return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})`
+  return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})${entry.reason?.line ? ', ' + entry.reason.line : ''}`
 }
 
 function parkedLine(entry) {
@@ -94,6 +96,7 @@ function lightHoldLine(current) {
 
 function orderLines(current) {
   if (current.order === 'compatible') return ['queue compatibility order: exact older-client ordering while a live ticket has no level']
+  if (current.levelOrder === 'bounded-p0') return ['queue legacy order: bounded P0 with aging; size bonus, project precedence and alternation inactive']
   return current.order === 'levels' && current.levelOrder === 'legacy' ? [LEGACY_LEVEL_ORDER] : []
 }
 
