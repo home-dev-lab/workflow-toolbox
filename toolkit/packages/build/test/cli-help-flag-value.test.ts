@@ -308,7 +308,7 @@ describe('every cross-family review counterexample, with its expected outcome', 
     }
   })
 
-  it('PARSER: artifact-server `serve` takes no arguments, and `url` takes one path (and its --remote, --local, --check flags) only', () => {
+  it('PARSER: artifact-server `serve` takes no arguments, and `url` takes one path (and --remote) only', () => {
     for (const args of [['serve', 'extra'], ['serve', '--zz'], ['url', 'a', 'b'], ['url', '--zz', 'a'], ['url', 'a', '--zz']]) {
       const r = runCli('wt-artifact-server.mjs', args)
       expect(r.timedOut, `${args.join(' ')} did not return`).toBe(false)
