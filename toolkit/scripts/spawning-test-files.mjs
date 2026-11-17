@@ -234,6 +234,7 @@ export const spawningTestFiles = [
   'packages/build/test/verifier-cli-guard-envelope-phase.test.ts',
   'packages/build/test/wake-floor-in-flight.test.ts',
   'packages/build/test/wake-floor.test.ts',
+  'packages/build/test/what-is-running-render-props.test.ts',
   'packages/build/test/what-is-running.test.ts',
   'packages/build/test/work-journal-cli.test.ts',
   'packages/build/test/work-journal-storage-unnamed.test.ts',
