@@ -35,6 +35,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
+import { htmlPagePolicy, RAW_CSP } from './lib/artifact-html-policy.mjs'
 import { closeMarkdownFence, markdownFenceTag, markdownScripts, MERMAID_FILE } from './lib/artifact-mermaid.mjs'
 import { artifactMermaidRouteIndex, artifactMermaidRouteMatches, readArtifactAsset } from './lib/host/artifact-assets.mjs'
 import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
@@ -229,21 +230,10 @@ function send(response, method, statusCode, body, contentType = 'text/plain; cha
 }
 
 const GENERATED_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
-const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
-const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
-const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-const INTERACTIVE_CSP = "default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
 const REGISTRATION_OWNERSHIP_MISS_LIMIT = 3
 
 function fileContentType(file) {
   return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ?? 'application/octet-stream'
-}
-
-const HTML_MODE_CSP = new Map([['rich', RICH_CSP], ['annotatable', ANNOTATABLE_CSP], ['interactive', INTERACTIVE_CSP]])
-
-function htmlCsp(file) {
-  const mode = /^\s*<!--\s*wt-artifact-server:\s*(rich|annotatable|interactive)\s*-->/i.exec(file.toString('utf8', 0, 256))?.[1].toLowerCase()
-  return HTML_MODE_CSP.get(mode) ?? RAW_CSP
 }
 
 async function directoryPage(root, target, urlSegments) {
@@ -527,7 +517,7 @@ class ArtifactService {
         const rendered = markdownScripts(renderMarkdown(file.toString('utf8'), path.basename(target)), { host: scriptHost, depth: segments.length - 1, generatedCsp: GENERATED_CSP })
         send(response, method, 200, rendered.html, 'text/html; charset=utf-8', { 'Content-Security-Policy': rendered.csp })
       } else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
-      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': htmlCsp(file) })
+      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': htmlPagePolicy(file) })
       else send(response, method, 200, file, fileContentType(target), { 'Content-Security-Policy': RAW_CSP })
     } catch { send(response, method, 500, 'Internal Server Error\n') }
   }
