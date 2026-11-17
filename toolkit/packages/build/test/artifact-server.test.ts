@@ -3292,10 +3292,12 @@ describe('review decisions: serving security matrix', () => {
       expect(response.headers['content-type'], file).toMatch(/^text\/html/)
       expect(response.headers['content-security-policy'], file).toMatch(/default-src 'none'/)
     }
-    for (const file of ['active.html', 'active.svg', 'blob.bin']) {
+    const rawCsp = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+    const defaultHtmlCsp = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    for (const [file, expectedCsp] of [['active.html', defaultHtmlCsp], ['active.svg', rawCsp], ['blob.bin', rawCsp]]) {
       const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
       expect(response.status, file).toBe(200)
-      expect(response.headers['content-security-policy'], file).toBe("sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+      expect(response.headers['content-security-policy'], file).toBe(expectedCsp)
       expect(response.headers['x-content-type-options'], file).toBe('nosniff')
     }
     const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
