@@ -62,6 +62,10 @@ function writePluginRootNotice(state) {
       + `a different version is installed: v${state.installedVersion} at ${state.installedRoot}. `
       + 'Use /reload-plugins or restart to load the installed version; monitors keep the old root until a restart; '
       + 'non-interactive sessions keep MCP servers on the old path.\n');
+  } else if (state.kind === 'ambiguous-installed') {
+    process.stdout.write(`PLUGIN VERSION UNKNOWN: running ${state.name} from ${state.runningRoot}; `
+      + 'cannot tell which installed copy the harness would load from the applicable registry entries. '
+      + 'Check the installed plugin scopes before using /reload-plugins or restarting.\n');
   } else if (state.kind === 'settings-double') {
     process.stdout.write(`DUPLICATE HOOK REGISTRATION: settings-registered hooks at ${state.runningRoot} overlap `
       + `with enabled installed plugin ${state.key} at ${state.installedRoot}: ${state.duplicates.join(', ')}. `
