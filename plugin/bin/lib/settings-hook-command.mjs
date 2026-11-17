@@ -1,73 +1,193 @@
-// Recognise literal shell command words without executing settings commands. This is
-// deliberately not a shell evaluator: a word holding an expansion is opaque (it can be
-// neither the executable nor the script), redirections are skipped with their target,
-// and syntax the tokenizer cannot read (a here-document, a dangling redirection, an
-// unbalanced group) produces no evidence. An OR branch is
-// conditional, not proof of hook execution.
+// Recognise literal `node <absolute .mjs>` runs in a settings hook command without
+// executing it. This is a single-pass scanner, not a shell evaluator:
+// - a word holding an expansion is opaque: it can be neither the executable nor the script;
+// - command, process and backtick substitutions are scanned as nested command lists, since
+//   their commands run whenever the command around them runs;
+// - redirections are skipped together with their target;
+// - an OR branch is conditional and gives no evidence, nor does anything after it in the list;
+// - syntax it cannot read (a here-document, an unterminated quote or expansion, an unbalanced
+//   group, a dangling redirection) gives no evidence for the whole command.
 import { basename, isAbsolute } from 'node:path'
 
-const TOKEN = new RegExp([
-  String.raw`(?:[ \t\r]|\\\n)+`,
-  String.raw`#[^\n]*`,
-  String.raw`&&|\|\|`,
-  String.raw`(?<heredoc>\d*<<-?(?!<))`,
-  String.raw`(?<redirect>\d*(?:&>>?|>>|>&|<&|>\||<>|<<<|>|<))`,
-  String.raw`[;&|()\n]`,
-  String.raw`(?:\\[^\n]|'[^']*'|"(?:\\[^\n]|[^"\\])*"|` + '`[^`]*`' + String.raw`|\$\{[^}]*\}|\$|[^\s\\'";&|()<>` + '`' + String.raw`$])+`,
-].join('|'), 'y')
+class Unreadable extends Error {}
+const unreadable = () => { throw new Unreadable() }
+const MAX_NESTING = 32
+const BLANK = /(?:[ \t\r]|\\\n)+/y
+const REDIRECT = /\d*(?:&>>?|>>|>&|<&|>\||<>|<<<|<<-?|>|<)/y
+const SUBSTITUTION_OPENERS = ['$(', '<(', '>(']
 
-// Quoted and escaped text is literal; what remains unquoted decides whether a word expands.
-function unquoted(raw) {
-  return raw.replace(/\\[^\n]|'[^']*'|"((?:\\[^\n]|[^"\\])*)"/g, (_match, inner) => inner?.replace(/\\[\\"$`]/g, '') ?? '')
+function matchAt(pattern, scan) {
+  pattern.lastIndex = scan.pos
+  return pattern.exec(scan.text)?.[0] ?? null
 }
 
-function literalWord(raw) {
-  return raw.replace(/\\([^\n])|'([^']*)'|"((?:\\.|[^"\\])*)"/g, (_match, escaped, single, double) => {
-    if (escaped !== undefined) return escaped
-    if (single !== undefined) return single
-    return double.replace(/\\([\\"$`])/g, '$1')
-  })
+// push(...items) passes every item as an argument and overflows the stack on wide input.
+function append(target, items) {
+  for (const item of items) target.push(item)
 }
 
-function wordToken(raw) {
-  const bare = unquoted(raw)
-  return { kind: 'word', value: literalWord(raw), opaque: /[$`]/.test(bare), assignment: /^[A-Za-z_]\w*=/.test(raw) }
+const opensSubstitution = (scan) => SUBSTITUTION_OPENERS.some((opener) => scan.text.startsWith(opener, scan.pos))
+
+// Reads one nested command list after its opener; the scan stops past the matching `)`.
+function substitution(scan, word) {
+  if (scan.depth >= MAX_NESTING) unreadable()
+  scan.pos += 2
+  scan.depth++
+  append(word.scripts, commandScripts(commandList(scan, true)))
+  scan.depth--
 }
 
-function classify(match) {
-  const raw = match[0]
-  if (/^(?:[ \t\r]|\\\n|#)/.test(raw)) return null
-  if (match.groups.heredoc !== undefined) return { kind: 'unsupported' }
-  if (match.groups.redirect !== undefined) return { kind: 'redirect' }
-  if (/^(?:&&|\|\||[;&|()\n])$/.test(raw)) return { kind: 'operator', value: raw }
-  return wordToken(raw)
+function backtick(scan, word) {
+  let end = scan.pos + 1
+  while (end < scan.text.length && scan.text[end] !== '`') end += scan.text[end] === '\\' ? 2 : 1
+  if (end >= scan.text.length || scan.depth >= MAX_NESTING) unreadable()
+  const inner = { text: scan.text.slice(scan.pos + 1, end).replace(/\\([\\`$])/g, '$1'), pos: 0, depth: scan.depth + 1 }
+  append(word.scripts, commandScripts(commandList(inner, false)))
+  scan.pos = end + 1
 }
 
-function shellTokens(command) {
-  const tokens = []
-  TOKEN.lastIndex = 0
-  while (TOKEN.lastIndex < command.length) {
-    const match = TOKEN.exec(command)
-    if (!match) return []
-    const token = classify(match)
-    if (token?.kind === 'unsupported') return []
-    if (token) tokens.push(token)
+// `${...}` may nest and may quote a closing brace; one forward pass finds its end.
+function parameterExpansion(scan) {
+  let depth = 0
+  let pos = scan.pos
+  while (pos < scan.text.length) {
+    const ch = scan.text[pos]
+    if (ch === '\\') pos += 2
+    else if (ch === "'" || ch === '"') pos = closingQuote(scan.text, pos) + 1
+    else {
+      // Only `${` opens a nested expansion; a bare `{` is literal text, as in `${X:-{}`.
+      if (ch === '{' && scan.text[pos - 1] === '$') depth++
+      if (ch === '}' && --depth === 0) { scan.pos = pos + 1; return }
+      pos++
+    }
   }
-  return tokens
+  unreadable()
+}
+
+function closingQuote(text, open) {
+  let pos = open + 1
+  while (pos < text.length && text[pos] !== text[open]) pos += text[pos] === '\\' && text[open] === '"' ? 2 : 1
+  return pos < text.length ? pos : unreadable()
+}
+
+function expansion(scan, word) {
+  word.opaque = true
+  if (opensSubstitution(scan)) return substitution(scan, word)
+  if (scan.text[scan.pos] === '`') return backtick(scan, word)
+  if (scan.text.startsWith('${', scan.pos)) return parameterExpansion(scan)
+  scan.pos++
+}
+
+function escaped(scan, word) {
+  const next = scan.text[scan.pos + 1]
+  if (next !== '\n' && next !== undefined) word.value += next
+  scan.pos += next === undefined ? 1 : 2
+}
+
+function singleQuoted(scan, word) {
+  const end = scan.text.indexOf("'", scan.pos + 1)
+  if (end < 0) unreadable()
+  word.value += scan.text.slice(scan.pos + 1, end)
+  scan.pos = end + 1
+}
+
+function doubleQuotedPart(scan, word) {
+  const ch = scan.text[scan.pos]
+  const next = scan.text[scan.pos + 1]
+  if (ch === '\\' && '\\"$`\n'.includes(next)) {
+    if (next !== '\n') word.value += next
+    scan.pos += 2
+  } else if (ch === '$' || ch === '`') expansion(scan, word)
+  else { word.value += ch; scan.pos++ }
+}
+
+function doubleQuoted(scan, word) {
+  scan.pos++
+  while (scan.pos < scan.text.length && scan.text[scan.pos] !== '"') doubleQuotedPart(scan, word)
+  if (scan.pos >= scan.text.length) unreadable()
+  scan.pos++
+}
+
+function wordPart(scan, word) {
+  const ch = scan.text[scan.pos]
+  if (ch === '\\') return escaped(scan, word)
+  if (ch === "'") return singleQuoted(scan, word)
+  if (ch === '"') return doubleQuoted(scan, word)
+  if (ch === '$' || ch === '`' || opensSubstitution(scan)) return expansion(scan, word)
+  word.value += ch
+  scan.pos++
+}
+
+function endsWord(scan) {
+  const ch = scan.text[scan.pos]
+  if (ch === '<' || ch === '>') return !opensSubstitution(scan)
+  return /[ \t\r\n;&|()]/.test(ch)
+}
+
+function wordToken(scan) {
+  const word = { kind: 'word', value: '', opaque: false, scripts: [] }
+  const start = scan.pos
+  while (scan.pos < scan.text.length && !endsWord(scan)) wordPart(scan, word)
+  // Every token must consume input; a character no rule reads would otherwise loop forever.
+  if (scan.pos === start) unreadable()
+  word.assignment = /^[A-Za-z_]\w*=/.test(scan.text.slice(start, scan.pos))
+  return word
+}
+
+function operatorAt(scan) {
+  const ch = scan.text[scan.pos]
+  return ['&&', '||'].find((operator) => scan.text.startsWith(operator, scan.pos)) ?? (';&|()\n'.includes(ch) ? ch : null)
+}
+
+function nextToken(scan) {
+  const blank = matchAt(BLANK, scan)
+  if (blank) { scan.pos += blank.length; return null }
+  if (scan.text[scan.pos] === '#') {
+    const end = scan.text.indexOf('\n', scan.pos)
+    scan.pos = end < 0 ? scan.text.length : end
+    return null
+  }
+  if (opensSubstitution(scan)) return wordToken(scan)
+  const redirect = matchAt(REDIRECT, scan)
+  if (redirect) {
+    if (/^\d*<<-?$/.test(redirect)) unreadable()
+    scan.pos += redirect.length
+    return { kind: 'redirect' }
+  }
+  const operator = operatorAt(scan)
+  if (!operator) return wordToken(scan)
+  scan.pos += operator.length
+  return { kind: 'operator', value: operator }
+}
+
+// A nested list ends at its unmatched `)`; the top-level list must balance its groups.
+function commandList(scan, nested) {
+  const tokens = []
+  let depth = 0
+  while (scan.pos < scan.text.length) {
+    const token = nextToken(scan)
+    if (!token) continue
+    const group = token.kind === 'operator' ? token.value : null
+    if (group === ')' && depth === 0) return nested ? tokens : unreadable()
+    if (group === '(') depth++
+    if (group === ')') depth--
+    tokens.push(token)
+  }
+  return nested || depth ? unreadable() : tokens
 }
 
 // `env` reads its own NAME=value arguments after quote removal; the shell reads only unquoted ones.
 const isEnvAssignment = (word) => !word.opaque && /^[A-Za-z_]\w*=/.test(word.value)
+const isCommand = (word, name) => word && !word.opaque && !word.value.endsWith('/') && basename(word.value) === name
 
 function nodeScript(words) {
   let index = 0
-  const wrapper = words[0] && !words[0].opaque && !words[0].value.endsWith('/') && basename(words[0].value) === 'env'
+  const wrapper = isCommand(words[0], 'env')
   if (wrapper) index++
   while (words[index]?.assignment || (wrapper && words[index] && isEnvAssignment(words[index]))) index++
   const executable = words[index]
   const script = words[index + 1]
-  if (!executable || executable.opaque || executable.value.endsWith('/')) return null
-  if (!['node', 'node.exe'].includes(basename(executable.value))) return null
+  if (!isCommand(executable, 'node') && !isCommand(executable, 'node.exe')) return null
   return script && !script.opaque && isAbsolute(script.value) && script.value.endsWith('.mjs') ? script.value : null
 }
 
@@ -79,36 +199,45 @@ function nextCondition(operator, conditional, groups) {
   return conditional
 }
 
-function balanced(tokens) {
-  let depth = 0
-  for (const { kind, value } of tokens) {
-    if (kind !== 'operator') continue
-    if (value === '(') depth++
-    if (value === ')') depth--
-    if (depth < 0) return false
+const emptyCommand = () => ({ words: [], targets: [], redirected: false })
+
+function simpleCommandScripts({ words, targets }) {
+  const script = nodeScript(words)
+  return [...(script ? [script] : []), ...[...words, ...targets].flatMap((word) => word.scripts)]
+}
+
+function endCommand(state, operator) {
+  const { command } = state
+  if (command.redirected) unreadable()
+  const empty = !command.words.length && !command.targets.length
+  // A newline right after `||`, `&&` or `|` continues the same list.
+  if (operator === '\n' && empty && ['||', '&&', '|'].includes(state.lastOperator)) return
+  if (!state.conditional) append(state.scripts, simpleCommandScripts(command))
+  state.command = emptyCommand()
+  state.lastOperator = operator
+  state.conditional = nextCondition(operator, state.conditional, state.groups)
+}
+
+function commandScripts(tokens) {
+  const state = { scripts: [], groups: [], conditional: false, command: emptyCommand(), lastOperator: null }
+  for (const token of [...tokens, { kind: 'operator', value: '\n' }]) {
+    const { command } = state
+    if (token.kind === 'operator') endCommand(state, token.value)
+    else if (command.redirected && token.kind === 'redirect') unreadable()
+    else if (token.kind === 'redirect') command.redirected = true
+    else {
+      (command.redirected ? command.targets : command.words).push(token)
+      command.redirected = false
+    }
   }
-  return depth === 0
+  return state.scripts
 }
 
 export function settingsHookScripts(command) {
-  const tokens = shellTokens(command)
-  if (!balanced(tokens)) return []
-  const scripts = []
-  const groups = []
-  let words = [], conditional = false, redirected = false
-  for (const token of [...tokens, { kind: 'operator', value: '\n' }]) {
-    if (token.kind === 'redirect') { redirected = true; continue }
-    if (token.kind === 'word') {
-      if (!redirected) words.push(token)
-      redirected = false
-      continue
-    }
-    if (redirected) return []
-    const script = !conditional && nodeScript(words)
-    if (script) scripts.push(script)
-    words = []
-    redirected = false
-    conditional = nextCondition(token.value, conditional, groups)
+  try {
+    return commandScripts(commandList({ text: command, pos: 0, depth: 0 }, false))
+  } catch (error) {
+    if (error instanceof Unreadable) return []
+    throw error
   }
-  return scripts
 }

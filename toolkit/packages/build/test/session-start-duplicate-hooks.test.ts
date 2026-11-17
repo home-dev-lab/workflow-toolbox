@@ -329,6 +329,19 @@ describe('settings command and installed-copy evidence', () => {
     ['parenthesis inside a parameter expansion', `node "${HOOK}"; echo \${X:-)}`, true],
     ['directory path for env', `env/ node "${HOOK}"`, false],
     ['missing redirection target', `node "${HOOK}" >`, false],
+    ['quoted brace inside a parameter expansion', `node "${HOOK}" \${X:-'}'}`, true],
+    ['process substitution target', `echo > >(node "${HOOK}" )`, true],
+    ['command substitution inside an argument list', `echo $(true) node "${HOOK}"`, false],
+    ['nested parameter expansion', `echo \${X:-\${Y:-abc};node "${HOOK}" }`, false],
+    ['newline after an OR operator', `true ||\nnode "${HOOK}"`, false],
+    ['consecutive redirections', `node "${HOOK}" > > /dev/null`, false],
+    ['node inside a command substitution', `echo $(node "${HOOK}")`, true],
+    ['single-quoted substitution is text', `echo '$(node "${HOOK}")'`, false],
+    ['node inside backticks', `echo \`node "${HOOK}"\``, true],
+    ['continuation between words', `node \\\n "${HOOK}"`, true],
+    ['unmatched closing parenthesis', `node "${HOOK}" )`, false],
+    ['quoted parenthesis is text', `echo ")"; node "${HOOK}"`, true],
+    ['literal brace in a parameter default', `node "${HOOK}" ; echo \${X:-{}`, true],
   ])('settings parser handles %s', (_label, command, duplicate) => {
     const { configDir, root } = fixture()
     writeJson(join(configDir, 'settings.json'), {
@@ -338,6 +351,40 @@ describe('settings command and installed-copy evidence', () => {
     const result = run(configDir, undefined, root, undefined, { event: null })
     expect(result.status).toBe(0)
     expect(result.stdout.includes('DUPLICATE HOOK REGISTRATION')).toBe(duplicate)
+  })
+  it('a deeply nested command gives no evidence without hiding another entry', () => {
+    const { configDir, root } = fixture()
+    const deep = `echo ${'$('.repeat(50_000)}true${')'.repeat(50_000)}`
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: deep }, { type: 'command', command: `node "${HOOK}"` }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
+  })
+  it('collects a very wide command substitution without overflowing the stack', () => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo $(${`node "${HOOK}" ;`.repeat(150_000)})` }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
+  })
+  it('reads a long run of unterminated expansions in linear time', () => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo ${'${'.repeat(200_000)}` }] }] },
+    })
+    const started = performance.now()
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    // A quadratic scan of this input takes tens of seconds; a linear one well under a second.
+    expect(performance.now() - started).toBeLessThan(5_000)
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('DUPLICATE HOOK REGISTRATION')
   })
   it.each([false, true])('does not attribute an ambiguous installed key to registry order (reverse=%s)', (reverse) => {
     const { configDir, installedRoot, root } = fixture()
