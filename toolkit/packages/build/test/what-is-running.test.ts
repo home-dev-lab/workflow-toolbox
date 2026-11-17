@@ -22,7 +22,8 @@ function runSelftest(filter?: string, timeout?: number) {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout,
-    env: { ...process.env, ...(filter ? { WT_WIR_SELFTEST_FILTER: filter } : {}), NODE_NO_WARNINGS: '1' },
+    // The host drift detector only warns here; strict mode is for whoever refreshes the declarations copy.
+    env: { ...process.env, WT_WIR_HOST_DRIFT_STRICT: '', ...(filter ? { WT_WIR_SELFTEST_FILTER: filter } : {}), NODE_NO_WARNINGS: '1' },
   })
 }
 
