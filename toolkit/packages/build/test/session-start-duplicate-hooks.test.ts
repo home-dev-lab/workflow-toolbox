@@ -300,8 +300,7 @@ describe('SessionStart plugin-root state', () => {
   })
 })
 
-describe('settings command and installed-copy evidence', () => {
-  it.each([
+const PARSER_CASES = [
     ['adjacent semicolon', `node "${HOOK}";next`, true],
     ['leading whitespace', `  node "${HOOK}"`, true],
     ['newline separator', `true\nnode "${HOOK}"`, true],
@@ -345,7 +344,10 @@ describe('settings command and installed-copy evidence', () => {
     ['command substitution inside a parameter default', `node "${HOOK}" ; echo \${X:-$(echo {})}`, true],
     ['backticks inside a parameter default', `node "${HOOK}" ; echo \${X:-\`echo {}\`}`, true],
     ['escaped dollar inside a parameter default', `echo \${X:-\\\${}; node "${HOOK}"`, true],
-  ])('settings parser handles %s', (_label, command, duplicate) => {
+] as const
+
+function parserEvidence() {
+  it.each(PARSER_CASES)('settings parser handles %s', (_label, command, duplicate) => {
     const { configDir, root } = fixture()
     writeJson(join(configDir, 'settings.json'), {
       enabledPlugins: { [KEY]: true },
@@ -355,6 +357,9 @@ describe('settings command and installed-copy evidence', () => {
     expect(result.status).toBe(0)
     expect(result.stdout.includes('DUPLICATE HOOK REGISTRATION')).toBe(duplicate)
   })
+}
+
+function nestingEvidence() {
   it('a deeply nested command gives no evidence without hiding another entry', () => {
     const { configDir, root } = fixture()
     const deep = `echo ${'$('.repeat(50_000)}true${')'.repeat(50_000)}`
@@ -366,6 +371,9 @@ describe('settings command and installed-copy evidence', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
   })
+}
+
+function widthEvidence() {
   it('collects a very wide command substitution without overflowing the stack', () => {
     const { configDir, root } = fixture()
     writeJson(join(configDir, 'settings.json'), {
@@ -386,6 +394,9 @@ describe('settings command and installed-copy evidence', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
   })
+}
+
+function expansionEvidence() {
   it('reads a long run of unterminated expansions in linear time', () => {
     const { configDir, root } = fixture()
     writeJson(join(configDir, 'settings.json'), {
@@ -399,6 +410,9 @@ describe('settings command and installed-copy evidence', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).not.toContain('DUPLICATE HOOK REGISTRATION')
   })
+}
+
+function installedEvidence() {
   it.each([false, true])('does not attribute an ambiguous installed key to registry order (reverse=%s)', (reverse) => {
     const { configDir, installedRoot, root } = fixture()
     const other = installCopy(root, 'other', JSON.parse(MANIFEST).version)
@@ -426,4 +440,12 @@ describe('settings command and installed-copy evidence', () => {
     expect(result.stdout).not.toContain('cannot tell which installed copy')
     expect(result.stdout).not.toContain('PLUGIN VERSION')
   })
+}
+
+describe('settings command and installed-copy evidence', () => {
+  parserEvidence()
+  nestingEvidence()
+  widthEvidence()
+  expansionEvidence()
+  installedEvidence()
 })

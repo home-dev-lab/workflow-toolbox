@@ -179,6 +179,10 @@ function commandList(scan, nested) {
     if (group === ')') depth--
     tokens.push(token)
   }
+  return finishedList(nested, depth, tokens)
+}
+
+function finishedList(nested, depth, tokens) {
   return nested || depth ? unreadable() : tokens
 }
 
@@ -190,10 +194,19 @@ function nodeScript(words) {
   let index = 0
   const wrapper = isCommand(words[0], 'env')
   if (wrapper) index++
-  while (words[index]?.assignment || (wrapper && words[index] && isEnvAssignment(words[index]))) index++
+  index = afterAssignments(words, wrapper, index)
   const executable = words[index]
   const script = words[index + 1]
   if (!isCommand(executable, 'node') && !isCommand(executable, 'node.exe')) return null
+  return literalNodeScript(script)
+}
+
+function afterAssignments(words, wrapper, index) {
+  while (words[index]?.assignment || (wrapper && words[index] && isEnvAssignment(words[index]))) index++
+  return index
+}
+
+function literalNodeScript(script) {
   return script && !script.opaque && isAbsolute(script.value) && script.value.endsWith('.mjs') ? script.value : null
 }
 
