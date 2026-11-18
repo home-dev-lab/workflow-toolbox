@@ -82,12 +82,7 @@ export function workflowRunDirForTranscript(transcriptPath, readdir = defaultRea
   const found = sessionWorkflowRuns(transcriptPath, readdir)
   if (!found) return null
   const { workflowsDir, runs } = found
-  if (runs.length === 1) return path.join(workflowsDir, runs[0])
-  // Several runs — the ordinary state of a long session. Membership is decided by the agent's
-  // own transcript file inside a run directory, never by picking "the" run: with N runs there
-  // is no single one, and "exactly one" silently fails every session past its first launch
-  // (measured 2026-09-03: the provenance checkers of a verification run were nudged, sent their
-  // verdict to the main session, and the pattern fail-closed the claim).
+  // Even a single run must carry this agent's own transcript to prove membership.
   return runDirHoldingAgent(workflowsDir, runs, agentId, readdir)
 }
 
@@ -101,15 +96,12 @@ export function isHarnessWorkflowSubagentType(agentType) {
 }
 
 export function finalTextIsDeliveredByHarness(payload) {
-  if (isHarnessWorkflowSubagentType(payload?.agent_type)) return true
-  const agentId = typeof payload?.agent_id === 'string' ? payload.agent_id : null
-  return workflowRunDirForTranscript(payload?.transcript_path, undefined, agentId) !== null
+  return isWorkflowSubagentPayload(payload)
 }
 
 // A Workflow-tool subagent, proved by evidence that cannot describe an Agent-tool sub-agent: the
 // harness label, a transcript inside a run directory, or the agent's own transcript file in one.
-// Deliberately WITHOUT the "the session has exactly one run" shortcut of workflowRunDirForTranscript,
-// which would also claim an Agent-tool sub-agent spawned in that session.
+// A session's run count alone cannot distinguish an Agent-tool sub-agent from a Workflow member.
 export function isWorkflowSubagentPayload(payload, readdir = defaultReaddir) {
   if (isHarnessWorkflowSubagentType(payload?.agent_type)) return true
   if (workflowRunDirFromTranscriptPath(payload?.transcript_path) !== null) return true

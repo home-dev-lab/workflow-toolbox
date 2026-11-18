@@ -15,6 +15,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+// @ts-expect-error runtime JS module
+import { finalTextIsDeliveredByHarness, workflowRunDirForTranscript } from '../../../../plugin/bin/lib/subagent-delivery-shape.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const GUARD_HOOK = join(REPO_ROOT, 'plugin/bin/wt-outbound-guard-hook.mjs')
@@ -91,11 +93,13 @@ function multiRunWorkflowLayout(tag: string, agentId: string): { transcriptPath:
   return { transcriptPath: sessionPath }
 }
 
-function workflowRunLayout(tag: string): { transcriptPath: string } {
+function workflowRunLayout(tag: string, agentId = 'agent-workflow-path'): { transcriptPath: string } {
   const root = mkRoot(tag)
   const sessionPath = join(root, 'session.jsonl')
   writeFileSync(sessionPath, '{}\n')
-  mkdirSync(join(root, 'session', 'subagents', 'workflows', 'wf_demo'), { recursive: true })
+  const runDir = join(root, 'session', 'subagents', 'workflows', 'wf_demo')
+  mkdirSync(runDir, { recursive: true })
+  writeFileSync(join(runDir, `agent-${agentId}.jsonl`), '{}\n')
   return { transcriptPath: sessionPath }
 }
 
@@ -1639,5 +1643,24 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     expect(commands.some((c) => c.includes('wt-stop-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-registry-heartbeat-hook.mjs'))).toBe(true)
     expect(existsSync(HEARTBEAT_HOOK)).toBe(true)
+  })
+})
+
+describe('single-run Workflow membership', () => {
+  it.each([undefined, 'stranger'])('one Workflow run does not prove membership for agent id %s', (agentId) => {
+    const { transcriptPath } = workflowRunLayout('single-run-membership', 'someoneelse')
+    expect(workflowRunDirForTranscript(transcriptPath, undefined, agentId)).toBeNull()
+    expect(finalTextIsDeliveredByHarness({ transcript_path: transcriptPath, agent_id: agentId })).toBe(false)
+  })
+
+  it.each(['Stop', 'SubagentStop', 'StopFailure'])('one unrelated Workflow run does not silence outbound %s', (event) => {
+    const { env } = guardEnv('single-run-stranger')
+    const { transcriptPath } = workflowRunLayout('single-run-stranger-layout', 'someoneelse')
+    const r = run(GUARD_HOOK, {
+      ...stopPayload('agent-stranger', 'sess-single-stranger', 'pilot'),
+      hook_event_name: event, transcript_path: transcriptPath,
+    }, env)
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('OUTBOUND CHECK')
   })
 })

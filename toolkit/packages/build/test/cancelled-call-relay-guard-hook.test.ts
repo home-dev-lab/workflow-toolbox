@@ -196,6 +196,20 @@ function cancelledSendMessage(f: Fixture, id = 'toolu_01QfibAAAA'): void {
   ])
 }
 
+describe('single-run Workflow membership', () => {
+  it('one unrelated Workflow run does not silence the cancelled-call relay guard', () => {
+    const f = fixture('single-run-stranger')
+    cancelledSendMessage(f)
+    const runDir = join(f.sessionTranscript.replace(/\.jsonl$/, ''), 'subagents', 'workflows', 'wf_one')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'agent-someoneelse.jsonl'), '{}\n')
+    const r = run(f, payload(f))
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('CANCELLED CALL CHECK')
+    expect(r.stderr).toContain(CANCEL_TEXT)
+  })
+})
+
 describe('wt-cancelled-call-relay-guard-hook — blocks once on an unrelayed cancellation', () => {
   it('blocks the stop with the tool name, the verbatim text and what the transcript records about the hook run', () => {
     const f = fixture('block')
