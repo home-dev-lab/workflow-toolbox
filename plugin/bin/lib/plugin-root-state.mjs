@@ -13,6 +13,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { declaredHookPaths } from './hook-manifest.mjs'
 import { homeDirectory } from './host/home-directory.mjs'
+import { settingsHookScripts } from './settings-hook-command.mjs'
 
 function readJson(file) {
   try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null }
@@ -63,27 +64,25 @@ function installedCopies(configDir, projectDir, name) {
   })
 }
 
+function registeredScript(ownRoot, script, event) {
+  const resolved = canonical(script)
+  if (!resolved) return []
+  const rel = relative(ownRoot, resolved)
+  return rel && rel !== '..' && !rel.startsWith(`..${sep}`) ? [{ event, rel: `/${rel.split(sep).join('/')}` }] : []
+}
+
+function groupHooks(group, ownRoot, event) {
+  return (Array.isArray(group?.hooks) ? group.hooks : []).flatMap((entry) => {
+    if (entry?.type !== 'command' || typeof entry.command !== 'string') return []
+    return settingsHookScripts(entry.command).flatMap((script) => registeredScript(ownRoot, script, event))
+  })
+}
+
 function settingsHooks(configDir, projectDir, ownRoot, event) {
-  const hooks = []
-  for (const source of settingsSources(configDir, projectDir)) {
+  return settingsSources(configDir, projectDir).flatMap((source) => {
     const groups = readJson(source)?.hooks?.[event]
-    for (const group of Array.isArray(groups) ? groups : []) {
-      for (const entry of Array.isArray(group?.hooks) ? group.hooks : []) {
-        if (entry?.type !== 'command' || typeof entry.command !== 'string') continue
-        // Compare entire absolute script path tokens, never just a basename or a
-        // substring of a command which happens to mention the script. `node` must sit in
-        // command position (start, or after ; & | or an opening parenthesis), so text that
-        // only prints the path is not read as an execution.
-        for (const match of entry.command.matchAll(/(?:^|[;&|(]\s*)node(?:\.exe)?\s+(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|([^\s"']+\.mjs))(?=$|\s)/g)) {
-          const script = canonical(match[1] ?? match[2] ?? match[3])
-          if (!script) continue
-          const rel = relative(ownRoot, script)
-          if (rel && rel !== '..' && !rel.startsWith(`..${sep}`)) hooks.push({ event, rel: `/${rel.split(sep).join('/')}` })
-        }
-      }
-    }
-  }
-  return hooks
+    return (Array.isArray(groups) ? groups : []).flatMap((group) => groupHooks(group, ownRoot, event))
+  })
 }
 
 function sharedHooks(ownManifestPath, installedManifestPath, registered) {
@@ -91,6 +90,41 @@ function sharedHooks(ownManifestPath, installedManifestPath, registered) {
   const installed = new Set(declaredHookPaths(installedManifestPath).map(({ event, rel }) => `${event}:${rel}`))
   return [...new Set(registered.filter(({ event, rel }) => own.has(`${event}:${rel}`) && installed.has(`${event}:${rel}`))
     .map(({ event, rel }) => `${event}: ${rel.slice(1)}`))]
+}
+
+function loadedRootState(copies, manifest, runningRoot, env) {
+  const loadedId = env.CLAUDE_PLUGIN_DATA && basename(env.CLAUDE_PLUGIN_DATA)
+  if (!loadedId) return { kind: 'none' }
+  if (loadedId === `${manifest.name}@inline`.replace(/[^A-Za-z0-9_-]/g, '-')) return { kind: 'session-only' }
+  const loaded = copies.filter(({ key }) => loadedId === key.replace(/[^A-Za-z0-9_-]/g, '-'))
+  // An applicable entry at the running root proves no drift, even beside other scopes.
+  if (loaded.some(({ root }) => root === runningRoot)) return { kind: 'none' }
+  const roots = new Map(loaded.map((copy) => [copy.root, copy]))
+  const drifted = [...roots.values()].filter(({ version }) => typeof version === 'string' && version !== manifest.version)
+  // Without a candidate at another version there is no drift to report, whichever copy loads.
+  if (typeof manifest.version !== 'string' || !drifted.length) return { kind: 'none' }
+  // The loaded id identifies a key, not a scope or an entry's precedence. Registry
+  // order cannot establish which distinct root a reload would select.
+  if (roots.size > 1) return { kind: 'ambiguous-installed', name: manifest.name, runningRoot }
+  const installed = drifted[0]
+  return { kind: 'stale', name: manifest.name, runningRoot, runningVersion: manifest.version,
+    installedRoot: installed.root, installedVersion: installed.version }
+}
+
+function settingsRootState(copies, registered, runningRoot, ownManifestPath) {
+  if (!registered.length) return { kind: 'none' }
+  // The same root counts too: settings runs beside its manifest registration.
+  for (const { key, root, manifestPath } of copies) {
+    const duplicates = sharedHooks(ownManifestPath, manifestPath, registered)
+    if (!duplicates.length) continue
+    return { kind: 'settings-double', key, runningRoot, installedRoot: root, duplicates }
+  }
+  return { kind: 'none' }
+}
+
+function invokedHooks(runningRoot, event, invokedEvent, invokedScript) {
+  return invokedEvent === event && typeof invokedScript === 'string'
+    ? registeredScript(runningRoot, invokedScript, event) : []
 }
 
 /** A none result means the available read-only inputs cannot prove a root-state finding. */
@@ -106,37 +140,11 @@ function classifyRoot({ ownRoot, projectDir: payloadDir, event = 'SessionStart',
   const configDir = env.CLAUDE_CONFIG_DIR || join(homeDirectory(), '.claude')
   const copies = installedCopies(configDir, projectDir, manifest.name)
 
-  if (env.CLAUDE_PLUGIN_ROOT) {
-    const loadedId = env.CLAUDE_PLUGIN_DATA && basename(env.CLAUDE_PLUGIN_DATA)
-    if (!loadedId) return { kind: 'none' }
-    if (loadedId === `${manifest.name}@inline`.replace(/[^A-Za-z0-9_-]/g, '-')) return { kind: 'session-only' }
-    const loaded = copies.filter(({ key }) => loadedId === key.replace(/[^A-Za-z0-9_-]/g, '-'))
-    // An applicable entry at the running root means the session already runs an installed
-    // copy of this key; another scope's entry at another version proves no drift.
-    if (loaded.some(({ root }) => root === runningRoot)) return { kind: 'none' }
-    for (const { root, version } of loaded) {
-      if (typeof manifest.version !== 'string' || typeof version !== 'string' || manifest.version === version) continue
-      return { kind: 'stale', name: manifest.name, runningRoot, runningVersion: manifest.version,
-        installedRoot: root, installedVersion: version }
-    }
-    return { kind: 'none' }
-  }
+  if (env.CLAUDE_PLUGIN_ROOT) return loadedRootState(copies, manifest, runningRoot, env)
 
   const registered = settingsHooks(configDir, projectDir, runningRoot, event)
-  const self = invokedEvent === event && typeof invokedScript === 'string' && canonical(invokedScript)
-  if (self) {
-    const rel = relative(runningRoot, self)
-    if (rel && rel !== '..' && !rel.startsWith(`..${sep}`)) registered.push({ event, rel: `/${rel.split(sep).join('/')}` })
-  }
-  if (!registered.length) return { kind: 'none' }
-  // The same root counts too: a settings entry pointing into the installed copy runs
-  // beside that copy's own manifest registration.
-  for (const { key, root, manifestPath } of copies) {
-    const duplicates = sharedHooks(ownManifestPath, manifestPath, registered)
-    if (!duplicates.length) continue
-    return { kind: 'settings-double', key, runningRoot, installedRoot: root, duplicates }
-  }
-  return { kind: 'none' }
+  registered.push(...invokedHooks(runningRoot, event, invokedEvent, invokedScript))
+  return settingsRootState(copies, registered, runningRoot, ownManifestPath)
 }
 
 export function pluginRootState(options) {
