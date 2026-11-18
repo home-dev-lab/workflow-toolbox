@@ -17,6 +17,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - When several installed copies of the loaded plugin apply and none sits at the running root, the session-start notice
   now says it cannot tell which copy a reload would load, instead of naming whichever registry entry came first. Copies
   that all match the running version produce no notice.
+
+### Changed
+- Unmarked HTML pages from the artifact server no longer block Orca's annotation tool: they are served with `sandbox allow-scripts` and `script-src 'none'`, so the browser's injected script can run while page scripts, inline handlers and `javascript:` URLs stay blocked and the page keeps its opaque origin. Scripting enabled for the document also lets a meta refresh navigate on its own and hides `<noscript>` content. Rich, annotatable, interactive and non-HTML policies are unchanged.
+
 ## [0.200.1] - 2026-11-13
 
 Patch release: fixes the two native-Windows test defects listed under Known issues in 0.200.0.

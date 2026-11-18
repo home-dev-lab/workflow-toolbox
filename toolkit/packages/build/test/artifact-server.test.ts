@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, type TestContext } from 'vitest'
 // @ts-expect-error standalone Node selftest shares its regression cases with Vitest
 import { registerArtifactCspTests } from './artifact-server-csp.selftest.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
@@ -3072,344 +3072,415 @@ describe('owner decision 5: Tailscale access', () => {
   })
 })
 
-describe('review decisions: serving security matrix', () => {
-  // Headless Chrome can print its complete --dump-dom serialization and then never exit. These fakes stand in for
-  // that browser on every platform: the render must end on the dump itself, and a browser that never dumps must
-  // fail with a message naming the render stage rather than leave the test to a bare runner timeout.
-  function fakeBrowser(source: string): BrowserCommand {
-    const script = join(temporaryDir('fake-browser'), 'browser.mjs')
-    writeFileSync(script, source)
-    return { command: process.execPath, args: [script] }
+// Headless Chrome can print its complete --dump-dom serialization and then never exit. These fakes stand in for
+// that browser on every platform: the render must end on the dump itself, and a browser that never dumps must
+// fail with a message naming the render stage rather than leave the test to a bare runner timeout.
+function fakeBrowser(source: string): BrowserCommand {
+  const script = join(temporaryDir('fake-browser'), 'browser.mjs')
+  writeFileSync(script, source)
+  return { command: process.execPath, args: [script] }
+}
+
+async function rendersToCompleteDumpAndStopsHungBrowser(): Promise<void> {
+  const helperPidFile = join(temporaryDir('fake-browser-helper'), 'helper.pid')
+  // Ignores SIGTERM like a browser hung in its own shutdown, and keeps a helper process alive like a renderer.
+  const browser = fakeBrowser([
+    "import { spawn } from 'node:child_process'",
+    "import { writeFileSync } from 'node:fs'",
+    "process.on('SIGTERM', () => {})",
+    "const helper = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' })",
+    `writeFileSync(${JSON.stringify(helperPidFile)}, String(helper.pid))`,
+    "process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n')",
+    'setInterval(() => {}, 1000)',
+  ].join('\n'))
+  const started = Date.now()
+  const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
+  expect(Date.now() - started).toBeLessThan(10_000)
+  expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
+  expect(result.stdout).toContain('data-script="ran"')
+  const helperPid = Number(readFileSync(helperPidFile, 'utf8'))
+  await waitFor(() => pidAlive(result.pid!) || pidAlive(helperPid) ? null : true)
+}
+
+async function acceptsDumpWhenBoundExpiresDuringGrace(): Promise<void> {
+  const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n'); setInterval(() => {}, 1000)\n")
+  const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 5_000, exitGraceMs: 60_000 })
+  expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
+  await waitFor(() => pidAlive(result.pid!) ? null : true)
+}
+
+async function neverSignalsExitedBrowserWithOpenOutput(ctx: TestContext): Promise<void> {
+  // On Windows the process the fake browser starts does not keep the inherited stdout pipe open after the browser
+  // exits (cross-os run 36963718515: the render resolved on exit instead of reaching its bound), so this scenario
+  // cannot be built there. The guard itself is platform-neutral; the direct stopBrowser locks below run everywhere.
+  if (process.platform === 'win32') {
+    ctx.skip('POSIX-only fixture: a grandchild holding the inherited stdout pipe open past its parent exit')
   }
-
-  it('ends a render on a complete DOM dump and stops a browser that never exits, helpers included', async () => {
-    const helperPidFile = join(temporaryDir('fake-browser-helper'), 'helper.pid')
-    // Ignores SIGTERM like a browser hung in its own shutdown, and keeps a helper process alive like a renderer.
-    const browser = fakeBrowser([
-      "import { spawn } from 'node:child_process'",
-      "import { writeFileSync } from 'node:fs'",
-      "process.on('SIGTERM', () => {})",
-      "const helper = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' })",
-      `writeFileSync(${JSON.stringify(helperPidFile)}, String(helper.pid))`,
-      "process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n')",
-      'setInterval(() => {}, 1000)',
-    ].join('\n'))
-    const started = Date.now()
-    const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
-    expect(Date.now() - started).toBeLessThan(10_000)
-    expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
-    expect(result.stdout).toContain('data-script="ran"')
-    const helperPid = Number(readFileSync(helperPidFile, 'utf8'))
-    await waitFor(() => pidAlive(result.pid!) || pidAlive(helperPid) ? null : true)
-  }, 20_000)
-
-  it('accepts a complete dump when the render bound expires during the exit grace', async () => {
-    const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n'); setInterval(() => {}, 1000)\n")
-    const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 5_000, exitGraceMs: 60_000 })
-    expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
-    await waitFor(() => pidAlive(result.pid!) ? null : true)
-  }, 20_000)
-
-  it('never signals a browser that already exited, even when its output stays open', async (ctx) => {
-    // On Windows the process the fake browser starts does not keep the inherited stdout pipe open after the browser
-    // exits (cross-os run 36963718515: the render resolved on exit instead of reaching its bound), so this scenario
-    // cannot be built there. The guard itself is platform-neutral; the direct stopBrowser locks below run everywhere.
-    if (process.platform === 'win32') {
-      ctx.skip('POSIX-only fixture: a grandchild holding the inherited stdout pipe open past its parent exit')
-    }
-    const holderPidFile = join(temporaryDir('fake-browser-holder'), 'holder.pid')
-    // The browser exits at once without a dump; a process it started keeps its stdout open, so the render can only
-    // end on its bound. Its group is the exited browser's pid: signalling it is what a reused pid would turn unsafe.
-    const browser = fakeBrowser([
-      "import { spawn } from 'node:child_process'",
-      "import { writeFileSync } from 'node:fs'",
-      "const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] })",
-      `writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid))`,
-      'process.exit(0)',
-    ].join('\n'))
-    const signalsBefore = browserSignals
-    const holderPid = () => Number(readFileSync(holderPidFile, 'utf8'))
-    try {
-      await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 3_000 }))
-        .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 3000 ms \(stdout 0 bytes, browser exited, stdout still open\)/)
-      expect(browserSignals).toBe(signalsBefore)
-    } finally {
-      try { process.kill(holderPid(), 'SIGKILL') } catch { /* already gone */ }
-    }
-  }, 20_000)
-
-  it('stopBrowser sends no signal to a browser process that has already exited', async () => {
-    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
-    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-    const signalsBefore = browserSignals
-    stopBrowser(child)
+  const holderPidFile = join(temporaryDir('fake-browser-holder'), 'holder.pid')
+  // The browser exits at once without a dump; a process it started keeps its stdout open, so the render can only
+  // end on its bound. Its group is the exited browser's pid: signalling it is what a reused pid would turn unsafe.
+  const browser = fakeBrowser([
+    "import { spawn } from 'node:child_process'",
+    "import { writeFileSync } from 'node:fs'",
+    "const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] })",
+    `writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid))`,
+    'process.exit(0)',
+  ].join('\n'))
+  const signalsBefore = browserSignals
+  const holderPid = () => Number(readFileSync(holderPidFile, 'utf8'))
+  try {
+    await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 3_000 }))
+      .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 3000 ms \(stdout 0 bytes, browser exited, stdout still open\)/)
     expect(browserSignals).toBe(signalsBefore)
-  }, 20_000)
+  } finally {
+    try { process.kill(holderPid(), 'SIGKILL') } catch { /* already gone */ }
+  }
+}
 
-  it('stopBrowser signals a browser process that is still running', async () => {
-    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
-    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-    const signalsBefore = browserSignals
-    try {
-      stopBrowser(child)
-      expect(browserSignals).toBe(signalsBefore + 1)
-      await exited
-    } finally {
-      try { child.kill('SIGKILL') } catch { /* already gone */ }
-    }
-  }, 20_000)
+async function stopBrowserSignalsNothingAfterExit(): Promise<void> {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  const signalsBefore = browserSignals
+  stopBrowser(child)
+  expect(browserSignals).toBe(signalsBefore)
+}
 
-  it('keeps the exit code of a browser that exits by itself after its dump', async () => {
-    const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"not-run\"></body></html>\\n', () => process.exit(0))\n")
-    const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
-    expect(result).toMatchObject({ completed: true, stoppedAfterDump: false, code: 0 })
-    expect(result.stdout).toContain('data-script="not-run"')
-  }, 20_000)
+async function stopBrowserSignalsRunningBrowser(): Promise<void> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  const signalsBefore = browserSignals
+  try {
+    stopBrowser(child)
+    expect(browserSignals).toBe(signalsBefore + 1)
+    await exited
+  } finally {
+    try { child.kill('SIGKILL') } catch { /* already gone */ }
+  }
+}
 
-  it('names the render stage when a browser never produces a complete DOM', async () => {
-    const browser = fakeBrowser("process.stdout.write('<html><head></head><body>'); setInterval(() => {}, 1000)\n")
-    await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 1_500 }))
-      .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 1500 ms/)
-  }, 20_000)
+async function keepsExitCodeOfBrowserExitingAfterDump(): Promise<void> {
+  const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"not-run\"></body></html>\\n', () => process.exit(0))\n")
+  const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
+  expect(result).toMatchObject({ completed: true, stoppedAfterDump: false, code: 0 })
+  expect(result.stdout).toContain('data-script="not-run"')
+}
 
-  it.skipIf(!CHROME)('runs only marked rich HTML scripts while Chrome blocks fetch and external images', async () => {
-    const project = temporaryDir('rich-project')
-    const root = temporaryDir('rich-root')
-    const stateHome = temporaryDir('rich-state')
-    // The sink listens on an ephemeral port, and artifact servers on this machine probe a run of ports for their own
-    // health path while discovering each other. Only the two paths the PAGE asks for prove a leak.
-    const sinkPaths: string[] = []
-    const sink = createServer((request, response) => { sinkPaths.push(request.url ?? ''); response.end('reachable') })
-    await new Promise<void>((resolve, reject) => {
-      sink.once('error', reject)
-      sink.listen(0, '127.0.0.1', resolve)
-    })
-    const sinkAddress = sink.address()
-    if (!sinkAddress || typeof sinkAddress === 'string') throw new Error('sink has no port')
-    const script = `<script>document.body.dataset.script='ran';Promise.all([fetch('http://127.0.0.1:${sinkAddress.port}/fetch').then(()=>document.body.dataset.fetch='allowed',()=>document.body.dataset.fetch='blocked'),new Promise(resolve=>{const image=new Image();image.onload=()=>{document.body.dataset.image='allowed';resolve()};image.onerror=()=>{document.body.dataset.image='blocked';resolve()};image.src='http://127.0.0.1:${sinkAddress.port}/image'})]).then(()=>document.documentElement.dataset.done='yes')</script>`
-    writeFileSync(join(root, 'rich.html'), `<!-- wt-artifact-server: rich --><body data-script="not-run" data-fetch="pending" data-image="pending">${script}</body>`)
-    writeFileSync(join(root, 'plain.html'), `<body data-script="not-run">${script}</body>`)
-    const reservation = await reservePort()
-    await closeServer(reservation.server)
-    try {
-      spawnEnsure(project, baseEnv(stateHome, {
-        WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
-      }))
-      await waitForState(stateHome, (state) => state.roots.length === 1, STATE_WAIT_MS)
-      const renders = await Promise.allSettled([
-        renderInChrome(`http://localhost:${reservation.port}/artifacts/rich.html`),
-        renderInChrome(`http://localhost:${reservation.port}/artifacts/plain.html`),
-      ])
-      // Both renders' diagnoses are kept: a stall in one must not hide what the other saw.
-      const [richRender, plainRender] = renders
-      if (richRender.status === 'rejected' || plainRender.status === 'rejected') {
-        throw new Error(renders.flatMap((render) => render.status === 'rejected' ? [String(render.reason)] : []).join('\n---\n'))
-      }
-      const rich = richRender.value
-      const plain = plainRender.value
-      // A browser that exited on its own must have exited cleanly; one stopped after its complete dump has no code.
-      expect(rich.completed, rich.stderr).toBe(true)
-      expect(rich.stoppedAfterDump || rich.code === 0, rich.stderr).toBe(true)
-      expect(rich.stdout).toContain('data-script="ran"')
-      expect(rich.stdout).toContain('data-fetch="blocked"')
-      expect(rich.stdout).toContain('data-image="blocked"')
-      expect(rich.stdout).toContain('data-done="yes"')
-      expect(plain.completed, plain.stderr).toBe(true)
-      expect(plain.stoppedAfterDump || plain.code === 0, plain.stderr).toBe(true)
-      expect(plain.stdout).toContain('data-script="not-run"')
-      expect(plain.stdout).not.toContain('data-script="ran"')
-      expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
-    } finally {
-      // A probing artifact server or a stopped browser can leave a connection open; close() alone would wait on it.
-      sink.closeAllConnections()
-      await closeServer(sink)
-    }
+async function namesRenderStageWithoutCompleteDom(): Promise<void> {
+  const browser = fakeBrowser("process.stdout.write('<html><head></head><body>'); setInterval(() => {}, 1000)\n")
+  await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 1_500 }))
+    .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 1500 ms/)
+}
+
+// The sink listens on an ephemeral port, and artifact servers on this machine probe a run of ports for their own
+// health path while discovering each other. Only the two paths the PAGE asks for prove a leak.
+async function startRichSink(): Promise<{ sink: Server; sinkPaths: string[]; sinkPort: number }> {
+  const sinkPaths: string[] = []
+  const sink = createServer((request, response) => { sinkPaths.push(request.url ?? ''); response.end('reachable') })
+  await new Promise<void>((resolve, reject) => {
+    sink.once('error', reject)
+    sink.listen(0, '127.0.0.1', resolve)
+  })
+  const sinkAddress = sink.address()
+  if (!sinkAddress || typeof sinkAddress === 'string') throw new Error('sink has no port')
+  return { sink, sinkPaths, sinkPort: sinkAddress.port }
+}
+
+function writeRichFixtures(root: string, sinkPort: number): void {
+  const script = `<script>document.body.dataset.script='ran';Promise.all([fetch('http://127.0.0.1:${sinkPort}/fetch').then(()=>document.body.dataset.fetch='allowed',()=>document.body.dataset.fetch='blocked'),new Promise(resolve=>{const image=new Image();image.onload=()=>{document.body.dataset.image='allowed';resolve()};image.onerror=()=>{document.body.dataset.image='blocked';resolve()};image.src='http://127.0.0.1:${sinkPort}/image'})]).then(()=>document.documentElement.dataset.done='yes')</script>`
+  writeFileSync(join(root, 'rich.html'), `<!-- wt-artifact-server: rich --><body data-script="not-run" data-fetch="pending" data-image="pending">${script}</body>`)
+  writeFileSync(join(root, 'plain.html'), `<body data-script="not-run">${script}</body>`)
+}
+
+type BrowserRender = Awaited<ReturnType<typeof renderInChrome>>
+
+async function renderRichAndPlain(port: number): Promise<{ rich: BrowserRender; plain: BrowserRender }> {
+  const renders = await Promise.allSettled([
+    renderInChrome(`http://localhost:${port}/artifacts/rich.html`),
+    renderInChrome(`http://localhost:${port}/artifacts/plain.html`),
+  ])
+  // Both renders' diagnoses are kept: a stall in one must not hide what the other saw.
+  const [richRender, plainRender] = renders
+  if (richRender.status === 'rejected' || plainRender.status === 'rejected') {
+    throw new Error(renders.flatMap((render) => render.status === 'rejected' ? [String(render.reason)] : []).join('\n---\n'))
+  }
+  return { rich: richRender.value, plain: plainRender.value }
+}
+
+function expectRichAndPlainRenders(rich: BrowserRender, plain: BrowserRender, sinkPaths: string[]): void {
+  // A browser that exited on its own must have exited cleanly; one stopped after its complete dump has no code.
+  expect(rich.completed, rich.stderr).toBe(true)
+  expect(rich.stoppedAfterDump || rich.code === 0, rich.stderr).toBe(true)
+  expect(rich.stdout).toContain('data-script="ran"')
+  expect(rich.stdout).toContain('data-fetch="blocked"')
+  expect(rich.stdout).toContain('data-image="blocked"')
+  expect(rich.stdout).toContain('data-done="yes"')
+  expect(plain.completed, plain.stderr).toBe(true)
+  expect(plain.stoppedAfterDump || plain.code === 0, plain.stderr).toBe(true)
+  expect(plain.stdout).toContain('data-script="not-run"')
+  expect(plain.stdout).not.toContain('data-script="ran"')
+  expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
+}
+
+async function runsOnlyMarkedRichScriptsInChrome(): Promise<void> {
+  const project = temporaryDir('rich-project')
+  const root = temporaryDir('rich-root')
+  const stateHome = temporaryDir('rich-state')
+  const { sink, sinkPaths, sinkPort } = await startRichSink()
+  writeRichFixtures(root, sinkPort)
+  const reservation = await reservePort()
+  await closeServer(reservation.server)
+  try {
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+    }))
+    await waitForState(stateHome, (state) => state.roots.length === 1, STATE_WAIT_MS)
+    const { rich, plain } = await renderRichAndPlain(reservation.port)
+    expectRichAndPlainRenders(rich, plain, sinkPaths)
+  } finally {
+    // A probing artifact server or a stopped browser can leave a connection open; close() alone would wait on it.
+    sink.closeAllConnections()
+    await closeServer(sink)
+  }
+}
+
+function writeMarkdownFixture(root: string): void {
+  writeFileSync(join(root, 'report.md'), [
+    '# Report',
+    '',
+    '| Method | Signature | Notes |',
+    ':--- | :---: | ---:',
+    '| `notice` | `left|right` | **bold** and [docs](https://example.com?a=1&b=2) |',
+    '| escaped | left \\| right | <b>raw</b> |',
+    '',
+    'prose | remains',
+    'not a separator',
+    '',
+    '<script>alert(1)</script>',
+  ].join('\n'))
+}
+
+function writeSecurityFixtures(root: string, outside: string): void {
+  writeMarkdownFixture(root)
+  mkdirSync(join(root, 'index'))
+  writeFileSync(join(root, 'index', '&script;.txt'), 'index')
+  writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
+  writeFileSync(join(root, 'events.log'), 'event')
+  writeFileSync(join(root, 'data.json'), '{"ok":true}')
+  writeFileSync(join(root, 'active.html'), '<script>top.location="https://evil.example"</script>')
+  writeFileSync(join(root, 'active.svg'), '<svg><script>alert(1)</script></svg>')
+  writeFileSync(join(root, 'blob.bin'), 'blob')
+  writeFileSync(join(root, '.env'), 'secret')
+  writeFileSync(join(root, '.ENV.PROD'), 'secret')
+  mkdirSync(join(root, '.git'))
+  writeFileSync(join(root, '.git', 'config'), 'secret')
+  writeFileSync(join(root, 'id_ed25519.pub'), 'secret')
+  symlinkSync(join(root, '.git'), join(root, 'git-alias'))
+  symlinkSync(join(root, '.ENV.PROD'), join(root, 'env-alias'))
+  symlinkSync(join(root, 'id_ed25519.pub'), join(root, 'key-alias'))
+  writeFileSync(join(outside, 'outside.txt'), 'secret')
+  symlinkSync(join(outside, 'outside.txt'), join(root, 'escape.txt'))
+}
+
+async function startSecurityServer(project: string, root: string): Promise<number> {
+  const stateHome = temporaryDir('security-state')
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  spawnEnsure(project, baseEnv(stateHome, {
+    WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+  }))
+  await waitForState(stateHome, (state) => state.roots.some((entry) => entry.name === 'artifacts'))
+  return port
+}
+
+async function expectMarkdownRendering(port: number): Promise<void> {
+  const markdown = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`)
+  expect(markdown.status).toBe(200)
+  expect(markdown.body).toContain('&lt;script&gt;')
+  expect(markdown.body).not.toContain('<script>')
+  expect(markdown.body.match(/<t[hd]>/g)).toHaveLength(9)
+  expect(markdown.body).toContain('<div class="table-scroll"><table>')
+  expect(markdown.body).toContain('<code>left|right</code>')
+  expect(markdown.body).toContain('<td>left | right</td>')
+  expect(markdown.body).toContain('<strong>bold</strong> and <a href="https://example.com?a=1&amp;b=2">docs</a>')
+  expect(markdown.body).toContain('&lt;b&gt;raw&lt;/b&gt;')
+  expect(markdown.body).not.toContain('&amp;lt;b&amp;gt;')
+  expect(markdown.body).toContain('<p>prose | remains not a separator</p>')
+  expect(markdown.body).toMatch(/\.table-scroll\{[^}]*overflow-x:auto/)
+  expect(markdown.headers['content-security-policy']).toMatch(/default-src 'none'/)
+}
+
+async function expectTypedCsp(port: number): Promise<void> {
+  for (const file of ['plain.txt', 'events.log', 'data.json']) {
+    const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
+    expect(response.status, file).toBe(200)
+    expect(response.headers['content-type'], file).toMatch(/^text\/html/)
+    expect(response.headers['content-security-policy'], file).toMatch(/default-src 'none'/)
+  }
+  const rawCsp = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+  const defaultHtmlCsp = "sandbox allow-scripts; default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+  for (const [file, expectedCsp] of [['active.html', defaultHtmlCsp], ['active.svg', rawCsp], ['blob.bin', rawCsp]]) {
+    const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
+    expect(response.status, file).toBe(200)
+    expect(response.headers['content-security-policy'], file).toBe(expectedCsp)
+    expect(response.headers['x-content-type-options'], file).toBe('nosniff')
+  }
+}
+
+async function expectIndexAndHead(port: number): Promise<void> {
+  const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
+  expect(index.status).toBe(200)
+  expect(index.body).toContain('&amp;script;.txt')
+  expect(index.body).not.toContain('<script>')
+  expect(index.headers['content-security-policy']).toMatch(/default-src 'none'/)
+  const head = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`, '127.0.0.1', 'HEAD')
+  expect(head.status).toBe(200)
+  expect(head.body).toBe('')
+  expect(Number(head.headers['content-length'])).toBeGreaterThan(0)
+}
+
+async function expectDeniedPaths(port: number): Promise<void> {
+  for (const file of ['.env', '.ENV.PROD', 'id_ed25519.pub', 'git-alias/config', 'env-alias', 'key-alias']) {
+    expect((await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)).status, file).toBe(403)
+  }
+  expect((await rawRequest(port, '/artifacts/escape.txt', `localhost:${port}`)).status).toBe(403)
+  for (const target of [
+    '/artifacts/../outside.txt', '/artifacts/%2e%2e/outside.txt', '/artifacts/%252e%252e/outside.txt',
+    '/artifacts/%2e%2e%2foutside.txt', '/artifacts/..%5coutside.txt', '/artifacts/%00.txt',
+  ]) expect([403, 404]).toContain((await rawRequest(port, target, `localhost:${port}`)).status)
+}
+
+async function expectHostAndMethodRejection(port: number): Promise<void> {
+  expect((await rawRequest(port, '/artifacts/report.md', `localhost.evil.com:${port}`)).status).toBe(421)
+  expect((await rawRequest(port, '/artifacts/report.md', '[::1]')).status).toBe(421)
+  expect([400, 421]).toContain((await rawRequest(port, '/artifacts/report.md')).status)
+  const post = await fetch(`http://127.0.0.1:${port}/artifacts/report.md`, {
+    method: 'POST', headers: { Host: `localhost:${port}` },
+  })
+  expect(post.status).toBe(405)
+  expect(post.headers.get('access-control-allow-origin')).toBeNull()
+}
+
+async function servesEachTypeWithCspAndRejectsUnsafeRequests(): Promise<void> {
+  const project = temporaryDir('security-project')
+  const root = temporaryDir('security-root')
+  const outside = temporaryDir('security-outside')
+  writeSecurityFixtures(root, outside)
+  const port = await startSecurityServer(project, root)
+  await expectMarkdownRendering(port)
+  await expectTypedCsp(port)
+  await expectIndexAndHead(port)
+  await expectDeniedPaths(port)
+  await expectHostAndMethodRejection(port)
+}
+
+async function startPinnedRoots(): Promise<{ port: number; rootA: string; rootB: string }> {
+  const project = temporaryDir('pin-project')
+  const rootA = temporaryDir('policy-a')
+  const rootB = temporaryDir('policy-b')
+  writeFileSync(join(rootA, 'blocked-a'), 'a')
+  writeFileSync(join(rootA, 'blocked-b'), 'a')
+  writeFileSync(join(rootB, 'blocked-a'), 'b')
+  writeFileSync(join(rootB, 'blocked-b'), 'b')
+  const stateHome = temporaryDir('pin-state')
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  spawnEnsure(project, baseEnv(stateHome, {
+    WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `a=${rootA}`, WT_ARTIFACT_SERVER_DENY: 'blocked-a',
+  }))
+  spawnEnsure(project, baseEnv(stateHome, {
+    WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `b=${rootB}`, WT_ARTIFACT_SERVER_DENY: 'blocked-b',
+  }))
+  await waitForState(stateHome, (state) => state.roots.length === 2)
+  return { port, rootA, rootB }
+}
+
+async function pinsCanonicalRootsAndAppliesDenyPerRegistration(): Promise<void> {
+  const { port, rootA, rootB } = await startPinnedRoots()
+  // Discovery is written before the HTTP handler necessarily observes the same registration sweep.
+  await waitFor(async () => {
+    const statuses = await Promise.all([
+      rawRequest(port, '/a/blocked-a', `localhost:${port}`), rawRequest(port, '/a/blocked-b', `localhost:${port}`),
+      rawRequest(port, '/b/blocked-a', `localhost:${port}`), rawRequest(port, '/b/blocked-b', `localhost:${port}`),
+    ])
+    return statuses.map((response) => response.status).join(',') === '403,200,200,403' ? true : null
+  }, 30_000)
+  expect((await rawRequest(port, '/a/blocked-a', `localhost:${port}`)).status).toBe(403)
+  expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(200)
+  expect((await rawRequest(port, '/b/blocked-a', `localhost:${port}`)).status).toBe(200)
+  expect((await rawRequest(port, '/b/blocked-b', `localhost:${port}`)).status).toBe(403)
+
+  const moved = `${rootA}-moved`
+  renameSync(rootA, moved)
+  symlinkSync(rootB, rootA)
+  expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(403)
+}
+
+async function rejectsRootWithDeniedCanonicalBasename(): Promise<void> {
+  const project = temporaryDir('denied-root-project')
+  const parent = temporaryDir('denied-root-parent')
+  const root = join(parent, '.git')
+  mkdirSync(root)
+  writeFileSync(join(root, 'config'), 'secret')
+  const stateHome = temporaryDir('denied-root-state')
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `hidden=${root}` }))
+  await waitForState(stateHome, (state) => state.roots.length === 1)
+  expect((await rawRequest(port, '/hidden/config', `localhost:${port}`)).status).toBe(403)
+}
+
+async function returns400ForMalformedUrlsAndSurvives(): Promise<void> {
+  const { project } = projectWithRoots('malformed')
+  const stateHome = temporaryDir('malformed-state')
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) }))
+  await waitForState(stateHome)
+  expect((await rawRequest(port, '//[', `localhost:${port}`)).status).toBe(400)
+  expect((await rawRequest(port, '/__wt-artifact-server/health', `localhost:${port}`)).status).toBe(200)
+}
+
+function returnsNullForDiscoveryDifferingOnlyByDeadPid(): void {
+  const artifact = join(temporaryDir('discovery-file'), 'report.md')
+  writeFileSync(artifact, '# report')
+  const stateHome = temporaryDir('discovery-absent')
+  const env = baseEnv(stateHome)
+  expect(artifactUrl(artifact, { env })).toBeNull()
+  const absent = spawnSync(process.execPath, [SERVER, 'url', artifact], { encoding: 'utf8', env })
+  expect(absent.status).toBe(3)
+  mkdirSync(join(stateHome, 'wt-artifact-server'), { recursive: true })
+  const discovery = {
+    version: 'x', pid: process.pid, port: 48_001, baseUrl: 'http://localhost:48001', remoteUrl: null,
+    roots: [{ name: 'reports', path: join(artifact, '..') }], startedAt: new Date().toISOString(),
+  }
+  writeFileSync(statePath(stateHome), JSON.stringify(discovery), { mode: 0o600 })
+  chmodSync(statePath(stateHome), 0o600)
+  expect(artifactUrl(artifact, { env })).toBe('http://localhost:48001/reports/report.md')
+  writeFileSync(statePath(stateHome), JSON.stringify({ ...discovery, pid: 999_999 }))
+  expect(artifactUrl(artifact, { env })).toBeNull()
+  const stale = spawnSync(process.execPath, [SERVER, 'url', artifact], { encoding: 'utf8', env })
+  expect(stale.status).toBe(3)
+}
+
+describe('review decisions: serving security matrix', () => {
+  it('ends a render on a complete DOM dump and stops a browser that never exits, helpers included', rendersToCompleteDumpAndStopsHungBrowser, 20_000)
+  it('accepts a complete dump when the render bound expires during the exit grace', acceptsDumpWhenBoundExpiresDuringGrace, 20_000)
+  it('never signals a browser that already exited, even when its output stays open', neverSignalsExitedBrowserWithOpenOutput, 20_000)
+  it('stopBrowser sends no signal to a browser process that has already exited', stopBrowserSignalsNothingAfterExit, 20_000)
+  it('stopBrowser signals a browser process that is still running', stopBrowserSignalsRunningBrowser, 20_000)
+  it('keeps the exit code of a browser that exits by itself after its dump', keepsExitCodeOfBrowserExitingAfterDump, 20_000)
+  it('names the render stage when a browser never produces a complete DOM', namesRenderStageWithoutCompleteDom, 20_000)
   // Real-host test. Ubuntu runs 36056224538 (old 20.299 s limit) and 36869769306 (30 s) timed out with no assertion
   // failing; the bound is now the sum of its named stages, so the next stall names the stage it happened in.
-  }, SECURITY_MATRIX_TEST_BOUND_MS)
-
-  it('[B-02][E-02][E-03] serves each type with CSP and rejects aliases, traversal, hosts, and methods', async () => {
-    const project = temporaryDir('security-project')
-    const root = temporaryDir('security-root')
-    const outside = temporaryDir('security-outside')
-    writeFileSync(join(root, 'report.md'), [
-      '# Report',
-      '',
-      '| Method | Signature | Notes |',
-      ':--- | :---: | ---:',
-      '| `notice` | `left|right` | **bold** and [docs](https://example.com?a=1&b=2) |',
-      '| escaped | left \\| right | <b>raw</b> |',
-      '',
-      'prose | remains',
-      'not a separator',
-      '',
-      '<script>alert(1)</script>',
-    ].join('\n'))
-    mkdirSync(join(root, 'index'))
-    writeFileSync(join(root, 'index', '&script;.txt'), 'index')
-    writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
-    writeFileSync(join(root, 'events.log'), 'event')
-    writeFileSync(join(root, 'data.json'), '{"ok":true}')
-    writeFileSync(join(root, 'active.html'), '<script>top.location="https://evil.example"</script>')
-    writeFileSync(join(root, 'active.svg'), '<svg><script>alert(1)</script></svg>')
-    writeFileSync(join(root, 'blob.bin'), 'blob')
-    writeFileSync(join(root, '.env'), 'secret')
-    writeFileSync(join(root, '.ENV.PROD'), 'secret')
-    mkdirSync(join(root, '.git'))
-    writeFileSync(join(root, '.git', 'config'), 'secret')
-    writeFileSync(join(root, 'id_ed25519.pub'), 'secret')
-    symlinkSync(join(root, '.git'), join(root, 'git-alias'))
-    symlinkSync(join(root, '.ENV.PROD'), join(root, 'env-alias'))
-    symlinkSync(join(root, 'id_ed25519.pub'), join(root, 'key-alias'))
-    writeFileSync(join(outside, 'outside.txt'), 'secret')
-    symlinkSync(join(outside, 'outside.txt'), join(root, 'escape.txt'))
-    const stateHome = temporaryDir('security-state')
-    const reservation = await reservePort()
-    const port = reservation.port
-    await closeServer(reservation.server)
-    spawnEnsure(project, baseEnv(stateHome, {
-      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
-    }))
-    await waitForState(stateHome, (state) => state.roots.some((entry) => entry.name === 'artifacts'))
-
-    const markdown = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`)
-    expect(markdown.status).toBe(200)
-    expect(markdown.body).toContain('&lt;script&gt;')
-    expect(markdown.body).not.toContain('<script>')
-    expect(markdown.body.match(/<t[hd]>/g)).toHaveLength(9)
-    expect(markdown.body).toContain('<div class="table-scroll"><table>')
-    expect(markdown.body).toContain('<code>left|right</code>')
-    expect(markdown.body).toContain('<td>left | right</td>')
-    expect(markdown.body).toContain('<strong>bold</strong> and <a href="https://example.com?a=1&amp;b=2">docs</a>')
-    expect(markdown.body).toContain('&lt;b&gt;raw&lt;/b&gt;')
-    expect(markdown.body).not.toContain('&amp;lt;b&amp;gt;')
-    expect(markdown.body).toContain('<p>prose | remains not a separator</p>')
-    expect(markdown.body).toMatch(/\.table-scroll\{[^}]*overflow-x:auto/)
-    expect(markdown.headers['content-security-policy']).toMatch(/default-src 'none'/)
-    for (const file of ['plain.txt', 'events.log', 'data.json']) {
-      const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
-      expect(response.status, file).toBe(200)
-      expect(response.headers['content-type'], file).toMatch(/^text\/html/)
-      expect(response.headers['content-security-policy'], file).toMatch(/default-src 'none'/)
-    }
-    for (const file of ['active.html', 'active.svg', 'blob.bin']) {
-      const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
-      expect(response.status, file).toBe(200)
-      expect(response.headers['content-security-policy'], file).toBe("sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
-      expect(response.headers['x-content-type-options'], file).toBe('nosniff')
-    }
-    const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
-    expect(index.status).toBe(200)
-    expect(index.body).toContain('&amp;script;.txt')
-    expect(index.body).not.toContain('<script>')
-    expect(index.headers['content-security-policy']).toMatch(/default-src 'none'/)
-    const head = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`, '127.0.0.1', 'HEAD')
-    expect(head.status).toBe(200)
-    expect(head.body).toBe('')
-    expect(Number(head.headers['content-length'])).toBeGreaterThan(0)
-    for (const file of ['.env', '.ENV.PROD', 'id_ed25519.pub', 'git-alias/config', 'env-alias', 'key-alias']) {
-      expect((await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)).status, file).toBe(403)
-    }
-    expect((await rawRequest(port, '/artifacts/escape.txt', `localhost:${port}`)).status).toBe(403)
-    for (const target of [
-      '/artifacts/../outside.txt', '/artifacts/%2e%2e/outside.txt', '/artifacts/%252e%252e/outside.txt',
-      '/artifacts/%2e%2e%2foutside.txt', '/artifacts/..%5coutside.txt', '/artifacts/%00.txt',
-    ]) expect([403, 404]).toContain((await rawRequest(port, target, `localhost:${port}`)).status)
-    expect((await rawRequest(port, '/artifacts/report.md', `localhost.evil.com:${port}`)).status).toBe(421)
-    expect((await rawRequest(port, '/artifacts/report.md', '[::1]')).status).toBe(421)
-    expect([400, 421]).toContain((await rawRequest(port, '/artifacts/report.md')).status)
-    const post = await fetch(`http://127.0.0.1:${port}/artifacts/report.md`, {
-      method: 'POST', headers: { Host: `localhost:${port}` },
-    })
-    expect(post.status).toBe(405)
-    expect(post.headers.get('access-control-allow-origin')).toBeNull()
-  })
-
-  it('[E-01][E-02] pins canonical roots and applies deny policy per registration', async () => {
-    const project = temporaryDir('pin-project')
-    const rootA = temporaryDir('policy-a')
-    const rootB = temporaryDir('policy-b')
-    writeFileSync(join(rootA, 'blocked-a'), 'a')
-    writeFileSync(join(rootA, 'blocked-b'), 'a')
-    writeFileSync(join(rootB, 'blocked-a'), 'b')
-    writeFileSync(join(rootB, 'blocked-b'), 'b')
-    const stateHome = temporaryDir('pin-state')
-    const reservation = await reservePort()
-    const port = reservation.port
-    await closeServer(reservation.server)
-    spawnEnsure(project, baseEnv(stateHome, {
-      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `a=${rootA}`, WT_ARTIFACT_SERVER_DENY: 'blocked-a',
-    }))
-    spawnEnsure(project, baseEnv(stateHome, {
-      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `b=${rootB}`, WT_ARTIFACT_SERVER_DENY: 'blocked-b',
-    }))
-    await waitForState(stateHome, (state) => state.roots.length === 2)
-    // Discovery is written before the HTTP handler necessarily observes the same registration sweep.
-    await waitFor(async () => {
-      const statuses = await Promise.all([
-        rawRequest(port, '/a/blocked-a', `localhost:${port}`), rawRequest(port, '/a/blocked-b', `localhost:${port}`),
-        rawRequest(port, '/b/blocked-a', `localhost:${port}`), rawRequest(port, '/b/blocked-b', `localhost:${port}`),
-      ])
-      return statuses.map((response) => response.status).join(',') === '403,200,200,403' ? true : null
-    }, 30_000)
-    expect((await rawRequest(port, '/a/blocked-a', `localhost:${port}`)).status).toBe(403)
-    expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(200)
-    expect((await rawRequest(port, '/b/blocked-a', `localhost:${port}`)).status).toBe(200)
-    expect((await rawRequest(port, '/b/blocked-b', `localhost:${port}`)).status).toBe(403)
-
-    const moved = `${rootA}-moved`
-    renameSync(rootA, moved)
-    symlinkSync(rootB, rootA)
-    expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(403)
-    // Windows worst 19422 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
-  }, 49_000)
-
-  it('[E-02] rejects a root whose own canonical basename is denied', async () => {
-    const project = temporaryDir('denied-root-project')
-    const parent = temporaryDir('denied-root-parent')
-    const root = join(parent, '.git')
-    mkdirSync(root)
-    writeFileSync(join(root, 'config'), 'secret')
-    const stateHome = temporaryDir('denied-root-state')
-    const reservation = await reservePort()
-    const port = reservation.port
-    await closeServer(reservation.server)
-    spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `hidden=${root}` }))
-    await waitForState(stateHome, (state) => state.roots.length === 1)
-    expect((await rawRequest(port, '/hidden/config', `localhost:${port}`)).status).toBe(403)
-  })
-
-  it('[MISSED] returns 400 for malformed URLs and survives handler exceptions', async () => {
-    const { project } = projectWithRoots('malformed')
-    const stateHome = temporaryDir('malformed-state')
-    const reservation = await reservePort()
-    const port = reservation.port
-    await closeServer(reservation.server)
-    spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) }))
-    await waitForState(stateHome)
-    expect((await rawRequest(port, '//[', `localhost:${port}`)).status).toBe(400)
-    expect((await rawRequest(port, '/__wt-artifact-server/health', `localhost:${port}`)).status).toBe(200)
-  })
-
-  it('[V4] returns null for discovery that differs from a live state only by a dead PID', () => {
-    const artifact = join(temporaryDir('discovery-file'), 'report.md')
-    writeFileSync(artifact, '# report')
-    const stateHome = temporaryDir('discovery-absent')
-    const env = baseEnv(stateHome)
-    expect(artifactUrl(artifact, { env })).toBeNull()
-    const absent = spawnSync(process.execPath, [SERVER, 'url', artifact], { encoding: 'utf8', env })
-    expect(absent.status).toBe(3)
-    mkdirSync(join(stateHome, 'wt-artifact-server'), { recursive: true })
-    const discovery = {
-      version: 'x', pid: process.pid, port: 48_001, baseUrl: 'http://localhost:48001', remoteUrl: null,
-      roots: [{ name: 'reports', path: join(artifact, '..') }], startedAt: new Date().toISOString(),
-    }
-    writeFileSync(statePath(stateHome), JSON.stringify(discovery), { mode: 0o600 })
-    chmodSync(statePath(stateHome), 0o600)
-    expect(artifactUrl(artifact, { env })).toBe('http://localhost:48001/reports/report.md')
-    writeFileSync(statePath(stateHome), JSON.stringify({ ...discovery, pid: 999_999 }))
-    expect(artifactUrl(artifact, { env })).toBeNull()
-    const stale = spawnSync(process.execPath, [SERVER, 'url', artifact], { encoding: 'utf8', env })
-    expect(stale.status).toBe(3)
-  })
+  it.skipIf(!CHROME)('runs only marked rich HTML scripts while Chrome blocks fetch and external images', runsOnlyMarkedRichScriptsInChrome, SECURITY_MATRIX_TEST_BOUND_MS)
+  it('[B-02][E-02][E-03] serves each type with CSP and rejects aliases, traversal, hosts, and methods', servesEachTypeWithCspAndRejectsUnsafeRequests)
+  // Windows worst 19422 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  it('[E-01][E-02] pins canonical roots and applies deny policy per registration', pinsCanonicalRootsAndAppliesDenyPerRegistration, 49_000)
+  it('[E-02] rejects a root whose own canonical basename is denied', rejectsRootWithDeniedCanonicalBasename)
+  it('[MISSED] returns 400 for malformed URLs and survives handler exceptions', returns400ForMalformedUrlsAndSurvives)
+  it('[V4] returns null for discovery that differs from a live state only by a dead PID', returnsNullForDiscoveryDifferingOnlyByDeadPid)
 })
