@@ -299,3 +299,153 @@ describe('SessionStart plugin-root state', () => {
     expect(result.stdout).not.toContain('DUPLICATE HOOK REGISTRATION')
   })
 })
+
+const PARSER_CASES = [
+    ['adjacent semicolon', `node "${HOOK}";next`, true],
+    ['leading whitespace', `  node "${HOOK}"`, true],
+    ['newline separator', `true\nnode "${HOOK}"`, true],
+    ['absolute node executable', `/usr/bin/node "${HOOK}"`, true],
+    ['env assignment prefix', `env X=1 node "${HOOK}"`, true],
+    ['conditional OR branch', `true || node "${HOOK}"`, false],
+    ['conditional OR group', `true || (node "${HOOK}"; node "${HOOK}" )`, false],
+    ['stderr redirection', `node "${HOOK}" 2>/dev/null`, true],
+    ['stdout and stderr redirection', `node "${HOOK}" > /dev/null 2>&1`, true],
+    ['input redirection before the command', `</dev/null node "${HOOK}"`, true],
+    ['expansion in a later command', `node "${HOOK}"; echo "$HOME"`, true],
+    ['quoted expansion argument', `node "${HOOK}" "$HOME"`, true],
+    ['expansion in an argument', `node "${HOOK}" $ARG \`date\``, true],
+    ['command substitution argument', `node "${HOOK}" $(date; true)`, true],
+    ['expanded executable', `$DIR/node "${HOOK}"`, false],
+    ['expanded script path', `node "$DIR${HOOK}"`, false],
+    ['backslash-newline continuation', `node "${HOOK}" \\\n; true`, true],
+    ['quoted assignment is a command name', `"X=1" node "${HOOK}"`, false],
+    ['directory path in command position', `node/ "${HOOK}"`, false],
+    ['unbalanced group', `node "${HOOK}"; (`, false],
+    ['AND after an OR branch stays conditional', `false || true && node "${HOOK}"`, false],
+    ['heredoc body is text', `cat <<'EOF'\nnode "${HOOK}"\nEOF`, false],
+    ['quoted assignment after env', `env "X=1" node "${HOOK}"`, true],
+    ['separator inside a parameter expansion', `echo \${X:-abc;node "${HOOK}" }`, false],
+    ['parenthesis inside a parameter expansion', `node "${HOOK}"; echo \${X:-)}`, true],
+    ['directory path for env', `env/ node "${HOOK}"`, false],
+    ['missing redirection target', `node "${HOOK}" >`, false],
+    ['quoted brace inside a parameter expansion', `node "${HOOK}" \${X:-'}'}`, true],
+    ['process substitution target', `echo > >(node "${HOOK}" )`, true],
+    ['command substitution inside an argument list', `echo $(true) node "${HOOK}"`, false],
+    ['nested parameter expansion', `echo \${X:-\${Y:-abc};node "${HOOK}" }`, false],
+    ['newline after an OR operator', `true ||\nnode "${HOOK}"`, false],
+    ['consecutive redirections', `node "${HOOK}" > > /dev/null`, false],
+    ['node inside a command substitution', `echo $(node "${HOOK}")`, true],
+    ['single-quoted substitution is text', `echo '$(node "${HOOK}")'`, false],
+    ['node inside backticks', `echo \`node "${HOOK}"\``, true],
+    ['continuation between words', `node \\\n "${HOOK}"`, true],
+    ['unmatched closing parenthesis', `node "${HOOK}" )`, false],
+    ['quoted parenthesis is text', `echo ")"; node "${HOOK}"`, true],
+    ['literal brace in a parameter default', `node "${HOOK}" ; echo \${X:-{}`, true],
+    ['command substitution inside a parameter default', `node "${HOOK}" ; echo \${X:-$(echo {})}`, true],
+    ['backticks inside a parameter default', `node "${HOOK}" ; echo \${X:-\`echo {}\`}`, true],
+    ['escaped dollar inside a parameter default', `echo \${X:-\\\${}; node "${HOOK}"`, true],
+] as const
+
+function parserEvidence() {
+  it.each(PARSER_CASES)('settings parser handles %s', (_label, command, duplicate) => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout.includes('DUPLICATE HOOK REGISTRATION')).toBe(duplicate)
+  })
+}
+
+function nestingEvidence() {
+  it('a deeply nested command gives no evidence without hiding another entry', () => {
+    const { configDir, root } = fixture()
+    const deep = `echo ${'$('.repeat(50_000)}true${')'.repeat(50_000)}`
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: deep }, { type: 'command', command: `node "${HOOK}"` }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
+  })
+}
+
+function widthEvidence() {
+  it('collects a very wide command substitution without overflowing the stack', () => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo $(${`node "${HOOK}" ;`.repeat(150_000)})` }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
+  })
+  it('collects a very wide backtick substitution without overflowing the stack', () => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo \`${`node "${HOOK}" ;`.repeat(150_000)}\`` }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
+  })
+}
+
+function expansionEvidence() {
+  it('reads a long run of unterminated expansions in linear time', () => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo ${'${'.repeat(200_000)}` }] }] },
+    })
+    const started = performance.now()
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    // A quadratic scan of this input takes tens of seconds; a linear one well under a second.
+    expect(performance.now() - started).toBeLessThan(5_000)
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('DUPLICATE HOOK REGISTRATION')
+  })
+}
+
+function installedEvidence() {
+  it.each([false, true])('does not attribute an ambiguous installed key to registry order (reverse=%s)', (reverse) => {
+    const { configDir, installedRoot, root } = fixture()
+    const other = installCopy(root, 'other', JSON.parse(MANIFEST).version)
+    const entries = [
+      { scope: 'user', installPath: installedRoot, version: '0.182.0' },
+      { scope: 'local', projectPath: projectOf(root), installPath: other, version: JSON.parse(MANIFEST).version },
+    ]
+    writeRegistry(configDir, reverse ? entries.reverse() : entries)
+    const result = run(configDir, PLUGIN_ROOT, root, KEY)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('cannot tell which installed copy')
+    expect(result.stdout).not.toContain(installedRoot)
+    expect(result.stdout).not.toContain(other)
+    expect(result.stdout).not.toContain('STALE PLUGIN VERSION')
+  })
+  it('stays silent when every applicable installed copy matches the running version', () => {
+    const { configDir, root } = fixture()
+    const version = JSON.parse(MANIFEST).version
+    writeRegistry(configDir, [
+      { scope: 'user', installPath: installCopy(root, 'same-a', version), version },
+      { scope: 'local', projectPath: projectOf(root), installPath: installCopy(root, 'same-b', version), version },
+    ])
+    const result = run(configDir, PLUGIN_ROOT, root, KEY)
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('cannot tell which installed copy')
+    expect(result.stdout).not.toContain('PLUGIN VERSION')
+  })
+}
+
+describe('settings command and installed-copy evidence', () => {
+  parserEvidence()
+  nestingEvidence()
+  widthEvidence()
+  expansionEvidence()
+  installedEvidence()
+})
