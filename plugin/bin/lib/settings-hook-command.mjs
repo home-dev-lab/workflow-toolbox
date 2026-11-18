@@ -46,22 +46,28 @@ function backtick(scan, word) {
   scan.pos = end + 1
 }
 
-// `${...}` may nest and may quote a closing brace; one forward pass finds its end.
+// `${...}` may nest, quote a closing brace or hold a substitution; one forward pass finds its end.
+// Commands inside it run only when the default is used, so they give no evidence.
 function parameterExpansion(scan) {
   let depth = 0
-  let pos = scan.pos
-  while (pos < scan.text.length) {
-    const ch = scan.text[pos]
-    if (ch === '\\') pos += 2
-    else if (ch === "'" || ch === '"') pos = closingQuote(scan.text, pos) + 1
-    else {
-      // Only `${` opens a nested expansion; a bare `{` is literal text, as in `${X:-{}`.
-      if (ch === '{' && scan.text[pos - 1] === '$') depth++
-      if (ch === '}' && --depth === 0) { scan.pos = pos + 1; return }
-      pos++
-    }
+  while (scan.pos < scan.text.length) {
+    if (scan.text.startsWith('${', scan.pos)) {
+      depth++
+      scan.pos += 2
+    } else if (scan.text[scan.pos] === '}') {
+      scan.pos++
+      if (--depth === 0) return
+    } else skipParameterPart(scan)
   }
   unreadable()
+}
+
+function skipParameterPart(scan) {
+  const ch = scan.text[scan.pos]
+  if (ch === '\\') scan.pos += 2
+  else if (ch === "'" || ch === '"') scan.pos = closingQuote(scan.text, scan.pos) + 1
+  else if (ch === '`' || opensSubstitution(scan)) expansion(scan, { scripts: [], opaque: true })
+  else scan.pos++
 }
 
 function closingQuote(text, open) {

@@ -342,6 +342,9 @@ describe('settings command and installed-copy evidence', () => {
     ['unmatched closing parenthesis', `node "${HOOK}" )`, false],
     ['quoted parenthesis is text', `echo ")"; node "${HOOK}"`, true],
     ['literal brace in a parameter default', `node "${HOOK}" ; echo \${X:-{}`, true],
+    ['command substitution inside a parameter default', `node "${HOOK}" ; echo \${X:-$(echo {})}`, true],
+    ['backticks inside a parameter default', `node "${HOOK}" ; echo \${X:-\`echo {}\`}`, true],
+    ['escaped dollar inside a parameter default', `echo \${X:-\\\${}; node "${HOOK}"`, true],
   ])('settings parser handles %s', (_label, command, duplicate) => {
     const { configDir, root } = fixture()
     writeJson(join(configDir, 'settings.json'), {
@@ -368,6 +371,16 @@ describe('settings command and installed-copy evidence', () => {
     writeJson(join(configDir, 'settings.json'), {
       enabledPlugins: { [KEY]: true },
       hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo $(${`node "${HOOK}" ;`.repeat(150_000)})` }] }] },
+    })
+    const result = run(configDir, undefined, root, undefined, { event: null })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('DUPLICATE HOOK REGISTRATION')
+  })
+  it('collects a very wide backtick substitution without overflowing the stack', () => {
+    const { configDir, root } = fixture()
+    writeJson(join(configDir, 'settings.json'), {
+      enabledPlugins: { [KEY]: true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo \`${`node "${HOOK}" ;`.repeat(150_000)}\`` }] }] },
     })
     const result = run(configDir, undefined, root, undefined, { event: null })
     expect(result.status).toBe(0)
