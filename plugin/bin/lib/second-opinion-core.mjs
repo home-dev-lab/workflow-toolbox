@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
@@ -6,8 +7,9 @@ import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { originalSecondOpinionRepo, secondOpinionPrompt } from './second-opinion-prompt.mjs'
 import { announceUnsandboxedLane, LaneSandboxRefusal, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 import { requestNamedPaths, requestDirectoryNote, requestPathRefusal, unreadEscape } from './host/second-opinion-request-paths.mjs'
-import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
+import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
+import { resolveAstraSandbox, verifiedAstraResult } from './second-opinion-codex-turn.mjs'
 
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 // The Claude fallback always runs Opus at xhigh; the caller's --effort drives only the Astra route.
@@ -69,6 +71,7 @@ function refuseBeforeLaunch(sandbox, ownership, removeListeners) {
 
 function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES, resolveSandbox = resolveLaneSandbox }) {
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
+  const completionNonce = randomBytes(32).toString('hex')
   const ownership = adapter.createCodexBrokerOwnership(env)
   const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
   let stopEverything = (reason = null) => {
@@ -79,52 +82,62 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
   const onExit = () => { stopEverything() }
   process.once('exit', onExit)
   signal?.addEventListener('abort', onAbort, { once: true })
-  let sandbox
-  let directoryNote = null
-  let child
+  const state = { sandbox: undefined, directoryNote: null, child: undefined, completionNonce }
   try {
     // second-opinion only reads the repository: it is bound read-only (H5).
-    sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
-    announceUnsandboxedLane(sandbox)
-    if (sandbox.kind === 'bwrap') {
-      if (typeof sandbox.unreadable !== 'function') {
-        refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
-        return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot check request paths.\n', cleanup: [], sandbox: sandbox.line })
-      }
-      const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
-      // Only files refuse; an unreadable named directory is reported and the review runs.
-      const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
-      directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path), ownership.env.HOME ?? env.HOME ?? '', env)
-      if (missing.length) {
-        refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
-        return Promise.resolve({ status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, ownership.env.HOME ?? env.HOME ?? '', env), cleanup: [], sandbox: sandbox.line })
-      }
-    }
-    // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
-    // a host descendant of the sandbox instead of trusting that number.
-    if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
-    const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
-    child = spawn(command, commandArgs, {
-      cwd,
-      env: ownership.env,
-      detached: adapter.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    })
+    state.sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true, completionNonce })
+    announceUnsandboxedLane(state.sandbox)
+    const refusal = checkCodexSandbox(state, ownership, { namedPaths, env, cwd, signal, onAbort, onExit })
+    if (refusal) return Promise.resolve(refusal)
+    state.child = spawnCodexChild(state.sandbox, ownership, companionArgs, cwd, adapter)
   } catch (error) {
-    process.removeListener('exit', onExit)
-    signal?.removeEventListener('abort', onAbort)
-    sandbox?.dispose?.()
-    ownership.stop()
-    // A path-check refusal happens before the companion starts, so no broker diagnostic applies.
-    if (sandbox?.kind === 'bwrap' && error instanceof LaneSandboxRefusal) {
-      return Promise.resolve({ status: 1, stdout: '', stderr: `REFUSED: ${error.message}\n`, cleanup: [], sandbox: sandbox.line })
-    }
-    throw error
+    return codexLaunchError(error, state.sandbox, ownership, signal, onAbort, onExit)
   }
-  const chunks = { stdout: [], stderr: [] }
-  let outputBytes = 0
-  let overflow = false
+  return collectCodexChild(state, ownership, { signal, onAbort, onExit, maxOutputBytes, updateStop: (stop) => { stopEverything = stop } })
+}
+
+function checkCodexSandbox(state, ownership, { namedPaths, env, cwd, signal, onAbort, onExit }) {
+  const sandbox = state.sandbox
+  if (sandbox.kind !== 'bwrap') return null
+  const removeListeners = () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) }
+  if (typeof sandbox.unreadable !== 'function') {
+    refuseBeforeLaunch(sandbox, ownership, removeListeners)
+    return { status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot check request paths.\n', cleanup: [], sandbox: sandbox.line }
+  }
+  const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
+  // Only files refuse; an unreadable named directory is reported and the review runs.
+  const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
+  state.directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path), ownership.env.HOME ?? env.HOME ?? '', env)
+  if (missing.length) {
+    refuseBeforeLaunch(sandbox, ownership, removeListeners)
+    return { status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, ownership.env.HOME ?? env.HOME ?? '', env), cleanup: [], sandbox: sandbox.line }
+  }
+  return null
+}
+
+function spawnCodexChild(sandbox, ownership, companionArgs, cwd, adapter) {
+  // The broker records a namespace pid; ownership must find its host descendant.
+  if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
+  const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
+  return spawn(command, commandArgs, {
+    cwd, env: ownership.env, detached: adapter.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe'], windowsHide: true,
+  })
+}
+
+function codexLaunchError(error, sandbox, ownership, signal, onAbort, onExit) {
+  process.removeListener('exit', onExit)
+  signal?.removeEventListener('abort', onAbort)
+  sandbox?.dispose?.()
+  ownership.stop()
+  // A path-check refusal happens before any broker runs.
+  if (sandbox?.kind === 'bwrap' && error instanceof LaneSandboxRefusal) {
+    return Promise.resolve({ status: 1, stdout: '', stderr: `REFUSED: ${error.message}\n`, cleanup: [], sandbox: sandbox.line })
+  }
+  throw error
+}
+
+function startCodexLifecycle({ child, sandbox }, ownership) {
   let cleanup = null
   let companionAlive = true
   let interrupted = null
@@ -138,58 +151,80 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
     companionAlive = false
     clearInterval(captureTimer)
   })
-  stopEverything = (reason = null) => {
+  const stop = (reason = null) => {
     if (cleanup) return cleanup
     if (reason) interrupted ??= reason
     clearInterval(captureTimer)
     captureBroker()
     if (companionAlive) child.kill('SIGTERM')
-    cleanup = ownership.stop()
+    // The public client closes its own app-server; no companion broker is expected.
+    cleanup = ownership.stop().filter((line) => line !== 'app-server cleanup unavailable: broker not captured before companion exit')
     // The refreshed codex token is written back to the shared ~/.codex by the sandbox (host
     // perimeter) only if it changed; the shared file stayed read-only during the run (H3).
     sandbox.writeBackAuth?.()
     sandbox.dispose?.()
     return cleanup
   }
+  return { stop, closed: () => { companionAlive = false }, clearCapture: () => clearInterval(captureTimer),
+    get cleanup() { return cleanup }, get interrupted() { return interrupted } }
+}
+
+function captureCodexOutput(child, output, lifecycle, maxOutputBytes) {
   const collect = (stream, chunk) => {
-    if (overflow) return
-    outputBytes += chunk.length
-    if (outputBytes > maxOutputBytes) {
-      overflow = true
-      chunks.stdout.length = 0
-      chunks.stderr.length = 0
-      stopEverything()
+    if (output.overflow) return
+    output.bytes += chunk.length
+    if (output.bytes > maxOutputBytes) {
+      output.overflow = true
+      output.chunks.stdout.length = 0
+      output.chunks.stderr.length = 0
+      output.chunks.completion.length = 0
+      lifecycle.stop()
       return
     }
-    chunks[stream].push(chunk)
+    output.chunks[stream].push(chunk)
   }
   child.stdout.on('data', (chunk) => collect('stdout', chunk))
   child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  if (signal?.aborted) onAbort()
+  child.stdio[3].on('data', (chunk) => collect('completion', chunk))
+}
+
+function codexChildResult(output, lifecycle, maxOutputBytes, status, errorText = () => '') {
+  return output.overflow
+    ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup: lifecycle.cleanup }
+    : { status, stdout: Buffer.concat(output.chunks.stdout).toString(), stderr: `${Buffer.concat(output.chunks.stderr).toString()}${errorText()}`, cleanup: lifecycle.cleanup }
+}
+
+function awaitCodexClose(state, output, lifecycle, { signal, onAbort, onExit, maxOutputBytes }) {
+  const { child, sandbox, directoryNote, completionNonce } = state
   return new Promise((resolve) => {
     let settled = false
     const finish = (result) => {
       if (settled) return
       settled = true
-      clearInterval(captureTimer)
+      lifecycle.clearCapture()
       process.removeListener('exit', onExit)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ ...result, interrupted, sandbox: sandbox.line, notes: directoryNote ? [directoryNote] : [] })
+      resolve({ ...result, completionNonce, completionRecord: Buffer.concat(output.chunks.completion).toString(), interrupted: lifecycle.interrupted, sandbox: sandbox.line, notes: directoryNote ? [directoryNote] : [] })
     }
     child.once('error', (error) => {
-      stopEverything()
-      finish(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
-        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n`, cleanup })
+      lifecycle.stop()
+      finish(codexChildResult(output, lifecycle, maxOutputBytes, 1, () => `${error.message}\n`))
     })
     child.once('close', (code, childSignal) => {
-      companionAlive = false
-      stopEverything()
-      finish(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
-        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString(), cleanup })
+      lifecycle.closed()
+      lifecycle.stop()
+      finish(codexChildResult(output, lifecycle, maxOutputBytes, code ?? (childSignal ? 1 : 0)))
     })
   })
+}
+
+function collectCodexChild(state, ownership, options) {
+  const output = { chunks: { stdout: [], stderr: [], completion: [] }, bytes: 0, overflow: false }
+  const lifecycle = startCodexLifecycle(state, ownership)
+  options.updateStop(lifecycle.stop)
+  captureCodexOutput(state.child, output, lifecycle, options.maxOutputBytes)
+  if (options.signal?.aborted) options.onAbort()
+  return awaitCodexClose(state, output, lifecycle, options)
 }
 
 export function listProcessTable(adapter) {
@@ -223,7 +258,8 @@ function sdkRemedy(error) {
 
 export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
-  runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes, ...(options.resolveSandbox ? { resolveSandbox: options.resolveSandbox } : {}) }),
+  runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes,
+    resolveSandbox: (request) => resolveAstraSandbox(options.resolveSandbox ?? resolveLaneSandbox, request) }).then(verifiedAstraResult),
   resolveSdkQuery,
 })
 
@@ -274,8 +310,10 @@ function appendAstraResult(options, result) {
 }
 
 function finishAstraOpinion(options, result) {
-  const code = signalExitCode(result.interrupted) ?? result.status
-  if (classifyProviderRefusal(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) appendLine(options.out, 'OUTCOME=refused-by-classifier provider=openai category=cyber')
+  const answer = (result.stdout ?? '').trim()
+  // The owned-child adapter requires a validated positive completion record.
+  // Answer and diagnostic prose remain evidence, never a verdict channel.
+  const code = signalExitCode(result.interrupted) ?? (result.status || (!answer ? 1 : 0))
   appendLine(options.out, `EXIT=${code}`)
   return code
 }
@@ -326,18 +364,32 @@ function opusStream(query, options, request, env) {
   })
 }
 
-function finishOpusOpinion(options, modelTracker, answer, failed) {
+function finishOpusOpinion(options, modelTracker, { answer, failed, refused }) {
   if (!answer.trim()) {
     failed = true
     answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
   const observation = modelTracker.result()
-  if (observation.notices.length) appendLine(options.out, `OUTCOME=classifier-notice provider=anthropic ${modelWarnings(observation, { name: 'second-opinion' }).join(' ')}`)
-  else for (const warning of modelWarnings(observation, { name: 'second-opinion' })) appendLine(options.out, warning)
-  const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed ? 1 : 0)
+  for (const warning of modelWarnings(observation, { name: 'second-opinion' })) appendLine(options.out, warning)
+  if (refused) appendLine(options.out, 'OUTCOME=refused-by-provider provider=anthropic')
+  const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed || refused ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code
+}
+
+function opusStopReason(message) {
+  return message.type === 'assistant' ? message.message?.stop_reason : message.stop_reason
+}
+
+function observeOpusCompletion(state, message) {
+  if (message.parent_tool_use_id != null) return
+  if (message.type === 'system' && message.subtype === 'model_refusal_no_fallback') state.refused = true
+  const reason = opusStopReason(message)
+  if (typeof reason === 'string' && ['assistant', 'result'].includes(message.type)) state.refused = reason === 'refusal'
+  if (message.type !== 'result') return
+  if (message.is_error) state.failed = true
+  if (typeof message.result === 'string') state.answer = message.result
 }
 
 async function runOpusOpinion(options, dependencies, env, request) {
@@ -352,23 +404,19 @@ async function runOpusOpinion(options, dependencies, env, request) {
     return 1
   }
 
-  let answer = ''
-  let failed = false
+  const state = { answer: '', failed: false, refused: false }
   const modelTracker = createModelTracker('opus', env)
   try {
     const stream = opusStream(query, options, request, env)
     for await (const message of stream) {
       modelTracker.observe(message)
-      if (message.type === 'result') {
-        if (message.is_error) failed = true
-        if (typeof message.result === 'string') answer = message.result
-      }
+      observeOpusCompletion(state, message)
     }
   } catch (error) {
-    failed = true
-    answer = error instanceof Error ? error.message : String(error)
+    state.failed = true
+    state.answer = error instanceof Error ? error.message : String(error)
   }
-  return finishOpusOpinion(options, modelTracker, answer, failed)
+  return finishOpusOpinion(options, modelTracker, state)
 }
 
 export async function runSecondOpinion(options, dependencies, env = process.env) {
