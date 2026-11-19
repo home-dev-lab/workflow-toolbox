@@ -1,4 +1,6 @@
 // Evidence eligibility only: this module grants no dispatch or mutation authority.
+import { types } from 'node:util';
+
 const id = value => typeof value === 'string' && value.length > 0 && !/[^A-Za-z0-9._:-]/.test(value);
 const hash = value => typeof value === 'string' && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 const count = value => Number.isSafeInteger(value) && value >= 0;
@@ -46,6 +48,7 @@ function record(value) {
 }
 
 function jsonContainer(value, seen) {
+  if (types.isProxy(value)) return false;
   const array = Array.isArray(value);
   if (!array && !record(value)) return false;
   if (array && Object.getPrototypeOf(value) !== Array.prototype) return false;
@@ -73,20 +76,25 @@ function jsonScalar(value) {
 function dataSnapshot(input) {
   const holder = {};
   const seen = new Set();
+  const completed = new Map();
   const stack = [{ value: input, parent: holder, key: 'input' }];
   while (stack.length) {
-    const { value, parent, key, exit } = stack.pop();
-    if (exit) { seen.delete(value); continue; }
+    const { value, parent, key, exit, copy: finished } = stack.pop();
+    if (exit) { seen.delete(value); completed.set(value, finished); continue; }
     if (jsonScalar(value)) {
       Object.defineProperty(parent, key, { value, enumerable: true });
       continue;
     }
     if (typeof value !== 'object' || value === null) throw Error('Non-JSON value');
+    if (completed.has(value)) {
+      Object.defineProperty(parent, key, { value: completed.get(value), enumerable: true });
+      continue;
+    }
     const entries = jsonContainer(value, seen);
     if (entries === false) throw Error('Non-JSON container');
     const copy = Array.isArray(value) ? [] : Object.create(null);
     Object.defineProperty(parent, key, { value: copy, enumerable: true });
-    stack.push({ value, exit: true });
+    stack.push({ value, exit: true, copy });
     for (const [childKey, child] of entries) stack.push({ value: child, parent: copy, key: childKey });
   }
   return holder.input;
@@ -168,13 +176,10 @@ function validateSnapshot(input) {
 
 function prepare(input) {
   try {
-    // Descriptor copying never invokes getters and does not consume the call stack.
+    // Reject proxies before inspection; descriptor copying never invokes getters.
     const snapshot = dataSnapshot(input);
     const validation = validateSnapshot(snapshot);
     if (!validation.valid) return { validation };
-    // Reject proxies, including ones lying about descriptors. Closed-schema data
-    // is shallow; reject deep extras before the native clone's recursion limit.
-    structuredClone(input);
     return { snapshot, validation };
   } catch {
     return { validation: { valid: false, errors: ['schema:/'] } };

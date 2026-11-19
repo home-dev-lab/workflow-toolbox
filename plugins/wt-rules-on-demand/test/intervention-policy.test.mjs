@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-const { interventionEligibility, validateIntervention: validate } = await import(
-  process.env.WT_INTERVENTION_POLICY_MODULE || new URL('../scripts/intervention-policy.mjs', import.meta.url));
+import { Worker } from 'node:worker_threads';
+import { pathToFileURL } from 'node:url';
+// One module URL for the main thread and the workers; an override may be a file URL or a native path.
+const override = process.env.WT_INTERVENTION_POLICY_MODULE;
+const moduleUrl = !override ? new URL('../scripts/intervention-policy.mjs', import.meta.url).href
+  : override.startsWith('file:') ? override : pathToFileURL(override).href;
+const { interventionEligibility, validateIntervention: validate } = await import(moduleUrl);
 const eligible = interventionEligibility;
 
 const hash = 'a'.repeat(64);
@@ -389,4 +394,87 @@ test('deep extra data returns schema rejection without throwing', () => {
   for (let i = 0; i < 10000; i++) { tail.extra = {}; tail = tail.extra; }
   assert.deepEqual(validate(input), { valid: false, errors: ['schema:/extra'] });
   assertEligibility(input, 'reject', ['schema:/extra']);
+});
+
+for (const operation of ['validate', 'eligible']) {
+  for (const installsGetter of [false, true]) {
+    test(`proxy boundary ${operation}: self-removing getter=${installsGetter}`, () => {
+      const input = record(); let traps = 0; let getters = 0;
+      input.target.identityKnown = false;
+      input.target = new Proxy(input.target, {
+        getOwnPropertyDescriptor(target, key) {
+          traps++;
+          if (key !== 'identityKnown') return Reflect.getOwnPropertyDescriptor(target, key);
+          input.target = target;
+          if (installsGetter) Object.defineProperty(target, key, {
+            enumerable: true, configurable: true, get() { getters++; return true; },
+          });
+          return { value: true, writable: true, enumerable: true, configurable: true };
+        },
+      });
+      const result = operation === 'validate' ? validate(input) : eligible(input);
+      assert.equal(traps, 0, 'proxy traps must not run');
+      assert.equal(getters, 0, 'installed getters must not run');
+      assert.deepEqual(result, operation === 'validate'
+        ? { valid: false, errors: ['schema:/'] } : { mode: 'reject', reasons: ['schema:/'] });
+    });
+  }
+}
+
+test('nested proxy rejects before inspecting its prototype, keys or descriptors', () => {
+  const input = record(); let traps = 0;
+  const trap = () => { traps++; return null; };
+  input.extra = { nested: new Proxy({}, {
+    getPrototypeOf: trap, ownKeys: trap, getOwnPropertyDescriptor: trap,
+  }) };
+  assert.deepEqual(validate(input), { valid: false, errors: ['schema:/'] });
+  assertEligibility(input, 'reject', ['schema:/']);
+  assert.equal(traps, 0, 'nested proxy traps must not run');
+});
+
+test('revoked proxy rejects without throwing', () => {
+  const input = record(); const { proxy, revoke } = Proxy.revocable({}, {});
+  revoke(); input.target.binding = proxy;
+  assert.deepEqual(validate(input), { valid: false, errors: ['schema:/'] });
+  assertEligibility(input, 'reject', ['schema:/']);
+});
+
+for (const levels of [22, 64]) {
+  test(`shared DAG ${levels} levels stays within linear traversal budget`, { timeout: 1000 }, async t => {
+    // A worker lets the timeout interrupt even a synchronous exponential walk.
+    const source = `import { parentPort, workerData } from 'node:worker_threads';
+      const { validateIntervention, interventionEligibility } = await import(workerData.module);
+      let node = {};
+      for (let i = 0; i < workerData.levels; i++) node = { a: node, b: node };
+      workerData.input.extra = node;
+      parentPort.postMessage([validateIntervention(workerData.input), interventionEligibility(workerData.input)]);`;
+    const worker = new Worker(new URL(`data:text/javascript,${encodeURIComponent(source)}`), {
+      workerData: { levels, input: record(), module: moduleUrl },
+    });
+    t.after(() => worker.terminate());
+    const results = await new Promise((resolve, reject) => {
+      worker.once('message', resolve); worker.once('error', reject);
+    });
+    assert.deepEqual(results, [{ valid: false, errors: ['schema:/extra'] },
+      { mode: 'reject', reasons: ['schema:/extra'] }]);
+  });
+}
+
+for (const [reason, patch] of [
+  ['time-order', { capturedAtMs: 19 }],
+  ['bad-denominator', { denominator: 2 }],
+  ['miss-total', { triggerUnmatched: 2 }],
+  ['unit', { denominatorUnit: 'resolved-delivery' }],
+  ['irrelevant-fields', { unresolved: 0 }],
+]) {
+  test(`validator directly rejects inconsistent:${reason}`, () => {
+    const input = record(); Object.assign(input.evaluation, patch);
+    assert.deepEqual(validate(input), { valid: false, errors: [`inconsistent:${reason}`] });
+  });
+}
+
+test('validator reports every consistency error, not only the first', () => {
+  const input = record(); input.evaluation.bad = 6;
+  assert.deepEqual(validate(input), { valid: false,
+    errors: ['inconsistent:bad-denominator', 'inconsistent:miss-total'] });
 });
