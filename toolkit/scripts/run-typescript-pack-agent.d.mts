@@ -23,3 +23,8 @@ export function serializeRun(
 }
 
 export function loadSdk(): Promise<{ query: unknown }>
+
+export function main(
+  argv?: string[],
+  queryOverride?: (parameters: { prompt: string; options: Record<string, unknown> }) => AsyncIterable<unknown>,
+): Promise<void>

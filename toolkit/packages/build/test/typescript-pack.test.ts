@@ -1,10 +1,12 @@
 import * as fs from 'node:fs'
+import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { describePackContract } from './helpers/pack-contract.js'
 import {
   loadSdk,
+  main,
   parseAgentFrontmatter,
   parseRunnerArgs,
   requireString,
@@ -32,6 +34,58 @@ describePackContract({
 })
 
 describe('TypeScript pack SDK agent runner', () => {
+  it('disables hooks explicitly while preserving isolated query options and the transcript', async () => {
+    const scratch = fs.mkdtempSync(path.join(tmpdir(), 'typescript-pack-hooks-'))
+    const previous = process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
+    try {
+      const agent = path.join(scratch, 'agent.md')
+      const input = path.join(scratch, 'input.md')
+      const output = path.join(scratch, 'nested', 'output.json')
+      fs.writeFileSync(agent, '---\nmodel: sonnet\neffort: high\nsdk-only: true\n---\nSystem prompt')
+      fs.writeFileSync(input, 'Review this input')
+      const transcript = [{ type: 'system' }, { type: 'result', usage: { input_tokens: 3 } }]
+      await main([agent, input, output], async function* (parameters) {
+        expect(parameters).toEqual({
+          prompt: 'Review this input',
+          options: {
+            cwd: process.cwd(), effort: 'high', model: 'sonnet', settingSources: [],
+            settings: { disableAllHooks: true }, systemPrompt: 'System prompt', tools: [],
+          },
+        })
+        yield* transcript
+      })
+      expect(JSON.parse(fs.readFileSync(output, 'utf8'))).toEqual({
+        agent: { path: agent, model: 'sonnet', effort: 'high' }, transcript, usage: { input_tokens: 3 },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
+      else process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = previous
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps an inherited function-hooks switch away from an older bundled CLI', async () => {
+    const scratch = fs.mkdtempSync(path.join(tmpdir(), 'typescript-pack-switch-'))
+    const previous = process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
+    try {
+      const agent = path.join(scratch, 'agent.md')
+      const input = path.join(scratch, 'input.md')
+      fs.writeFileSync(agent, '---\nmodel: sonnet\neffort: high\nsdk-only: true\n---\nSystem prompt')
+      fs.writeFileSync(input, 'Review this input')
+      process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = '1'
+      let seen: string | undefined = 'not called'
+      await main([agent, input, path.join(scratch, 'output.json')], async function* () {
+        seen = process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
+        yield { type: 'result' }
+      })
+      expect(seen).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
+      else process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS = previous
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
   it('loads the SDK from the toolkit-owned runner rather than the shipped plugin pack', async () => {
     expect(fs.existsSync(path.join(packDir, 'scripts', 'run-agent.mjs'))).toBe(false)
     await expect(loadSdk()).resolves.toHaveProperty('query')
