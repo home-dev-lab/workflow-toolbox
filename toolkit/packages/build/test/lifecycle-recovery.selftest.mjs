@@ -332,6 +332,56 @@ function laterCriticCheck(decision) {
   })
 }
 
+function ownedFinalizerCheck(includeRunId = true) {
+  return withFixture('tdd', false, async (f) => {
+    const workerPid = includeRunId ? 42001 : process.pid
+    fs.writeFileSync(f.launcher, launcherSource(f.root, 'tdd', false, workerPid, includeRunId))
+    const m = await recoveryMachine(f, 'LITE')
+    await m.invoke('run', { kind: 'lane', phase: 'tdd' }); f.snapshots.push(f.info().snapshot)
+    const summary = m.server.finalizePartial('fixture stop')
+    const owned = m.server.state().partial?.ownedLanesAtFinalization
+    assert.equal(m.server.state().partial?.reason, 'fixture stop', 'stream-end finalization must still write the partial')
+    assert.equal(owned?.length, 1, 'stream-end finalization must name the lane that outlives the run')
+    assert.equal(owned[0].phase, 'tdd')
+    assert.equal(owned[0].pid, workerPid, 'stream-end finalization must retain the owned workerPid as pid')
+    assert.equal(owned[0].runId, includeRunId ? '123-1' : null, 'stream-end finalization must retain the owned runId')
+    assert.deepEqual(summary.partial.ownedLanesAtFinalization, owned)
+    f.finish()
+  })
+}
+
+function finalizerAbandonCheck(fails = false) {
+  return withFixture('critic', false, async (f) => {
+    const attempted = [], originalExec = childProcess.execFileSync
+    let archiving = false
+    const m = await recoveryMachine(f, 'FULL', { git: (command, args, options) => {
+      if (archiving && args[0] === 'status') assert.deepEqual(attempted, ['critic-A', 'critic-B'], 'every owned lane must receive abandon before archive status comparison')
+      return originalExec(command, args, options)
+    } })
+    await m.invoke('run', { kind: 'lane', phase: 'critic' })
+    for (const slot of ['critic-A', 'critic-B']) f.snapshots.push(f.info(slot).snapshot)
+    childProcess.execFileSync = (command, args, options) => {
+      if (!args[0]?.endsWith('wt-lane-control.mjs')) return originalExec(command, args, options)
+      const slot = args[args.indexOf('--slot') + 1]
+      assert.ok(['critic-A', 'critic-B'].includes(slot), 'finalization must control only its owned slots')
+      const saved = JSON.parse(fs.readFileSync(f.info(slot).paths.record, 'utf8'))
+      assert.equal(args[args.indexOf('--owner-token') + 1], saved.ownerToken, 'abandon must use the recorded ownership token')
+      assert.equal(args[args.indexOf('--decision') + 1], 'abandon')
+      attempted.push(slot)
+      if (fails && slot === 'critic-A') throw new Error('fixture abandon failed')
+      f.finish(slot)
+      return 'decision submitted'
+    }; syncBuiltinESMExports()
+    archiving = true
+    const summary = m.server.finalizePartial('fixture stop')
+    assert.deepEqual(attempted, ['critic-A', 'critic-B'])
+    const outcomes = summary.partial.ownedLanesAtFinalization.map((lane) => lane.abandon)
+    assert.deepEqual(outcomes, [{ status: fails ? 'failed' : 'submitted', ...(fails ? { error: 'fixture abandon failed' } : {}) }, { status: 'submitted' }])
+    const archived = JSON.parse(fs.readFileSync(join(summary.archive.path, 'summary.json'), 'utf8'))
+    assert.deepEqual(archived.partial, summary.partial, 'archive must retain abandon outcomes even after a failed attempt')
+  })
+}
+
 export const recoveryChecks = {
   GpureAdmissibility: () => withFixture('tdd', false, async (f) => {
     const host = laneHostDir(f.root)
@@ -376,16 +426,10 @@ export const recoveryChecks = {
   },
   GownedCritic: ownedCriticTransitionCheck,
   GownedRouting: ownedRoutingCheck,
-  GownedFinalizer: () => withFixture('tdd', false, async (f) => {
-    const m = await recoveryMachine(f, 'LITE')
-    await m.invoke('run', { kind: 'lane', phase: 'tdd' }); f.snapshots.push(f.info().snapshot)
-    m.server.finalizePartial('fixture stop')
-    const owned = m.server.state().partial?.ownedLanesAtFinalization
-    assert.equal(m.server.state().partial?.reason, 'fixture stop', 'stream-end finalization must still write the partial')
-    assert.equal(owned?.length, 1, 'stream-end finalization must name the lane that outlives the run')
-    assert.equal(owned[0].phase, 'tdd')
-    f.finish()
-  }),
+  GownedFinalizer: () => ownedFinalizerCheck(),
+  GownedFinalizerNoRunId: () => ownedFinalizerCheck(false),
+  GfinalizerAbandon: () => finalizerAbandonCheck(),
+  GfinalizerAbandonFailure: () => finalizerAbandonCheck(true),
   GstaleMissing: () => staleCriticCheck(false),
   GstaleLaunchFailure: () => staleCriticCheck(true),
   GfailedPairEvidence: failedPairEvidenceCheck,

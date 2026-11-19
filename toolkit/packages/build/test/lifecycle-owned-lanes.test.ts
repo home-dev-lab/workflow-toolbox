@@ -90,6 +90,61 @@ function machineFixture(f: ReturnType<typeof fixture>) {
   return { server, invoke }
 }
 
+async function pendingStopFixture() {
+  const f = fixture(); const m = machineFixture(f)
+  await m.invoke('transition', { phase: 'discovery', tool_use_id: 'start', record: '## External-source ledger\n- Claim: fixture\n  Source: fixture\n  Fetched content: fixture\n  Verdict: confirmed\nGrounding route: proceed\n' })
+  await m.invoke('write_artifact', { kind: 'brief', content: 'brief' })
+  expect(await m.invoke('run', { kind: 'lane', phase: 'tdd' })).toContain('TIMEOUT')
+  snapshots.push(f.info().snapshot)
+  expect(m.server.requestStop('timeout')).toBe(true)
+  return { f, m }
+}
+
+it.each(['extend', 'abandon'])('pending stop permits %s of the lifecycle own lane', async (decision) => {
+  const { f, m } = await pendingStopFixture()
+  expect(await m.invoke('transition', { phase: 'tdd', tool_use_id: 'still-owned' })).toContain('owned lane must finish before transition')
+  const ownerToken = JSON.parse(fs.readFileSync(f.info().paths.record, 'utf8')).ownerToken
+  const exit = decision === 'extend' ? 0 : 126
+  const spy = f.control(() => f.finish('tdd', exit))
+  expect(await m.invoke('run', { kind: 'control', decision })).toBe(`control ${decision} submitted; lane tdd EXIT=${exit}`)
+  expect(spy).toHaveBeenCalledTimes(1)
+  expect(spy.mock.calls[0]![1]).toEqual(expect.arrayContaining(['--dir', f.root, '--owner-token', ownerToken]))
+  const argv = spy.mock.calls[0]![1] as string[]
+  expect(argv[argv.indexOf('--decision') + 1]).toBe(decision)
+  vi.restoreAllMocks(); syncBuiltinESMExports()
+  expect(m.server.timeline().lanes[0].exit_code).toBe(String(exit))
+  if (decision === 'extend') expect(await m.invoke('transition', { phase: 'tdd', tool_use_id: 'stopped' })).toBe('stopped phase=tdd reason=timeout')
+})
+
+it.each(['lane', 'gate', 'inspect', 'unknown', undefined])('pending stop still refuses run kind %s', async (kind) => {
+  const { f, m } = await pendingStopFixture()
+  const spy = f.control(() => { throw new Error('must not launch or control') })
+  expect(await m.invoke('run', { kind, phase: 'tdd', name: 'typecheck', what: 'status' })).toContain('already stopped the lifecycle')
+  expect(spy).not.toHaveBeenCalled()
+  expect(m.server.timeline().lanes[0].ended_at).toBeNull()
+})
+
+it('pending stop cannot control a lane owned by another lifecycle', async () => {
+  const { f } = await pendingStopFixture()
+  const other = machineFixture(fixture())
+  expect(other.server.requestStop('timeout')).toBe(true)
+  const spy = f.control(() => { throw new Error('must not control another lifecycle lane') })
+  expect(await other.invoke('run', { kind: 'control', decision: 'abandon' })).toContain('timed-out lane owned by this lifecycle')
+  expect(spy).not.toHaveBeenCalled()
+  expect(fs.existsSync(f.info().snapshot)).toBe(true)
+})
+
+it('a completed stop refuses every run kind including control', async () => {
+  const f = fixture(); const m = machineFixture(f)
+  m.server.requestStop('timeout')
+  expect(await m.invoke('transition', { phase: 'discovery', tool_use_id: 'stop', record: '## External-source ledger\n- Claim: fixture\n  Source: fixture\n  Fetched content: fixture\n  Verdict: confirmed\nGrounding route: proceed\n' })).toBe('stopped phase=discovery reason=timeout')
+  const spy = f.control(() => { throw new Error('must not run after stop') })
+  for (const kind of ['control', 'lane', 'gate', 'inspect', 'unknown', undefined]) {
+    expect(await m.invoke('run', { kind, decision: 'extend', phase: 'tdd', name: 'typecheck', what: 'status' })).toContain('already stopped the lifecycle')
+  }
+  expect(spy).not.toHaveBeenCalled()
+})
+
 it('T2 a lifecycle transitions on the receipt published by its extended lane', async () => {
   const f = fixture(); const m = machineFixture(f)
   await m.invoke('transition', { phase: 'discovery', tool_use_id: 'start', record: '## External-source ledger\n- Claim: fixture\n  Source: fixture\n  Fetched content: fixture\n  Verdict: confirmed\nGrounding route: proceed\n' })

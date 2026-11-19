@@ -12,7 +12,7 @@ import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { executorFamilyForModel } from './executor-defaults.mjs'
 import { classifyLane } from './lane-supervisor-core.mjs'
 import { createOwnedLaneWait } from './host/lifecycle-owned-lane.mjs'
-import { runOwnedControl } from './host/lifecycle-owned-control.mjs'
+import { abandonOwnedLanes, runOwnedControl } from './host/lifecycle-owned-control.mjs'
 import { ensureLaneHostDir, laneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
 import { writeLaneRegularFile } from './host/lifecycle-file-write.mjs'
@@ -756,6 +756,7 @@ function bindLaunchRunners(context) {
   context.aggregateCritics = (...args) => launchAggregateCritics(context, ...args)
   context.runSingle = (...args) => launchRunSingle(context, ...args)
   context.run = (...args) => launchRun(context, ...args)
+  context.abandonOwnedLanes = () => abandonOwnedLanes({ root: context.root, state: context.state, controlPath: CONTROL })
 }
 
 export function createLifecycleLaunch(options) {
@@ -763,6 +764,6 @@ export function createLifecycleLaunch(options) {
   bindLaunchEvidence(context)
   initializeLaunch(context)
   bindLaunchRunners(context)
-  const { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = context
-  return { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
+  const { abandonOwnedLanes, audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = context
+  return { abandonOwnedLanes, audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
 }
