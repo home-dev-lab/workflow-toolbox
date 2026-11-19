@@ -93,6 +93,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   let companionTableStart = null
   const capturedDescendants = new Map()
   let claimedPid = null
+  // The recorded broker pid was absent from the last table read at stop: gone, not reused.
+  let recordedAbsent = false
   let discoveryFailure = null
   let stopped = false
   // Set when the companion runs inside the lane sandbox: broker.json then holds a PID of the
@@ -170,6 +172,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     // Unreadable process table: stop() names the discovery failure rather than an identity change.
     if (!result) return
     claimedPid = statePid
+    recordedAbsent = !result.processes.some((item) => item.pid === statePid)
     const notBefore = companionTableStart ?? ownershipStartedAt - TABLE_CLOCK_SKEW_MS
     if (claim(result.processes.find((item) => item.pid === statePid), notBefore, observedAt)) captureWindowsDescendants(result.processes, observedAt)
   }
@@ -267,6 +270,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     try {
       captureRecorded()
       if (!identity) {
+        // Gone after the bridge's own recorded tree kill: this call stopped it. A live pid stays unverified.
+        if (claimedPid && treeTerminated && recordedAbsent) return [`stopped broker/app-server process family pid ${claimedPid} started by this call`]
         if (claimedPid) return [`app-server cleanup unavailable for owned broker pid ${claimedPid}: broker identity changed before cleanup`]
         const reason = discoveryFailure ? `broker not captured; ${discoveryFailure}` : 'broker not captured before companion exit'
         return [`app-server cleanup unavailable: ${reason}`]
