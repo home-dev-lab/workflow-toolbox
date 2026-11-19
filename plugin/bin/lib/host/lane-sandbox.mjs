@@ -14,6 +14,7 @@ import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { isWindowsDriveMount } from './windows-drive-mount.mjs'
 import { suiteLockDir } from './suite-lock-dir.mjs'
+import { gitHistoryMasks, gitHistoryPaths } from './git-history-mask.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps
 // secrets out of their ENVIRONMENT; this sandbox keeps them out of their FILESYSTEM, process table
@@ -1055,8 +1056,8 @@ function sandboxLaunchOptions(options = {}) {
 }
 
 function sandboxLaunchTail(options) {
-  const { bwrap, socat, find, probe = probeBwrap, fs = realFs, spawnFn = spawn, runtimeParent, readonlyCwd = false, diagnostics } = options
-  return { bwrap, socat, find, probe, fs, spawnFn, runtimeParent, readonlyCwd, diagnostics }
+  const { bwrap, socat, find, probe = probeBwrap, fs = realFs, spawnFn = spawn, runtimeParent, readonlyCwd = false, diagnostics, hideGitHistory = false } = options
+  return { bwrap, socat, find, probe, fs, spawnFn, runtimeParent, readonlyCwd, diagnostics, hideGitHistory }
 }
 
 function prepareSandboxLaunch(state) {
@@ -1096,7 +1097,8 @@ function initializeSandboxTree(state) {
   const trustedRead = (file) => checkedConfigRead(file, fs, state.laneWritable, registry.roots, rejectedConfigs)
   const trustedAuthRead = (file) => checkedConfigRead(file, fs, state.sourceWritable, registry.roots, rejectedConfigs)
   const selected = PROFILES[profile]({ env, optionEnv, args, fs, runtimeDir, readonlyCwd, base, trustedRead, trustedAuthRead })
-  const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
+  const git = !state.hideGitHistory && workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
+  state.withheldPaths = sandboxGitHistory(state)
   for (const overlay of git.overlaysRo) fs.ensureFile(overlay)
 
   const lockRoot = suiteLockDir(env, undefined, 'linux', path)
@@ -1106,6 +1108,14 @@ function initializeSandboxTree(state) {
   fs.ensureDir(lockEmpty)
   const toolchain = toolchainPaths({ env, execPath, fs })
   Object.assign(state, { extras, registry, rejectedConfigs, selected, git, lockRoot, lockDir, lockEmpty, toolchain, bin })
+}
+
+function sandboxGitHistory({ hideGitHistory, base, fs }) {
+  if (!hideGitHistory) return []
+  const git = findOnPath('git', process.env.PATH, fs)
+  if (!git) throw new LaneSandboxRefusal('cannot resolve repository git history: no executable git on an absolute PATH entry')
+  try { return gitHistoryPaths(base, fs, git) }
+  catch (error) { throw new LaneSandboxRefusal(error.message) }
 }
 
 function prepareSandboxMounts(state) {
@@ -1195,6 +1205,7 @@ function buildSandboxPrefix(state) {
   if (codexReal) refuseCoveredCodex(prefix, codexReal, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
   prefix.push(...proxyEnvironment(state.bridges.find((item) => item.proxy)))
+  prefix.push(...gitHistoryMasks(prefix, state.withheldPaths, fs))
   state.prefix = prefix
   state.bridge = startBridges({ bridges: state.bridges, fs, spawnFn: state.spawnFn, socat: state.socatPath, diagnostics: state.diagnostics, state: state.bridgeState })
 }
@@ -1237,14 +1248,15 @@ function finishSandboxPlan(state) {
   return sandboxPlanResult(state, authSnapshot, line)
 }
 
-function sandboxPlanLine({ extras, droppedBinds, relativeBinds, network, rejectedConfigs, bridges, socatPath, registry, profile, writable, readable, masks, toolchain, selected }) {
+function sandboxPlanLine({ extras, droppedBinds, relativeBinds, network, rejectedConfigs, bridges, socatPath, registry, profile, writable, readable, masks, toolchain, selected, withheldPaths }) {
   const refusedNote = extras.refused.length ? `; refused ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV} entries ${extras.refused.join(', ')}` : ''
   const callerNote = callerBindMessages(droppedBinds, relativeBinds).map((note) => `; ${note}`).join('')
   const netNote = networkNote({ network: { ...network, unreadable: [...(network.unreadable ?? []), ...rejectedConfigs] }, bridges, socat: socatPath })
   const registryNote = registry.present ? '' : '; registered lane worktree index absent (registered-root clause skipped)'
   const withheldNote = selected.credentialFiles?.withheld.length ? `; withheld credential file references ${selected.credentialFiles.withheld.join(', ')}` : ''
   const missingNote = selected.credentialFiles?.missing.length ? `; removed missing credential file references ${selected.credentialFiles.missing.join(', ')}` : ''
-  return `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets${toolchain.skipNote}; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${callerNote}${withheldNote}${missingNote})`
+  const historyNote = withheldPaths.length ? `; withheld git history ${withheldPaths.join(', ')}` : ''
+  return `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets${toolchain.skipNote}; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${callerNote}${withheldNote}${missingNote}${historyNote})`
 }
 
 function sandboxPlanResult(state, authSnapshot, line) {
@@ -1273,8 +1285,13 @@ function sandboxPlanResult(state, authSnapshot, line) {
     return [bwrapPath, [...prefix, '--', '/bin/sh', '-c', bootstrap, 'wt-lane-net', command, ...commandArgs]]
   }
 
-  const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt })
-  return { kind: 'bwrap', suiteBroker: bridge.suiteBroker, opencodeDataDir: selected.opencodeDataDir, line, readable, writable, droppedBinds, relativeBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
+  const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt: historySafeExempt(exempt, state.withheldPaths, fs) })
+  return { kind: 'bwrap', gitHistoryHidden: state.hideGitHistory, withheldPaths: state.withheldPaths, suiteBroker: bridge.suiteBroker, opencodeDataDir: selected.opencodeDataDir, line, readable, writable, droppedBinds, relativeBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
+}
+
+function historySafeExempt(exempt, withheld, fs) {
+  if (!withheld.length) return exempt
+  return exempt.filter((candidate) => !withheld.some((root) => within(canonicalPath(candidate, fs), canonicalPath(root, fs))))
 }
 
 function cleanupFailedSandbox({ bridgeState, bridge, runtimeDir }) {
