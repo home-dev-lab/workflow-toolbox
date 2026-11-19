@@ -261,7 +261,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     return { state, ownedDescendants }
   }
 
-  function stop() {
+  function stop({ treeTerminated = false } = {}) {
     if (stopped) return []
     stopped = true
     try {
@@ -277,6 +277,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
         if (state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
         const descendantsBefore = currentOwnedDescendants()
         if (descendantsBefore.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${descendantsBefore.reason}`]
+        // Gone after the bridge's own recorded tree kill: this call stopped it, not an early exit.
+        if (state.status === 'gone' && descendantsBefore.identities.length === 0 && treeTerminated) return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
         if (state.status === 'gone' && descendantsBefore.identities.length === 0) return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker exited before cleanup; descendants cannot be safely discovered`]
         if (state.status === 'owned') {
           const rootResult = forceEndVerifiedWindowsProcess(identity)

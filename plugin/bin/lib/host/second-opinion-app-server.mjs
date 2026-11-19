@@ -7,11 +7,12 @@ export async function openAppServer(notify, dependencies = {}) {
   const child = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     shell: platform === 'win32' ? (env.SHELL || true) : false })
   let stopped = false
+  let treeTerminated = false
   // A raw PID can be reused after exit: stop at most once, and never an exited child.
   const stop = () => {
     if (stopped || child.exitCode != null || child.signalCode != null) return
     stopped = true
-    stopAppServer(child, platform, spawnSync)
+    treeTerminated = stopAppServer(child, platform, spawnSync)
   }
   process.once('exit', stop)
   process.once('SIGTERM', stop)
@@ -44,13 +45,17 @@ export async function openAppServer(notify, dependencies = {}) {
     },
     send,
     async close() { child.stdin.end(); stop(); await closed },
+    // True only when this client ran a tree kill: on Windows it also ends Codex's descendants.
+    get treeTerminated() { return treeTerminated },
   }
 }
 
 function stopAppServer(child, platform, spawnSync) {
-  if (platform !== 'win32') { child.kill('SIGTERM'); return }
+  if (platform !== 'win32') { child.kill('SIGTERM'); return false }
   // The shell is the direct child on Windows; killing it alone leaves Codex alive.
-  if (child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+  if (!child.pid) return false
+  // Only a tree kill that succeeded may later explain a vanished broker.
+  return spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })?.status === 0
 }
 
 function dispatchAppServerMessage(message, pending, send, notify) {
@@ -121,7 +126,7 @@ function requireCleanTerminal(terminal) {
     new Error(`Astra turn error: ${JSON.stringify(terminal.error ?? terminal.turn.error ?? terminal.turn.status)}`), { answer: terminal.answer })
 }
 
-export async function publicAstraTurn(effort, prompt) {
+export async function publicAstraTurn(effort, prompt, onClosed = () => {}) {
   const collector = terminalTurnCollector()
   const client = await openAppServer(collector.observe)
   try {
@@ -140,6 +145,7 @@ export async function publicAstraTurn(effort, prompt) {
     return terminal.answer
   } finally {
     await client.close()
+    onClosed(client.treeTerminated)
   }
 }
 

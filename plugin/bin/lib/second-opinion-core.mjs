@@ -9,7 +9,7 @@ import { announceUnsandboxedLane, LaneSandboxRefusal, resolveLaneSandbox } from 
 import { requestNamedPaths, requestDirectoryNote, requestPathRefusal, unreadEscape } from './host/second-opinion-request-paths.mjs'
 import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
-import { resolveAstraSandbox, verifiedAstraResult } from './second-opinion-codex-turn.mjs'
+import { appServerTreeTerminated, resolveAstraSandbox, verifiedAstraResult } from './second-opinion-codex-turn.mjs'
 
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 // The Claude fallback always runs Opus at xhigh; the caller's --effort drives only the Astra route.
@@ -151,14 +151,14 @@ function startCodexLifecycle({ child, sandbox }, ownership) {
     companionAlive = false
     clearInterval(captureTimer)
   })
-  const stop = (reason = null) => {
+  const stop = (reason = null, ownershipOptions = {}) => {
     if (cleanup) return cleanup
     if (reason) interrupted ??= reason
     clearInterval(captureTimer)
     captureBroker()
     if (companionAlive) child.kill('SIGTERM')
     // The public client closes its own app-server; no companion broker is expected.
-    cleanup = ownership.stop().filter((line) => line !== 'app-server cleanup unavailable: broker not captured before companion exit')
+    cleanup = ownership.stop(ownershipOptions).filter((line) => line !== 'app-server cleanup unavailable: broker not captured before companion exit')
     // The refreshed codex token is written back to the shared ~/.codex by the sandbox (host
     // perimeter) only if it changed; the shared file stayed read-only during the run (H3).
     sandbox.writeBackAuth?.()
@@ -212,7 +212,8 @@ function awaitCodexClose(state, output, lifecycle, { signal, onAbort, onExit, ma
     })
     child.once('close', (code, childSignal) => {
       lifecycle.closed()
-      lifecycle.stop()
+      const record = Buffer.concat(output.chunks.completion).toString()
+      lifecycle.stop(null, { treeTerminated: appServerTreeTerminated(record, completionNonce) })
       finish(codexChildResult(output, lifecycle, maxOutputBytes, code ?? (childSignal ? 1 : 0)))
     })
   })
@@ -230,8 +231,9 @@ function collectCodexChild(state, ownership, options) {
 export function listProcessTable(adapter) {
   try {
     return adapter.readProcessSnapshot()
-  } catch {}
-  return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
+  } catch {
+    return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
+  }
 }
 
 export function listProcessRelationships(adapter) {
@@ -252,6 +254,7 @@ function resolveSdkQuery(repo, env) {
 
 function sdkRemedy(error) {
   const message = error instanceof Error ? error.message : String(error)
+  // eslint-disable-next-line sonarjs/super-linear-regex -- one bounded SDK error message; rewriting would change which remedies match
   const remedy = /run:\s*(.+)$/i.exec(message)?.[1]
   return remedy ? `run: ${remedy}` : `install @anthropic-ai/claude-agent-sdk (${message})`
 }

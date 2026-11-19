@@ -10,7 +10,7 @@ import { fakeServerPreload } from './helpers/second-opinion-server.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { verifiedAstraResult } from '../../../../plugin/bin/lib/host/second-opinion-codex-turn.mjs'
+import { appServerTreeTerminated, verifiedAstraResult } from '../../../../plugin/bin/lib/host/second-opinion-codex-turn.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { openAppServer } from '../../../../plugin/bin/lib/host/second-opinion-app-server.mjs'
 
@@ -153,6 +153,35 @@ it.each(['twice', 'after exit'])('runs taskkill at most once and never after the
     await client.close()
     expect(terminations).toHaveLength(when === 'twice' ? 1 : 0)
   } finally { child.emit('close') }
+})
+
+it.each([
+  { platform: 'win32', exited: false, killStatus: 0, terminated: true },
+  { platform: 'win32', exited: false, killStatus: 128, terminated: false },
+  { platform: 'win32', exited: true, killStatus: 0, terminated: false },
+  { platform: 'linux', exited: false, killStatus: 0, terminated: false },
+])('exposes treeTerminated=$terminated after close on $platform (child exited first: $exited, taskkill status $killStatus)', async ({ platform, exited, killStatus, terminated }) => {
+  const { child } = fakeAppServerProcess()
+  const client = await openAppServer(() => {}, {
+    platform, env: {}, spawn: () => child, spawnSync: () => ({ status: killStatus }),
+  })
+  try {
+    if (exited) Object.assign(child, { exitCode: 0 }).emit('exit', 0, null)
+    await client.close()
+    expect(client.treeTerminated).toBe(terminated)
+  } finally { child.emit('close') }
+})
+
+it.each([
+  { prefix: 'nonce', answer: 'Answer', status: 0, terminated: true },
+  { prefix: 'other', answer: '', status: 1, terminated: false },
+])('reads a tree-termination record bound to nonce $prefix ahead of the final record', ({ prefix, answer, status, terminated }) => {
+  const termination = `${JSON.stringify({ type: 'wt-app-server-tree-terminated-v1', nonce: prefix })}\n`
+  const completionRecord = `${termination}${JSON.stringify({ type: 'wt-astra-verified-v1', answer: 'Answer', nonce: 'nonce' })}\n`
+  expect(appServerTreeTerminated(completionRecord, 'nonce')).toBe(terminated)
+  expect(appServerTreeTerminated(termination, 'nonce')).toBe(terminated)
+  const result = verifiedAstraResult({ status: 0, stderr: '', completionNonce: 'nonce', completionRecord })
+  expect([result.status, result.stdout]).toEqual([status, answer])
 })
 
 it.each([

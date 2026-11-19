@@ -2,10 +2,13 @@ import { appServerSource, publicAstraTurn } from './second-opinion-app-server.mj
 
 // Runs inside the existing sandbox/owned child, not in the calling host process.
 async function structuredAstraTurn() {
-  const { createWriteStream } = await import('node:fs')
+  const { createWriteStream, writeSync } = await import('node:fs')
   const [, effort, prompt, nonce] = process.argv.slice(1)
   try {
-    const answer = await publicAstraTurn(effort, prompt)
+    // Recorded before any verdict so the caller's broker cleanup knows the tree is already gone.
+    const answer = await publicAstraTurn(effort, prompt, (terminated) => {
+      if (terminated) writeSync(3, `${JSON.stringify({ type: 'wt-app-server-tree-terminated-v1', nonce })}\n`)
+    })
     // One framed record, emitted only after a complete, explicitly clean verdict.
     // The private pipe is independent of companion stdout, including late logs.
     await new Promise((resolve, reject) => {
@@ -26,11 +29,22 @@ const structuredAstraSource = `${appServerSource}\nawait (${structuredAstraTurn.
 
 // A zero child status alone is never a completion verdict: imports and provider
 // code can exit early, and a pending promise need not keep Node's loop alive.
+function treeTerminationPrefix(nonce) {
+  return `${JSON.stringify({ type: 'wt-app-server-tree-terminated-v1', nonce })}\n`
+}
+
+// The bridge's own tree kill, bound to this call's nonce; never inferred from a missing process.
+export function appServerTreeTerminated(completionRecord, nonce) {
+  return typeof nonce === 'string' && nonce !== '' && completionRecord.startsWith(treeTerminationPrefix(nonce))
+}
+
 export function verifiedAstraResult(result) {
   if (result.status !== 0) return result
   try {
-    // Parse the entire channel: additional records or trailing junk fail closed.
-    const record = JSON.parse(result.completionRecord)
+    const channel = appServerTreeTerminated(result.completionRecord, result.completionNonce)
+      ? result.completionRecord.slice(treeTerminationPrefix(result.completionNonce).length) : result.completionRecord
+    // Parse the rest of the channel: additional records or trailing junk fail closed.
+    const record = JSON.parse(channel)
     if (record?.type !== 'wt-astra-verified-v1' || typeof record.answer !== 'string'
       || typeof result.completionNonce !== 'string' || !result.completionNonce
       || record.nonce !== result.completionNonce || Object.keys(record).length !== 3) throw new Error('invalid completion record')
