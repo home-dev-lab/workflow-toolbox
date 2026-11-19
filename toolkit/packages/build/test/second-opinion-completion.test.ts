@@ -57,7 +57,9 @@ function structuredCompanion(f: ReturnType<typeof fixture>, source: string) {
 }
 
 function astraCli(f: ReturnType<typeof fixture>) {
-  return spawnSync(process.execPath, ['--import', fakeServerPreload(f.root, join(f.root, 'bin', 'codex')), CLI, '--request', f.request, '--out', f.out, '--repo', f.root, '--route', 'astra'], {
+  const preloadUrl = pathToFileURL(fakeServerPreload(f.root, join(f.root, 'bin', 'codex'))).href
+  const args = ['--import', preloadUrl, CLI, '--request', f.request, '--out', f.out, '--repo', f.root, '--route', 'astra']
+  return spawnSync(process.execPath, args, {
     encoding: 'utf8', timeout: 10_000,
     env: { PATH: `${join(f.root, 'bin')}${delimiter}${process.env.PATH}`, HOME: f.root, CLAUDE_CONFIG_DIR: f.config, WT_LANE_SANDBOX: 'off' },
   })
@@ -407,7 +409,7 @@ it.each([
 ])('uses the structured Astra error $error and turn $turn', ({ error, turn, expected }) => {
   const f = fixture()
   structuredCompanion(f, `export async function runAppServerTurn(cwd, options) {
-    if (cwd !== (await import('node:fs')).realpathSync(${JSON.stringify(f.root)}) || options.sandbox !== 'read-only' || options.model !== 'gpt-6-astra' || options.effort !== 'medium' || !options.prompt) throw new Error('wrong turn options');
+    if (cwd !== (await import('node:fs')).realpathSync.native(${JSON.stringify(f.root)}) || options.sandbox !== 'read-only' || options.model !== 'gpt-6-astra' || options.effort !== 'medium' || !options.prompt) throw new Error('wrong turn options');
     const state = { error: null };
     const notification = ${JSON.stringify({ method: 'error', params: { error } })};
     state.error = notification.params.error;
@@ -449,8 +451,10 @@ it('replaces a reused success marker when reading the current request throws', (
     'syncBuiltinESMExports()',
   ].join('\n'))
   writeFileSync(f.out, 'Previous answer\nEXIT=0\n')
-  const result = spawnSync(process.execPath, ['--import', fakeServerPreload(f.root, join(f.root, 'bin', 'codex')), '--import', pathToFileURL(preload).href, CLI,
-    '--request', f.request, '--out', f.out, '--repo', f.root, '--route', 'astra'], {
+  const preloadUrl = pathToFileURL(fakeServerPreload(f.root, join(f.root, 'bin', 'codex'))).href
+  const failUrl = pathToFileURL(preload).href
+  const args = ['--import', preloadUrl, '--import', failUrl, CLI, '--request', f.request, '--out', f.out, '--repo', f.root, '--route', 'astra']
+  const result = spawnSync(process.execPath, args, {
     encoding: 'utf8', timeout: 10_000,
     env: { PATH: process.env.PATH, HOME: f.root, CLAUDE_CONFIG_DIR: f.config, WT_LANE_SANDBOX: 'off' },
   })

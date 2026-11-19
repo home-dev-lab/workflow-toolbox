@@ -160,7 +160,7 @@ createInterface({input:process.stdin}).on('line', async line => {
   }
 });`)
   chmodSync(join(bin, 'codex'), 0o755)
-  Object.assign(f.env, { PATH: `${bin}${delimiter}${process.env.PATH}`, NODE_OPTIONS: `--import=${fakeServerPreload(f.repo, join(bin, 'codex'))}` })
+  Object.assign(f.env, { PATH: `${bin}${delimiter}${process.env.PATH}`, NODE_OPTIONS: `--import=${pathToFileURL(fakeServerPreload(f.repo, join(bin, 'codex'))).href}` })
 }
 
 function verifiedWrapper(_bin: string, args: string[], answer = 'ran') {
