@@ -440,6 +440,26 @@ function nonLinuxIdleUnknownCase() {
   expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ idle: { status: 'unknown', reason: expect.stringMatching(/^process CPU time unavailable/) } })
 }
 
+type IdleStatus = { idle?: { status: string, maxSilentSeconds: number }, state?: string }
+function waitForIdleEvidence(files: { log: string, status: string }, label: string, ready: (state: IdleStatus) => boolean, ms = 20_000) {
+  let text = '(missing)'
+  let record = '(missing)'
+  try {
+    const until = performance.now() + ms
+    while (performance.now() < until) {
+      if (existsSync(files.log)) text = readFileSync(files.log, 'utf8')
+      if (existsSync(files.status)) {
+        record = readFileSync(files.status, 'utf8')
+        if (ready(JSON.parse(record))) return
+      }
+      spawnSync('sleep', ['0.05'])
+    }
+    throw new Error(`timed out waiting for ${label}`)
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nrun log:\n${text}\nsupervision record:\n${record}`)
+  }
+}
+
 async function observeIdleCase() {
   const f = deadlineFixture('exec sleep 30')
   const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5'])
@@ -454,9 +474,13 @@ async function observeIdleCase() {
 }
 
 function idleOwnerExtensionCase() {
-  const f = deadlineFixture('exec sleep 30')
-  const { log, status } = launchDeadline(f, ['--timeout', '1.5', '--decision-grace', '5', '--idle-window', '0.5', '--owner', 'pilot', '--owner-token', 'pilot-token'])
-  waitForContent(status, /"state": "decision-needed"/)
+  const f = knownIdleFixture()
+  const files = launchDeadline(f, ['--timeout', '10', '--decision-grace', '10', '--idle-window', '0.5', '--owner', 'pilot', '--owner-token', 'pilot-token'])
+  const { log, status } = files
+  // Wait on the watch's own publications, never on elapsed time: known silence first, then the deadline decision.
+  waitForIdleEvidence(files, 'recorded known idle window before the deadline', (state) =>
+    state.idle?.status === 'known' && state.idle.maxSilentSeconds >= 0.5)
+  waitForIdleEvidence(files, 'decision-needed after known silence', (state) => state.state === 'decision-needed')
   expect(JSON.parse(readFileSync(status, 'utf8')).defaultDecision).toBe('abandon')
   const decision = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'extend', '--extend', '10', '--owner-token', 'pilot-token'], { encoding: 'utf8', env: f.env })
   expect(decision.status, decision.stderr).toBe(0)
@@ -496,7 +520,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane deadline visibility and i
   it.runIf(process.platform === 'linux')('keeps a silent child with a live descendant running beyond three idle timeouts', liveDescendantCase)
   it.skipIf(process.platform === 'linux')('names idle evidence unknown and never stops where no CPU counters exist', nonLinuxIdleUnknownCase)
   it('warns once per silent stretch in observe mode and measures silence without stopping', observeIdleCase, 45_000)
-  it('keeps an explicit owner extension available after an idle default abandon', idleOwnerExtensionCase)
+  it('keeps an explicit owner extension available after an idle default abandon', idleOwnerExtensionCase, 60_000)
   it('documents the unattended bound and writes the configured bound at launch', deadlineBoundCase)
   it('records an owner extension receipt through the normal control path', ownerReceiptCase)
 })
