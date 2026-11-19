@@ -21,10 +21,10 @@ export function staticWaitDeadline(options) {
   let cancelTimer = () => {}
   let expired = false
   let lastWait = 'waiting for static lane'
-  const abort = () => controller.abort()
+  const abort = () => controller.abort(options.signal.reason)
   const renew = () => {
     cancelTimer()
-    cancelTimer = expiryTimer(seconds, () => { expired = true; controller.abort() })
+    cancelTimer = expiryTimer(seconds, () => { if (!controller.signal.aborted) { expired = true; controller.abort() } })
   }
   options.signal?.addEventListener('abort', abort, { once: true })
   if (options.signal?.aborted) abort()

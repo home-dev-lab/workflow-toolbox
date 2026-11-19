@@ -33,6 +33,7 @@ import { suiteLockPrecedenceCli } from './lib/suite-lock-precedence.mjs'
 import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
 import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
 import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mjs'
+import { suiteSignalExit, watchSuiteWaitSignals } from './lib/host/suite-lock-signals.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
@@ -132,11 +133,17 @@ async function queueAndRun(command, options) {
   const { waitS, staleS, light, staticRun, priority, project, size, park, attempt } = options
   const scopeGuard = lightScopeGuard(command, { light, staticRun })
   if (scopeGuard.refused) return 2
-  const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: !park && !light && !staticRun, light, static: staticRun, priority, project, size, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
-  if (typeof lease === 'number') return lease
-  if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
-  const timing = {}
-  try { return await runLeasedCommand(lease.replacementArgv ?? command, lease, { light, staticRun, park, attempt, timing }) } finally { scopeGuard.end(timing.heldMs) }
+  const waiting = watchSuiteWaitSignals()
+  try {
+    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: !park && !light && !staticRun, light, static: staticRun, priority, project, size, signal: waiting.signal, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+    if (typeof lease === 'number') return lease
+    if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
+    const timing = {}
+    try { return await runLeasedCommand(lease.replacementArgv ?? command, lease, { light, staticRun, park, attempt, timing, waiting }) } finally { scopeGuard.end(timing.heldMs) }
+  } catch (error) {
+    if (suiteSignalExit(waiting.signal.reason)) return suiteSignalExit(waiting.signal.reason)
+    throw error
+  } finally { waiting.close() }
 }
 
 // A light request is checked for its scope before it queues; a nested run under an inherited lease takes no
@@ -151,7 +158,7 @@ function lightScopeGuard(command, requested) {
   return guardLightRun({ command, route: 'cli', write: (text) => process.stderr.write(text), log })
 }
 
-async function runLeasedCommand(command, lease, requested) {
+export async function runLeasedCommand(command, lease, requested) {
   const stopWarning = watchGrantedLease(lease, requested, command)
   let exit = 1
   let yielded = false
@@ -159,7 +166,7 @@ async function runLeasedCommand(command, lease, requested) {
   try {
     yielded = shouldYieldParkLease(lease, requested.park, readSuiteLockParked)
     if (yielded) { exit = 75; return exit }
-    exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park), timing)
+    exit = await spawnLeasedCommand(command, lease, requested, timing)
     return exit
   } finally {
     stopWarning()
@@ -167,7 +174,7 @@ async function runLeasedCommand(command, lease, requested) {
     try {
       requested.attempt.outcome = finishParkRun(lease, requested.park, yielded)
       completed = requested.attempt.outcome === 'not-parked\n' && !yielded && timing.started === true && !timing.lost
-    } finally { releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs }) }
+    } finally { releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs, ...timing.signalOutcome }) }
   }
 }
 
@@ -184,6 +191,20 @@ function watchGrantedLease(lease, requested, command) {
 // Direct static grants carry staticDomain; a broker's static grant arrives as `granted static:<id>`.
 function grantedStaticLane(lease) {
   return lease.staticDomain === true || String(lease.holder?.leaseId ?? '').startsWith('static:')
+}
+
+function spawnLeasedCommand(command, lease, requested, timing) {
+  const reason = requested.waiting?.signal.reason
+  const exit = suiteSignalExit(reason)
+  if (exit) { timing.signalOutcome = { cause: 'signal', signal: reason.signal }; return exit }
+  timing.waiting = requested.waiting
+  return spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park), timing)
+}
+
+function installCommandForwarding(forward, timing) {
+  const stopSignals = watchParkChildSignals(forward)
+  timing.waiting?.close()
+  return stopSignals
 }
 
 function spawnCommand(command, leaseLost = null, marker = null, envOverrides, timing = {}) {
@@ -210,7 +231,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
       if (marker) signalCoveredCommand(child, signal, { group })
       else child.kill(signal)
     }
-    const stopSignals = watchParkChildSignals(forward)
+    const stopSignals = installCommandForwarding(forward, timing)
     leaseLost?.then((reason) => {
       lockLost = true
       timing.lost = true

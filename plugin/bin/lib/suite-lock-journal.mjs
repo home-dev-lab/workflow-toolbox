@@ -15,21 +15,21 @@ export function journalCommand(argv) {
   return 'other'
 }
 
-export function suiteJournalRequest(root, ticket, record, priority, options, light) {
-  try { return journalRequest(root, ticket, record, priority, options, light) } catch (error) {
+export function suiteJournalRequest(root, ticket, record, priority, options, light, publish = true) {
+  try { return journalRequest(root, ticket, record, priority, options, light, publish) } catch (error) {
     warnSuiteLockJournal(error)
     return undefined
   }
 }
 
-function journalRequest(root, ticket, record, priority, options, light) {
+function journalRequest(root, ticket, record, priority, options, light, publish) {
   const kind = journalKind(options, priority, light)
   const base = { ticket, leaseId: record.leaseId, root: options.journalRoot ?? root, kind,
     cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: journalLight(options, light),
     pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct',
     project: record.project, size: record.size, ...requestRankFields(root, ticket, record, options) }
   const journal = { base, now: options.now?.bind(options) }
-  suiteJournalEvent(journal, 'request')
+  if (publish) suiteJournalEvent(journal, 'request')
   return journal
 }
 

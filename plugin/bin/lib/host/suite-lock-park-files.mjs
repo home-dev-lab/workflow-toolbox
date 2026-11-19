@@ -226,7 +226,7 @@ export function watchParkWait() {
   const controller = new AbortController()
   let exit = 143
   const handlers = Object.entries({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129, SIGQUIT: 131 }).flatMap(([signal, code]) => {
-    const handler = () => { exit = code; controller.abort() }
+    const handler = () => { exit = code; controller.abort(Object.assign(new Error(`suite lock interrupted by ${signal}`), { code: 'ABORT_ERR', signal })) }
     try { process.once(signal, handler); return [[signal, handler]] } catch { return [] }
   })
   return { signal: controller.signal, exit: () => exit, close: () => {

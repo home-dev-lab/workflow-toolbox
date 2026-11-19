@@ -20,6 +20,7 @@ import { suiteJournalEvent } from './suite-lock-journal.mjs'
 import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord } from './suite-lock-journal-lifecycle.mjs'
 import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, parkQueueMetadata, parkStatusEntries, suiteLeaseWithPark, takeParkTicket } from './suite-lock-park.mjs'
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
+import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket } from './host/suite-lock-recovery.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
@@ -173,13 +174,14 @@ const progressPlace = ({ ahead, aheadExcludingRelease, total }) => ({ ahead, ahe
 // Reclaims dead tickets and returns my place: how many live tickets are ahead, and how many in all.
 function queuePlace(queueDir, mine, mineRecord, counter, options) {
   const now = suiteLockNow(options)
+  cleanSuiteRecoveryFiles(queueDir, '.reaped-')
   readSuiteLockParked(queueDir, options, now)
   const live = [{ number: mine, record: mineRecord }]
   for (const ticket of readQueueSnapshot(queueDir, now)) {
     const { number } = ticket
     if (number === mine) continue
     if (ticketIsStale(ticket, options)) {
-      removeTicket(queueDir, number)
+      reapSuiteTicket(queueDir, ticket, options)
       continue
     }
     live.push({ number, record: ticket.holder })
@@ -243,8 +245,10 @@ function removeJudgedInstance(lockDir, judged, options) {
   const aside = setLockAside(lockDir)
   options.afterLockAside?.()
   if (aside === null) return true
-  if (sameInstance(readHolderIn(aside), judged)) {
+  const holder = readHolderIn(aside)
+  if (sameInstance(holder, judged)) {
     recordAbandonedSuiteLock(path.dirname(lockDir), judged, options)
+    journalReclaimedHolder(holder, options)
     discardDirectory(aside)
     return true
   }
@@ -267,6 +271,7 @@ function withReclaimSection(root, critical) {
     return RECLAIM_BUSY
   }
   try {
+    cleanSuiteRecoveryFiles(root, 'lock.d.reclaimed-')
     return critical()
   } finally {
     rmSync(reclaimDir, REMOVE_WITH_RETRY)
@@ -328,14 +333,16 @@ function describeWait(place, current, record) {
 const TRANSIENT_FS_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
 const TRANSIENT_FS_WINDOW_MS = 5000
 
-async function retryTransient(operation, pauseMs) {
+async function retryTransient(operation, pauseMs, readSignal) {
   const since = Date.now()
   while (true) {
+    const signal = readSignal?.()
+    throwIfAborted(signal)
     try {
       return operation()
     } catch (error) {
       if (!TRANSIENT_FS_CODES.has(error?.code) || Date.now() - since >= TRANSIENT_FS_WINDOW_MS) throw error
-      await sleep(pauseMs)
+      await sleep(pauseMs, signal)
     }
   }
 }
@@ -385,7 +392,7 @@ function pollQueue(state, options) {
     delete holder.levelOrderVersion // queue-only: the order reads it from waiting tickets, never from the holder
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
-    if (taken === true) return confirmAdmission(state, holder, place, options)
+    if (taken === true) { options.afterPublish?.(); return confirmAdmission(state, holder, place, options) }
     if (taken === 'reclaim') {
       removeDirectoryOlderThan(path.join(root, 'reclaim.d'), RECLAIM_DIR_STALE_MS)
       return { place, current: readSuiteLock({ root }) }
@@ -433,12 +440,12 @@ async function acquireSuiteLock(options = {}) {
   const root = domain
   const waiting = prepareSuiteWait(root, options, env, priority)
   const { lockDir, queueDir, record } = waiting
-  const ticket = await retryTransient(() => takeParkTicket(queueDir, record, options, parkOwnerJudge(options)), HEAD_OF_QUEUE_POLL_MS)
+  const ticket = await retryTransient(() => takeParkTicket(queueDir, record, options, parkOwnerJudge(options)), HEAD_OF_QUEUE_POLL_MS, () => options.signal)
   const state = { root, lockDir, queueDir, ticket, record, ...parkQueueMetadata(record) }
   try {
     while (true) {
       throwIfAborted(options.signal)
-      const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
+      const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS, () => options.signal)
       if (step.lease) return grantParkState(state, step.lease)
       const current = step.again ? readSuiteLock({ root }) : step.current
       const now = Date.now()
@@ -658,21 +665,22 @@ export async function hasSuiteLeaseAsync(env = process.env, options = {}) {
 export function operatorReleaseSuiteLock(options = {}) {
   const current = readSuiteLock(options)
   if (!current.held) return { released: false, reason: 'free', holder: null }
-  if (options.force) {
-    recordAbandonedSuiteLock(current.root, current.holder, options)
-    rmSync(current.lockDir, { recursive: true, force: true })
-    return { released: true, reason: 'forced', holder: current.holder }
-  }
-  if (!holderIsStale(current, options)) return { released: false, reason: 'live', holder: current.holder }
+  if (!options.force && !holderIsStale(current, options)) return { released: false, reason: 'live', holder: current.holder }
+  options.beforeOperatorReclaim?.()
   // The same guarded critical section as a waiter's reclaim; busy when another holds it.
   const outcome = withReclaimSection(path.dirname(current.lockDir), () => {
     const confirmed = readSuiteLock(options)
     if (!confirmed.held) return { released: false, reason: 'free', holder: null }
-    if (!holderIsStale(confirmed, options)) return { released: false, reason: 'live', holder: confirmed.holder }
+    if (!operatorMayRemove(current, confirmed, options)) return { released: false, reason: 'live', holder: confirmed.holder }
     const removed = removeJudgedInstance(confirmed.lockDir, confirmed.holder, options)
-    return removed ? { released: true, reason: 'stale', holder: confirmed.holder } : { released: false, reason: 'live', holder: readSuiteLock(options).holder }
+    return removed ? { released: true, reason: options.force ? 'forced' : 'stale', holder: confirmed.holder } : { released: false, reason: 'live', holder: readSuiteLock(options).holder }
   })
   return outcome === RECLAIM_BUSY ? { released: false, reason: 'busy', holder: current.holder } : outcome
+}
+
+function operatorMayRemove(current, confirmed, options) {
+  if (options.force) return sameInstance(current.holder, confirmed.holder)
+  return holderIsStale(confirmed, options)
 }
 
 // Windows needs a SHELL only to launch a `.cmd`/`.bat` shim (spawning one directly fails EINVAL).

@@ -6,6 +6,7 @@ import { staticLaneEnabled, staticLockOptions } from './suite-lock-static.mjs'
 import { staticWaitDeadline } from './suite-lock-static-deadline.mjs'
 import { suiteLockRankOptions } from './suite-lock-priority.mjs'
 import { suiteLockBootClock } from './host/platform.mjs'
+import { suiteSignalExit } from './host/suite-lock-signals.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -24,15 +25,24 @@ function ticketJournalPriority(record, priority, resumedNumber) {
 const ticketJournalLight = (record, resumedNumber) => resumedNumber === undefined ? undefined : record.light === true
 
 export function takeJournalTicket(queueDir, record, resumedNumber) {
-  const ticket = resumedNumber ?? takeHostTicket(queueDir, record)
+  const ticket = resumedNumber ?? takeHostTicket(queueDir, record, { prepare: (number) => prepareJournalTicket(queueDir, record, number) })
   const metadata = records.get(record)
   if (metadata) {
-    const priority = ticketJournalPriority(record, metadata.priority, resumedNumber)
-    const light = ticketJournalLight(record, resumedNumber)
-    const journal = suiteJournalRequest(path.dirname(queueDir), ticket, record, priority, metadata.options, light)
+    const journal = { base: record.journal, now: metadata.options.now?.bind(metadata.options) }
+    suiteJournalEvent(journal, 'request')
     if (metadata.options[CONTEXT]) metadata.options[CONTEXT].journal = journal
   }
   return ticket
+}
+
+export function prepareJournalTicket(queueDir, source, ticket, resumedNumber, record = source) {
+  const metadata = records.get(source)
+  if (metadata) {
+    const priority = ticketJournalPriority(record, metadata.priority, resumedNumber)
+    const light = ticketJournalLight(record, resumedNumber)
+    const journal = suiteJournalRequest(path.dirname(queueDir), ticket, record, priority, metadata.options, light, false)
+    record.journal = journal?.base
+  }
 }
 
 function journalAcquisition(options, domain, covered, inherit) {
@@ -46,9 +56,12 @@ function journalAcquisition(options, domain, covered, inherit) {
   return { options }
 }
 
-function journalWaitFailure(context, failure) {
-  if (failure?.code === 'WT_SUITE_LOCK_TIMEOUT') suiteJournalEvent(context.journal, 'timeout', { waitedS: (performance.now() - context.started) / 1000 })
-  if (failure?.code === 'ABORT_ERR') suiteJournalEvent(context.journal, 'abort', { waitedS: (performance.now() - context.started) / 1000 })
+function journalWaitFailure(context, failure, signal) {
+  const fields = { waitedS: (performance.now() - context.started) / 1000 }
+  if (failure?.code === 'WT_SUITE_LOCK_TIMEOUT') return suiteJournalEvent(context.journal, 'timeout', fields)
+  if (suiteSignalExit(signal?.reason)) Object.assign(fields, { cause: 'signal', signal: signal.reason.signal })
+  else if (failure?.code !== 'ABORT_ERR') Object.assign(fields, { cause: 'error', code: failure?.code ?? 'unknown' })
+  suiteJournalEvent(context.journal, 'abort', fields)
 }
 
 export async function acquireJournalLease(acquire, options, domain, covered, inherit) {
@@ -66,7 +79,7 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
     return { ...lease, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)
-    journalWaitFailure(context, failure)
+    journalWaitFailure(context, failure, deadline.options.signal)
     throw failure
   } finally { deadline.close() }
 }
