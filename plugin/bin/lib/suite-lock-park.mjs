@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { displayText } from './suite-lock-display.mjs'
-import { numericLevel, orderSuiteLockTickets } from './suite-lock-order.mjs'
+import { BOUNDED_P0_ORDER_VERSION, numericLevel, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
 import { ticketIsStale } from './host/suite-lock-liveness.mjs'
@@ -115,6 +115,7 @@ export function resumeParkedTicket(queueDir, record, context, now, ownerIsStale,
   const entry = namedParkEntry(queueDir, context, now, ownerIsStale)
   if (!entry) return null
   const resumed = { ...entry.park.record, pid: record.pid, startTime: record.startTime, pidNamespace: record.pidNamespace, argv: record.argv, cwd: record.cwd, leaseId: record.leaseId }
+  upgradeResumedOrder(resumed, record)
   if (!claimParkedTicket(queueDir, entry.number, resumed)) return null
   try {
     seams.afterClaim?.(entry)
@@ -127,6 +128,15 @@ export function resumeParkedTicket(queueDir, record, context, now, ownerIsStale,
   // Remove fresh-only fields too: the saved record owns the original priority and queue class.
   for (const key of Object.keys(record)) if (!(key in resumed)) delete record[key]
   return entry
+}
+
+function upgradeResumedOrder(resumed, fresh) {
+  if (fresh.levelOrderVersion <= BOUNDED_P0_ORDER_VERSION) return
+  const newer = fresh.levelOrderVersion > (resumed.levelOrderVersion ?? 0)
+  if (!newer) return
+  resumed.levelOrderVersion = fresh.levelOrderVersion
+  resumed.project ??= fresh.project
+  resumed.size ??= fresh.size
 }
 
 export function assertParkClaim(state) {

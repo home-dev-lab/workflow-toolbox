@@ -8,7 +8,13 @@ import { spawn } from 'node:child_process'
  * retain registry order; project/local rank above user. Target checks verify existence,
  * not loadability: direct Node execution fails identically on a broken module or follows
  * a symlinked target. An absent adopted copy means not adopted, not drift. */
-function canonical(value) { try { return path.isAbsolute(value) ? fs.realpathSync(value) : null } catch { return null } }
+function canonical(value, unknown) {
+  try {
+    const resolved = path.isAbsolute(value) ? fs.realpathSync(value) : null
+    if (!resolved) unknown?.()
+    return resolved
+  } catch { unknown?.(); return null }
+}
 function readJson(value) { try { return JSON.parse(fs.readFileSync(value, 'utf8')) } catch { return null } }
 function regular(value) { try { return fs.statSync(value).isFile() } catch { return false } }
 function withinProject(owner, here) {
@@ -16,18 +22,29 @@ function withinProject(owner, here) {
   const relative = path.relative(owner, here)
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
-function applicableEntry(entry, project) {
+function applicableEntry(entry, project, unknown) {
   if (entry?.scope === 'user') return true
   if (entry?.scope !== 'project' && entry?.scope !== 'local') return false
-  const here = canonical(project)
-  const owner = typeof entry.projectPath === 'string' && canonical(entry.projectPath)
+  const here = canonical(project, unknown)
+  const owner = typeof entry.projectPath === 'string' && canonical(entry.projectPath, unknown)
+  if (!owner) unknown?.()
   return withinProject(owner, here)
 }
-function registryEntries(plugins, project) {
+function registryEntries(plugins, project, unknown) {
   return plugins && typeof plugins === 'object' ? Object.entries(plugins).flatMap(([key, values]) => {
     if (!key.startsWith('workflow-toolbox@')) return []
-    return (Array.isArray(values) ? values : [values]).filter((entry) => applicableEntry(entry, project))
+    return (Array.isArray(values) ? values : [values]).filter((entry) => applicableEntry(entry, project, unknown))
   }) : []
+}
+function sortRegistryEntries(entries) {
+  return entries.sort((a, b) => Number(b.scope === 'project' || b.scope === 'local') - Number(a.scope === 'project' || a.scope === 'local'))
+}
+/** Registry identity only: root environment overrides are deliberately not candidates. */
+export function effectiveAdoptedPluginEntry(plugins, project, key) {
+  const selected = plugins && typeof plugins === 'object' && Object.hasOwn(plugins, key) ? { [key]: plugins[key] } : {}
+  let unknown = false
+  const entries = registryEntries(selected, project, () => { unknown = true })
+  return unknown ? null : sortRegistryEntries(entries)[0] ?? null
 }
 function resolveCandidate(candidate, file) {
   const refuse = (reason) => ({ root: null, target: null, lookup: `candidate ${String(candidate)}: ${reason}; bin/${file}` })
@@ -45,6 +62,10 @@ function resolveCandidate(candidate, file) {
 function configDirectory(env) {
   return env.CLAUDE_CONFIG_DIR || path.join(env.HOME || env.USERPROFILE || os.homedir(), '.claude')
 }
+function scriptCandidate(env, entries) {
+  if (env.WT_PLUGIN_ROOT !== undefined) return env.WT_PLUGIN_ROOT
+  return entries.length ? entries[0].installPath : env.CLAUDE_PLUGIN_ROOT
+}
 export function resolveAdoptedScript(file, env = process.env, cwd = process.cwd()) {
   const config = configDirectory(env)
   const registry = path.join(config, 'plugins', 'installed_plugins.json')
@@ -52,9 +73,8 @@ export function resolveAdoptedScript(file, env = process.env, cwd = process.cwd(
   const parsed = readJson(registry)
   const plugins = parsed?.plugins ?? parsed
   const entries = registryEntries(plugins, project)
-  entries.sort((a, b) => Number(b.scope === 'project' || b.scope === 'local') - Number(a.scope === 'project' || a.scope === 'local'))
-  const candidate = env.WT_PLUGIN_ROOT !== undefined ? env.WT_PLUGIN_ROOT
-    : entries.length ? entries[0].installPath : env.CLAUDE_PLUGIN_ROOT
+  sortRegistryEntries(entries)
+  const candidate = scriptCandidate(env, entries)
   if (candidate !== undefined || entries.length) return resolveCandidate(candidate, file)
   return { root: null, target: null,
     lookup: `WT_PLUGIN_ROOT, ${registry} (applicable workflow-toolbox@* entries), CLAUDE_PLUGIN_ROOT; bin/${file}` }
@@ -113,7 +133,7 @@ function spawnAdoptedScript(executable, args, resolved, fail) {
 }
 
 export function renderScriptShim(file) {
-  const functions = [canonical, readJson, regular, withinProject, applicableEntry, registryEntries,
-    resolveCandidate, configDirectory, resolveAdoptedScript, failAdoptedScript, requireExecutable, runAdoptedScript, spawnAdoptedScript]
+  const functions = [canonical, readJson, regular, withinProject, applicableEntry, registryEntries, sortRegistryEntries,
+    resolveCandidate, configDirectory, scriptCandidate, resolveAdoptedScript, failAdoptedScript, requireExecutable, runAdoptedScript, spawnAdoptedScript]
   return `#!/usr/bin/env node\n// Thin launcher: the first present plugin candidate decides; equal scope ranks keep registry order.\n// Target checks verify existence, not module loadability; Node follows target symlinks as in direct execution.\n// Re-execution preserves execArgv but repeats NODE_OPTIONS preloads and normalizes argv0, as other launchers do.\n// POSIX execve keeps the pid where available; spawn is for Windows or Node without execve (before 23.11).\n// Fallback signals are best effort, not POSIX-equivalent; force-killing a wrapper can orphan its child.\n// Interpreter preflight cannot close the replace-between-check-and-exec race.\nimport fs from 'node:fs'\nimport os from 'node:os'\nimport path from 'node:path'\nimport { spawn } from 'node:child_process'\n\n${functions.map((fn) => fn.toString()).join('\n\n')}\n\nrunAdoptedScript(${JSON.stringify(file)})\n`
 }
