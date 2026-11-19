@@ -8,7 +8,7 @@ import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime launcher helper
 import { spawnOpencode } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 // @ts-expect-error runtime host helper
-import { defaultOpenCodeDb } from '../../../../plugin/bin/lib/host/opencode-session-store.mjs'
+import { defaultOpenCodeDb, finishOpencodeUsage } from '../../../../plugin/bin/lib/host/opencode-session-store.mjs'
 
 isolateOpencodeAdmission()
 
@@ -159,8 +159,36 @@ it('A4 keeps directory and creation-time filtering for shared-store capture', ()
   const reader = vi.fn<(bin: string, args: string[]) => string>(() => '[]')
   f.start(reader); f.child.emit('close')
   expect(f.read()).toMatchObject({ store_kind: 'shared', status: 'ok' }); expect(reader).toHaveBeenCalledOnce()
-  expect(reader.mock.calls[0]?.[1][4]).toContain(`WHERE directory='${f.root}' AND time_created>=`)
+  const directories = [...new Set([f.root, process.platform === 'win32' ? f.root.replaceAll('\\', '/') : f.root])]
+  for (const directory of directories) expect(reader.mock.calls[0]?.[1][4]).toContain(`directory='${directory}'`)
+  expect(reader.mock.calls[0]?.[1][4]).toContain('AND time_created>=')
   expect(reader.mock.calls[0]?.[1][4]).toContain('AND time_created<=')
+})
+
+it.each(['win32', 'linux', 'darwin'])('R1 captures only evidenced spellings plus the stored realpath on %s', platform => {
+  const f = fixture(); const native = 'C:\\repo\\A'; const alias = 'C:\\alias\\A'
+  const launch = { version: 1, launch_for: 'run.log.usage.json', requested: alias, realpath: native, spellings: [alias, native], recorded_at: 1000, store_kind: 'shared' }
+  const reader = vi.fn((_bin: string, args: string[]) => {
+    const filter = platform === 'win32' ? `(directory='${alias}' OR directory='${native}' OR directory='C:/repo/A')` : `(directory='${alias}' OR directory='${native}')`
+    expect(args[4]).toBe(`SELECT id,directory,model,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM session WHERE ${filter} AND time_created>=1000 AND time_created<=2000 ORDER BY time_created`)
+    return '[]'
+  })
+  vi.spyOn(Date, 'now').mockReturnValue(2000)
+  finishOpencodeUsage({ kind: 'none', dispose: f.dispose }, { cwd: f.root, args: [], launch, startedAt: 1000, env: {}, platform, usageReader: reader, usageReceipt: f.receipt })
+  expect(reader).toHaveBeenCalledOnce()
+  expect(f.read()).toMatchObject({ status: 'ok', launch })
+})
+
+it('R1 does not duplicate a stored realpath already present among launch spellings', () => {
+  const f = fixture(); const native = 'C:\\repo\\A'; const stored = 'C:/repo/A'
+  const launch = { requested: stored, realpath: native, spellings: [stored, native], store_kind: 'shared' }
+  const reader = vi.fn((_bin: string, args: string[]) => {
+    expect(args[4]!.match(/directory='C:\/repo\/A'/g)).toHaveLength(1)
+    return '[]'
+  })
+  finishOpencodeUsage({ kind: 'none', dispose: f.dispose }, { cwd: f.root, args: [], launch, startedAt: 1000, env: {}, platform: 'win32', usageReader: reader, usageReceipt: f.receipt })
+  expect(reader).toHaveBeenCalledOnce()
+  expect(f.read()?.status).toBe('ok')
 })
 
 it.each([
