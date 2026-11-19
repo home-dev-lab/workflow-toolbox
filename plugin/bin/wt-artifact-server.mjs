@@ -49,10 +49,14 @@ const HELP = `wt-artifact-server - serve registered artifacts through local or t
 
 Usage:
   wt-artifact-server serve
-  wt-artifact-server url <path> [--remote] [--check]
+  wt-artifact-server url <path> [--remote | --local] [--check]
   wt-artifact-server status
   wt-artifact-server stop [--force]
   wt-artifact-server restart [--force]
+
+  url prints the tailnet URL by default; if none exists, it prints the local URL
+  with a reason on stderr. Tools on this host (Playwright, curl, a local fetch)
+  use --local.
 
 Configuration:
   WT_ARTIFACT_SERVER=0              disable the session monitor
@@ -63,9 +67,10 @@ Configuration:
 
 Options:
   --force     stop or restart despite registered sessions
-  --remote    print the tailnet URL
+  --remote    print the tailnet URL or exit 3 without falling back
+  --local     always print the localhost URL (mutually exclusive with --remote)
   --check     after printing the URL, fetch it (from the host tailscale runs on with
-              --remote) and report on stderr: exit 0 reachable, 4 unreachable,
+              a tailnet URL) and report on stderr: exit 0 reachable, 4 unreachable,
               5 unverified; 3 means no URL could be printed, 2 is a usage error.
               A remote URL is checked from the host tailscale runs on, not from a peer.
   --help, -h  print this text and exit 0
@@ -611,24 +616,26 @@ function requireLiveStatus(status) {
 
 function liveDecision(status) { return status === 'unknown' ? 'unknown-keep-live' : 'running-keep-live' }
 
-const URL_FLAGS = new Set(['--remote', '--check'])
+const URL_FLAGS = new Set(['--remote', '--local', '--check'])
 
 async function urlCommand(args) {
   const remote = args.includes('--remote')
+  const local = args.includes('--local')
   const positionals = args.filter((value) => !URL_FLAGS.has(value))
   // One path and the url flags only: a second path is refused, never silently dropped.
-  if (positionals.length > 1) {
-    process.stderr.write('usage: wt-artifact-server url <path> [--remote] [--check]\n')
+  if (positionals.length > 1 || (remote && local)) {
+    process.stderr.write('usage: wt-artifact-server url <path> [--remote | --local] [--check]\n')
     process.exitCode = 2
     return
   }
   const argument = positionals[0]
   if (!argument) { process.stderr.write('url requires a path\n'); process.exitCode = 3; return }
-  const result = artifactUrlResult(path.resolve(argument), { remote })
+  const result = artifactUrlResult(path.resolve(argument), { remote, preferRemote: !local })
   if (result.url === null) { process.stderr.write(`${result.reason}\n`); process.exitCode = 3; return }
   process.stdout.write(`${result.url}\n`)
+  if (result.note) process.stderr.write(`${result.note}\n`)
   if (!args.includes('--check')) return
-  const check = await checkArtifactUrl(result.url, { remote, via: result.via })
+  const check = await checkArtifactUrl(result.url, { remote: result.remote, via: result.via })
   process.stderr.write(`${formatArtifactCheck(check)}\n`)
   process.exitCode = ARTIFACT_CHECK_EXIT_CODES[check.verdict]
 }
@@ -757,7 +764,7 @@ async function statusCommand() {
 const argv = process.argv.slice(2)
 handleHelpFlag(argv, HELP, {
   valueFlags: [],
-  booleanFlags: ['--check', '--force', '--remote'],
+  booleanFlags: ['--check', '--force', '--remote', '--local'],
 })
 const [command, ...args] = argv
 // `serve` takes no arguments: an extra token is refused (usage, exit 2) instead of being ignored while a
@@ -770,6 +777,6 @@ else if ((command === 'stop' || command === 'restart') && args.every((arg) => ar
   ;(result.ok ? process.stdout : process.stderr).write(`${result.message}\n`)
   if (!result.ok) process.exitCode = 1
 } else {
-  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] [--check] | status | stop [--force] | restart [--force]]\n')
+  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote | --local] [--check] | status | stop [--force] | restart [--force]]\n')
   process.exitCode = 2
 }

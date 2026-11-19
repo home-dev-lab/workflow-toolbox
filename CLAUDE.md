@@ -9,7 +9,7 @@ This repo has two halves that stand alone but work together:
   (collect + verify evidence against the real sources before asserting/analyzing),
   `delegation-chain` (spawn shapes, report routing, what wakes whom),
   `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards), `artifact-server`
-  (create clickable localhost links for local artifacts),
+  (create clickable tailnet-first links for local artifacts),
   `adopt` (install editable, versioned copies of the bundled rules),
   `planka-tracking` (onboard a project onto a Planka kanban board), `stale-card-sweep` (does this diff
   subsume another open card?), and `lesson-harvest` (extract a closing report's

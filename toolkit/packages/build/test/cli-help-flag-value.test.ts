@@ -613,7 +613,7 @@ describe('wt-grounding-sources refuses an unknown token instead of ignoring it',
 // take help away from a position every CLI accepts it in.
 // A boolean flag that only exists under one subcommand is exercised under it.
 const BOOLEAN_PREFIX: Record<string, Record<string, string[]>> = {
-  'wt-artifact-server.mjs': { '--remote': ['url'], '--force': ['stop'] },
+  'wt-artifact-server.mjs': { '--remote': ['url'], '--local': ['url'], '--force': ['stop'] },
   'wt-grounding-sources.mjs': { '--dry-run': ['init'], '--json': ['list'] },
   'wt-pilot-fidelity.mjs': { '--require-same-tree': ['verify'], '--require-clean-tree': ['verify'], '--require-head': ['verify'] },
   'wt-crossos-dispatch.mjs': { '--dry-run': ['run'] },

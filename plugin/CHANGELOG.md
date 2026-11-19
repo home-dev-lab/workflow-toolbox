@@ -36,8 +36,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 - Unmarked HTML pages from the artifact server no longer block Orca's annotation tool: they are served with `sandbox allow-scripts` and `script-src 'none'`, so the browser's injected script can run while page scripts, inline handlers and `javascript:` URLs stay blocked and the page keeps its opaque origin. Scripting enabled for the document also lets a meta refresh navigate on its own and hides `<noscript>` content. Rich, annotatable, interactive and non-HTML policies are unchanged.
+- `wt-artifact-server url` now prints the tailnet URL (the Serve HTTPS name or the tailnet address) by default when one exists, and falls back to the local URL only when there is none, with the reason on stderr; `--check` then checks the printed URL, from the Tailscale host when it is the tailnet one. Use the new `--local` for tools on the same host (Playwright, curl, a local fetch); `--remote` still refuses to fall back. The session-start line now tells sessions to run `url <file> --remote` and hand over the tailnet link.
 
 ### Added
+
 - wt-suite-lock warns when a light run covers several test files or a whole suite (node --test, vitest, pnpm/npm test; the toolkit's Vitest globalSetup for 2 to 8 selected files too), records each firing and its hold in light-scope.jsonl under the lock root, and lists them with wt-suite-lock light-scope. WT_SUITE_LOCK_LIGHT_SCOPE=refuse refuses instead; the default stays warn until at least 20 firings over at least 3 days are each confirmed to cover two or more test files with no false hit. The message names the command to run instead: with WT_SUITE_LOCK_HEAVY_JOB set to a heavy-job wrapper, that wrapper with --project, --expected-min and --suite-lock; with the variable unset (the public default) or inside a lane, the exclusive wt-suite-lock run -- <command>, with that reason. Blind spot: a script file (bash x.sh) and a shell string (bash -c "...") are opaque and never flagged; in a lane the warning prints but the host record is not written.
 
 ## [0.200.1] - 2026-11-13

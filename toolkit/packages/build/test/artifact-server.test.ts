@@ -2956,6 +2956,92 @@ async function answeringServer() {
   return { server, port: address.port }
 }
 
+describe('artifact URL tailnet-first handoff', () => {
+  it('prints the tailnet URL by default when one exists', async () => {
+    const { artifact, cwd, env } = checkFixture('url-default-remote', () => 'https://host.tailnet.ts.net/artifacts', 48_001)
+    const result = await runCli(['url', artifact], env, cwd)
+    expect(result.stdout).toBe('https://host.tailnet.ts.net/artifacts/reports/plan.html\n')
+    expect(result.stderr).toBe('')
+    expect(result.code).toBe(0)
+  })
+
+  it('falls back to local with exactly one recorded-reason note', async () => {
+    const { artifact, cwd, env } = checkFixture('url-default-local', () => null, 48_001)
+    const file = statePath(env.XDG_STATE_HOME ?? '')
+    const state = JSON.parse(readFileSync(file, 'utf8')) as Discovery
+    atomicWriteJson(file, { ...state, tailnetDetection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' } })
+    const result = await runCli(['url', artifact], env, cwd)
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
+    expect(result.stderr).toBe('artifact server has no remote URL: tailscale reported no IPv4 address; printed the local URL\n')
+    expect(result.code).toBe(0)
+  })
+
+  it('treats an empty recorded remote URL as absent and falls back to local', async () => {
+    const { artifact, cwd, env } = checkFixture('url-default-empty-remote', () => '', 48_001)
+    const result = await runCli(['url', artifact], env, cwd)
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
+    expect(result.stderr).toBe('artifact server has no remote URL; printed the local URL\n')
+    expect(result.code).toBe(0)
+  })
+
+  it('gives a generic fallback note for an older discovery state', async () => {
+    const { artifact, cwd, env } = checkFixture('url-default-older', () => null, 48_001)
+    const result = await runCli(['url', artifact], env, cwd)
+    expect(result.stderr).toBe('artifact server has no remote URL; printed the local URL\n')
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
+    expect(result.code).toBe(0)
+  })
+})
+
+describe('artifact URL explicit selection', () => {
+  it('forces local without a fallback note when a tailnet URL exists', async () => {
+    const { artifact, cwd, env } = checkFixture('url-force-local', () => 'https://host.tailnet.ts.net/artifacts', 48_001)
+    const result = await runCli(['url', artifact, '--local'], env, cwd)
+    expect(result.stdout).toBe('http://localhost:48001/reports/plan.html\n')
+    expect(result.stderr).toBe('')
+    expect(result.code).toBe(0)
+  })
+
+  it('refuses conflicting local and remote flags as usage', async () => {
+    const { artifact, cwd, env } = checkFixture('url-conflicting-flags', () => 'https://host.tailnet.ts.net/artifacts', 48_001)
+    const result = await runCli(['url', artifact, '--remote', '--local'], env, cwd)
+    expect(result.code).toBe(2)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('usage: wt-artifact-server url <path> [--remote | --local] [--check]\n')
+  })
+})
+
+describe('artifact URL default checks', () => {
+  it('checks the printed default tailnet URL from the native tailscale host', async () => {
+    const { server, port } = await answeringServer()
+    try {
+      const { artifact, cwd, env } = checkFixture('check-default-remote', (value) => `http://127.0.0.1:${value}`, port, false, 'native')
+      const result = await runCli(['url', artifact, '--check'], env, cwd)
+      expect(result.stdout).toBe(`http://127.0.0.1:${port}/reports/plan.html\n`)
+      expect(result.stderr).toBe('check: reachable (HTTP 200, from native)\n')
+      expect(result.code).toBe(0)
+    } finally {
+      await closeServer(server)
+    }
+  })
+
+  it('checks the printed fallback URL locally after the exact fallback note', async () => {
+    const { server, port } = await answeringServer()
+    try {
+      const { artifact, cwd, env } = checkFixture('check-default-fallback', () => null, port)
+      const file = statePath(env.XDG_STATE_HOME ?? '')
+      const state = JSON.parse(readFileSync(file, 'utf8')) as Discovery
+      atomicWriteJson(file, { ...state, tailnetDetection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' } })
+      const result = await runCli(['url', artifact, '--check'], env, cwd)
+      expect(result.stdout).toBe(`http://localhost:${port}/reports/plan.html\n`)
+      expect(result.stderr).toBe('artifact server has no remote URL: tailscale reported no IPv4 address; printed the local URL\ncheck: reachable (HTTP 200, from local)\n')
+      expect(result.code).toBe(0)
+    } finally {
+      await closeServer(server)
+    }
+  })
+})
+
 describe('owner decision 5: Tailscale access', () => {
   it('reports a reachable remote URL from the native tailscale side with exit 0, the URL alone on stdout', async () => {
     const { server, port } = await answeringServer()
@@ -2965,7 +3051,7 @@ describe('owner decision 5: Tailscale access', () => {
       expect(result.stdout).toBe(`http://127.0.0.1:${port}/reports/plan.html\n`)
       expect(result.stderr).toBe('check: reachable (HTTP 200, from native)\n')
       expect(result.code).toBe(0)
-      const local = await runCli(['url', artifact, '--check'], env, cwd)
+      const local = await runCli(['url', artifact, '--local', '--check'], env, cwd)
       expect(local.stdout).toBe(`http://localhost:${port}/reports/plan.html\n`)
       expect(local.stderr).toBe('check: reachable (HTTP 200, from local)\n')
       expect(local.code).toBe(0)
