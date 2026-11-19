@@ -3,9 +3,11 @@ import test from 'node:test';
 import { Worker } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
 // One module URL for the main thread and the workers; an override may be a file URL or a native path.
-const override = process.env.WT_INTERVENTION_POLICY_MODULE;
-const moduleUrl = !override ? new URL('../scripts/intervention-policy.mjs', import.meta.url).href
-  : override.startsWith('file:') ? override : pathToFileURL(override).href;
+function policyModuleUrl(override) {
+  if (!override) return new URL('../scripts/intervention-policy.mjs', import.meta.url).href;
+  return override.startsWith('file:') ? override : pathToFileURL(override).href;
+}
+const moduleUrl = policyModuleUrl(process.env.WT_INTERVENTION_POLICY_MODULE);
 const { interventionEligibility, validateIntervention: validate } = await import(moduleUrl);
 const eligible = interventionEligibility;
 
