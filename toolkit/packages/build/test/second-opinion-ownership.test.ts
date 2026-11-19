@@ -291,6 +291,48 @@ describe('second-opinion Codex broker ownership', () => {
     expect(endProcessFamily).not.toHaveBeenCalled()
   })
 
+  it.each([
+    [true, 'stopped broker/app-server process family pid 984 started by this call'],
+    [false, 'app-server cleanup unavailable for owned broker pid 984: broker exited before cleanup; descendants cannot be safely discovered'],
+  ])('reports a Windows broker already gone as stopped only after the bridge terminated its tree (%s)', (treeTerminated, line) => {
+    let processes = [companion(3500), broker(984, 3500)]
+    const forceEndProcessFamily = vi.fn()
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily,
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(3500)
+    processes = []
+
+    expect(ownership.stop(treeTerminated ? { treeTerminated } : undefined)).toEqual([line])
+    expect(forceEndProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['gone, tree terminated', [] as ReturnType<typeof broker>[], true, 'stopped broker/app-server process family pid 984 started by this call'],
+    ['gone, no tree termination', [] as ReturnType<typeof broker>[], false, 'app-server cleanup unavailable for owned broker pid 984: broker identity changed before cleanup'],
+    ['reused by an older process, tree terminated', [broker(984, 1, 60_000, 40_000)], true, 'app-server cleanup unavailable for owned broker pid 984: broker identity changed before cleanup'],
+  ])('reports a recorded Windows broker that no snapshot saw (%s)', (_case, atStop, treeTerminated, line) => {
+    let processes: ReturnType<typeof broker>[] = [companion(3500)]
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily: vi.fn(),
+    }, {}, { stopTimeoutMs: 0, now: () => 200_000 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(3500)
+    const stateDir = join(ownership.env.CLAUDE_PLUGIN_DATA, 'state', 'workspace')
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: 984 }))
+    processes = atStop
+
+    expect(ownership.stop(treeTerminated ? { treeTerminated } : undefined)).toEqual([line])
+  })
+
   it('does not capture descendants after the Windows broker identity has changed', () => {
     let processes = [companion(3500), broker(984, 3500)]
     const forceEndProcessFamily = vi.fn()

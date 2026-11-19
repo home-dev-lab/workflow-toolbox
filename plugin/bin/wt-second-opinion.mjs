@@ -184,10 +184,7 @@ function legacyFailure(error) {
   const message = error instanceof Error ? error.stack ?? error.message : String(error)
   if (outputPath) {
     try {
-      const existing = readFileSync(outputPath, 'utf8')
-      if (!/^EXIT=\d+$/m.test(existing.split(/\r?\n/).filter(Boolean).at(-1) ?? '')) {
-        appendFileSync(outputPath, `REFUSED: second-opinion failed: ${message.replace(/\r?\n/g, ' ')}\nEXIT=1\n`)
-      }
+      appendFileSync(outputPath, `REFUSED: second-opinion failed: ${message.replace(/\r?\n/g, ' ')}\nEXIT=1\n`)
     } catch {
       try { writeFileSync(outputPath, `REFUSED: second-opinion failed: ${message.replace(/\r?\n/g, ' ')}\nEXIT=1\n`) } catch { /* Stderr still reports the failure when output publication is unavailable. */ }
     }

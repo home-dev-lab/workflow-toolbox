@@ -1,10 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { canonicalPath } from './helpers/canonical-path.js'
+import { fakeServerPreload } from './helpers/second-opinion-server.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, requestNamedPaths, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -92,7 +93,7 @@ function companionEnd(mode: 'hang' | 'normal' | 'error' | 'fast') {
   if (mode === 'fast') {
     return [
       "writeFileSync(join(process.cwd(), 'companion.pid'), String(process.pid))",
-      "const ready = setInterval(() => { if (!existsSync(join(process.cwd(), 'app-server.pid'))) return; clearInterval(ready); mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })); process.exit(0) }, 5)",
+      "const ready = setInterval(() => { if (!existsSync(join(process.cwd(), 'app-server.pid'))) return; clearInterval(ready); mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })); resolve({ status: 0, error: null, turn: { status: 'completed' }, finalMessage: 'fixture review answer' }) }, 5)",
     ]
   }
   return [
@@ -102,7 +103,7 @@ function companionEnd(mode: 'hang' | 'normal' | 'error' | 'fast') {
     // while the companion lives, so a fixed 100 ms lifetime raced a slow `ps` on loaded macOS runners.
     mode === 'hang'
       ? 'setInterval(() => {}, 1000)'
-      : `const until = Date.now() + 10_000; const tick = setInterval(() => { if (existsSync(join(process.cwd(), ${JSON.stringify(BROKER_SEEN_MARKER)})) || Date.now() > until) { clearInterval(tick); process.exit(${mode === 'normal' ? 0 : 7}) } }, 10)`,
+      : `const until = Date.now() + 10_000; const tick = setInterval(() => { if (existsSync(join(process.cwd(), ${JSON.stringify(BROKER_SEEN_MARKER)})) || Date.now() > until) { clearInterval(tick); resolve({ status: ${mode === 'normal' ? 0 : 7}, error: null, turn: { status: 'completed' }, finalMessage: 'fixture review answer' }) } }, 10)`,
   ]
 }
 
@@ -112,7 +113,8 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' | 'fast' = 'han
   const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
   const appPidFile = join(f.repo, 'app-server.pid')
   const brokerPidFile = join(f.repo, 'broker.pid')
-  mkdirSync(companionDir, { recursive: true })
+  mkdirSync(join(companionDir, 'lib'), { recursive: true })
+  writeFileSync(join(companionDir, 'lib', 'codex.mjs'), "export { runAppServerTurn } from '../codex-companion.mjs'")
   writeFileSync(join(companionDir, 'app-server-broker.mjs'), [
     "import { spawn } from 'node:child_process'",
     "import { writeFileSync } from 'node:fs'",
@@ -126,13 +128,44 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' | 'fast' = 'han
     "import { spawn } from 'node:child_process'",
     "import { existsSync, mkdirSync, writeFileSync } from 'node:fs'",
     "import { join } from 'node:path'",
+    'export function runAppServerTurn() { return new Promise(resolve => {',
     "const child = spawn(process.execPath, [join(import.meta.dirname, 'app-server-broker.mjs')], { detached: true, stdio: 'ignore' })",
     'child.unref()',
     "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
     "const stateDir = join(process.env.CLAUDE_PLUGIN_DATA, 'state', 'fixture')",
+    "console.log('fixture review answer')",
     ...companionEnd(mode),
+    '}) }',
   ].join('\n'))
+  installBrokerAppServer(f, companionDir)
   return { ...f, companionDir, appPidFile, brokerPidFile }
+}
+
+function installBrokerAppServer(f: ReturnType<typeof fixture>, companionDir: string) {
+  const bin = join(f.repo, 'bin')
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'codex'), `#!${process.execPath}
+import {createInterface} from 'node:readline';
+import {runAppServerTurn} from ${JSON.stringify(pathToFileURL(join(companionDir, 'codex-companion.mjs')).href)};
+const send = value => console.log(JSON.stringify(value));
+createInterface({input:process.stdin}).on('line', async line => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') send({id:m.id, result:{}});
+  if (m.method === 'thread/start') send({id:m.id, result:{thread:{id:'thread'}}});
+  if (m.method === 'turn/start') {
+    send({id:m.id, result:{turn:{id:'turn'}}});
+    const result = await runAppServerTurn();
+    send({method:'turn/completed', params:{threadId:'thread', turn:{id:'turn', status:result.status === 0 ? 'completed' : 'failed', error:null,
+      items:[{type:'agentMessage', phase:'final_answer', text:result.finalMessage}]}}});
+  }
+});`)
+  chmodSync(join(bin, 'codex'), 0o755)
+  Object.assign(f.env, { PATH: `${bin}${delimiter}${process.env.PATH}`, NODE_OPTIONS: `--import=${pathToFileURL(fakeServerPreload(f.repo, join(bin, 'codex'))).href}` })
+}
+
+function verifiedWrapper(_bin: string, args: string[], answer = 'ran') {
+  const record = JSON.stringify({ type: 'wt-astra-verified-v1', answer, nonce: args.at(-1) })
+  return [process.execPath, ['-e', `require('node:fs').writeSync(3, ${JSON.stringify(record)})`]]
 }
 
 // Pins the sandbox decision so an exact-output assertion does not depend on this host's bubblewrap.
@@ -166,7 +199,33 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   }
 }
 
-describe('second-opinion advisor', () => {
+const finishingSnapshotSource = [
+  'const readSnapshot = adapter.readProcessSnapshot',
+  'adapter.readProcessSnapshot = () => {',
+  '  const seen = existsSync(marker)',
+  '  if (!seen) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150)',
+  '  const table = readSnapshot()',
+  "  const family = [pidIn('broker.pid'), pidIn('app-server.pid')]",
+  "  if (!seen && table.supported && family.every((pid) => pid && table.processes.some((item) => item.pid === pid))) writeFileSync(marker, '')",
+  '  return table',
+  '}',
+]
+const fastSnapshotSource = [
+  'const readSnapshot = adapter.readProcessSnapshot',
+  'adapter.readProcessSnapshot = () => {',
+  '  const hide = companionUnreaped()',
+  '  const table = readSnapshot()',
+  "  const broker = pidIn('broker.pid')",
+  '  return hide && table.supported ? { ...table, processes: table.processes.filter((item) => item.pid !== broker) } : table',
+  '}',
+]
+const codex = '/opt/good/bin/codex'
+
+function stopOtherBroker(otherBroker: ReturnType<typeof spawn> | null) {
+  if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
+}
+
+{
   // What the host keeps from each candidate list: the first spelling that exists.
   const selected = (text: string, existing: string[], home = '/home/reader') =>
     requestNamedPaths(text, home).map((spellings: string[]) => spellings.find((spelling: string) => existing.includes(spelling))).filter(Boolean)
@@ -363,7 +422,7 @@ describe('second-opinion advisor', () => {
     writeFileSync(f.request, `Review ${named}`)
     const unreadable = vi.fn((candidates: string[][], { exempt }: { exempt: string[] }) => candidates.filter((group) => !exempt.includes(group[0]!)).map((group) => ({ path: group[0]!, reason: null })))
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
-    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap: () => [process.execPath, ['-e', '']] }) })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap: verifiedWrapper }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, { ...f.env, WT_SECOND_OPINION_UNREAD: named.slice(0, -1) })).toBe(2)
     expect(unreadable.mock.calls[0]![1].exempt).toEqual([named.slice(0, -1)])
@@ -382,7 +441,7 @@ describe('second-opinion advisor', () => {
     writeFileSync(f.request, `State lives in ${dir}. Review the code.`)
     const unreadable = vi.fn((candidates: string[][]) => candidates.flatMap((group) => [dir, file].filter((p) => group.includes(p)).map((p) => (p === dir ? { path: p, reason: null, directory: true } : { path: p, reason: null }))))
     const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
-    const wrap = vi.fn(() => [process.execPath, ['-e', "process.stdout.write('ran\\n')"]])
+    const wrap = vi.fn(verifiedWrapper)
     const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
     deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
@@ -797,21 +856,22 @@ describe('second-opinion advisor', () => {
     ])
   })
 
-  it('labels a Codex classifier refusal just before EXIT without changing its code', async () => {
+  it('preserves Codex failure status without inferring a classifier category from text', async () => {
     const f = fixture(true)
     const deps = dependencies({ runCodex: vi.fn(() => ({ status: 1, stdout: '', stderr: '[codex] Codex error: This content was flagged for possible cybersecurity risk.\n' })) })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
-    expect(lines(f.out).slice(-2)).toEqual(['OUTCOME=refused-by-classifier provider=openai category=cyber', 'EXIT=1'])
+    expect(lines(f.out).at(-1)).toBe('EXIT=1')
+    expect(lines(f.out).some((line: string) => line.startsWith('OUTCOME='))).toBe(false)
   })
 
-  it('labels an SDK classifier notice even when the result exits successfully', async () => {
+  it('keeps an SDK notice as a warning when the final structured result succeeds', async () => {
     const f = fixture(false)
     const deps = dependencies({ resolveSdkQuery: vi.fn(() => async function* () {
       yield { type: 'system', subtype: 'informational', content: "Opus 5.5's safeguards stopped the response above" }
-      yield { type: 'result', result: 'declined', is_error: false }
+      yield { type: 'result', result: 'answer', is_error: false, stop_reason: 'end_turn' }
     }) })
     expect(await runSecondOpinion({ ...f.options, route: 'opus' }, deps, f.env)).toBe(0)
-    expect(lines(f.out).at(-2)).toContain('OUTCOME=classifier-notice provider=anthropic')
+    expect(lines(f.out).at(-2)).toContain('WARN model-fallback:')
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
   })
 
@@ -919,7 +979,7 @@ describe('second-opinion advisor', () => {
         if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
         else process.kill(-brokerPid, 'SIGKILL')
       }
-      if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
+      stopOtherBroker(otherBroker)
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
     },
@@ -929,8 +989,8 @@ describe('second-opinion advisor', () => {
   // host the darwin adapter's `ps -axo lstart` path runs as-is, with the pass-through plan a non-Linux
   // host gets), each snapshot slowed until the broker is seen, as on a loaded macOS runner.
   const finishingCompanionCases = [...new Map([
-    [process.platform, 'normal', 0], [process.platform, 'error', 7],
-    ...(process.platform === 'win32' ? [] : [['darwin', 'normal', 0], ['darwin', 'error', 7]]),
+    [process.platform, 'normal', 0], [process.platform, 'error', 1],
+    ...(process.platform === 'win32' ? [] : [['darwin', 'normal', 0], ['darwin', 'error', 1]]),
   ].map((entry) => [entry.join(':'), entry as [string, 'normal' | 'error', number]])).values()]
   it.each(finishingCompanionCases)('stops the detached broker app-server after a companion end (%s host adapter, %s end, slow process snapshot)', (adapterPlatform, mode, expectedStatus) => {
     const passThrough = adapterPlatform !== 'linux'
@@ -947,15 +1007,7 @@ describe('second-opinion advisor', () => {
       `const marker = join(repo, ${JSON.stringify(BROKER_SEEN_MARKER)})`,
       "const pidIn = (name) => { try { return Number(readFileSync(join(repo, name), 'utf8')) } catch { return 0 } }",
       `const adapter = createHostAdapter({ platform: ${JSON.stringify(adapterPlatform)} })`,
-      'const readSnapshot = adapter.readProcessSnapshot',
-      'adapter.readProcessSnapshot = () => {',
-      '  const seen = existsSync(marker)',
-      '  if (!seen) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150)',
-      '  const table = readSnapshot()',
-      "  const family = [pidIn('broker.pid'), pidIn('app-server.pid')]",
-      "  if (!seen && table.supported && family.every((pid) => pid && table.processes.some((item) => item.pid === pid))) writeFileSync(marker, '')",
-      '  return table',
-      '}',
+      ...finishingSnapshotSource,
       `process.exitCode = await runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(adapter), process.env)`,
     ].join('\n'))
     const result = spawnSync(process.execPath, [harness], {
@@ -1001,13 +1053,7 @@ describe('second-opinion advisor', () => {
       // Alive or not yet reaped by this process: kill(pid, 0) fails only once the companion has been reaped.
       "const companionUnreaped = () => { const pid = pidIn('companion.pid'); if (!pid) return true; try { process.kill(pid, 0); return true } catch { return false } }",
       `const adapter = createHostAdapter({ platform: ${JSON.stringify(adapterPlatform)} })`,
-      'const readSnapshot = adapter.readProcessSnapshot',
-      'adapter.readProcessSnapshot = () => {',
-      '  const hide = companionUnreaped()',
-      '  const table = readSnapshot()',
-      "  const broker = pidIn('broker.pid')",
-      '  return hide && table.supported ? { ...table, processes: table.processes.filter((item) => item.pid !== broker) } : table',
-      '}',
+      ...fastSnapshotSource,
       `process.exitCode = await runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(adapter), process.env)`,
     ].join('\n'))
     const result = spawnSync(process.execPath, [harness], {
@@ -1075,7 +1121,7 @@ describe('second-opinion advisor', () => {
     }
     const resolveSandbox = (request: Record<string, unknown>) => {
       requests.push(request)
-      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', unreadable: vi.fn(() => []), wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
+      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', unreadable: vi.fn(() => []), wrap: (bin: string, args: string[]) => verifiedWrapper(bin, args, 'ran inside the wrapper') }
     }
     const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
     deps.resolveCodexCompanion = () => companion
@@ -1090,6 +1136,8 @@ describe('second-opinion advisor', () => {
     const f = fixture(true)
     const companion = join(f.repo, 'overflow-companion.mjs')
     writeFileSync(companion, "process.stdout.write('x'.repeat(1024))\n")
+    mkdirSync(join(f.repo, 'lib'))
+    writeFileSync(join(f.repo, 'lib', 'codex.mjs'), "export async function runAppServerTurn() { await import('../overflow-companion.mjs') }")
     const stop = vi.fn(() => [])
     const adapter = {
       platform: process.platform,
@@ -1098,7 +1146,7 @@ describe('second-opinion advisor', () => {
       readProcessRelationships: () => ({ status: 'known', processes: [] }),
       createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
     }
-    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64, resolveSandbox: noSandbox })
+    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64, resolveSandbox: () => ({ ...noSandbox(), wrap: () => [process.execPath, ['-e', "process.stderr.write('x'.repeat(1024))"]] }) })
     deps.resolveCodexCompanion = () => companion
 
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
@@ -1164,7 +1212,6 @@ describe('second-opinion advisor', () => {
       const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
       const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
       const baseline = process.listenerCount('exit')
-      const codex = '/opt/good/bin/codex'
       const env = { ...f.env, HOME: f.home, XDG_STATE_HOME: join(f.home, 'state'), PATH: reason === 'no executable selected' ? '' : '/opt/good/bin' }
       const adapter = {
         platform: 'linux',
@@ -1220,4 +1267,4 @@ describe('second-opinion advisor', () => {
     expect(existsSync(ownershipRoot)).toBe(false)
     expect(process.listenerCount('exit')).toBe(baseline)
   })
-})
+}
