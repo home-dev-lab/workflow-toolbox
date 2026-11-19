@@ -12,7 +12,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   error or a failed turn wins, and a final-answer item alone no longer counts as completion. The bridge now speaks
   the public app-server protocol directly, asks for a read-only, never-approve, persistent thread, and refuses
   every request the server sends it. A failure after a reused `--out` now always ends that file with `EXIT=1`,
-  never the earlier run's `EXIT=0`. Refusals are no longer guessed from answer text.
+  never the earlier run's `EXIT=0`. Refusals are no longer guessed from answer text. On Windows the app-server is
+  started through the shell, as the Codex companion does, to reach a `codex.cmd` install. It is stopped as a whole
+  process tree, once, and never after it has already exited.
 - wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.
   Its preload now safely rolls back only its own changes and confirms compiler sharing during entry execution, including preserved symlink entries.
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)

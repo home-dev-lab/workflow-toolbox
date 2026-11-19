@@ -9,7 +9,7 @@ export function fakeServerPreload(root: string, server: string) {
   writeFileSync(preload, `import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module';
 const original = cp.spawn;
 cp.spawn = function(bin, args, options) {
-  if (bin === 'codex') return original.call(this, process.execPath, [${JSON.stringify(server)}, ...args], options);
+  if (bin === 'codex') return original.call(this, process.execPath, [${JSON.stringify(server)}, ...args], {...options, shell:false});
   if (bin === process.execPath && args.includes('--eval')) return original.call(this, bin, ['--import', ${JSON.stringify(pathToFileURL(preload).href)}, ...args], options);
   return original.call(this, bin, args, options);
 }; syncBuiltinESMExports();`)

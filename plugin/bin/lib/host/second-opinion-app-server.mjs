@@ -1,10 +1,18 @@
 // Minimal client for Codex's public newline-delimited app-server JSON-RPC protocol.
 // Inlined into the sandbox bridge: no companion implementation/API is imported.
-async function openAppServer(notify) {
-  const { spawn } = await import('node:child_process')
+export async function openAppServer(notify, dependencies = {}) {
+  const { spawn: defaultSpawn, spawnSync: defaultSpawnSync } = await import('node:child_process')
+  const { spawn = defaultSpawn, spawnSync = defaultSpawnSync, platform = process.platform, env = process.env } = dependencies
   const { createInterface } = await import('node:readline')
-  const child = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-  const stop = () => child.kill('SIGTERM')
+  const child = spawn('codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    shell: platform === 'win32' ? (env.SHELL || true) : false })
+  let stopped = false
+  // A raw PID can be reused after exit: stop at most once, and never an exited child.
+  const stop = () => {
+    if (stopped || child.exitCode != null || child.signalCode != null) return
+    stopped = true
+    stopAppServer(child, platform, spawnSync)
+  }
   process.once('exit', stop)
   process.once('SIGTERM', stop)
   const pending = new Map()
@@ -35,8 +43,14 @@ async function openAppServer(notify) {
       return new Promise((resolve, reject) => { pending.set(id, { resolve, reject }); send({ id, method, params }) })
     },
     send,
-    async close() { child.stdin.end(); child.kill('SIGTERM'); await closed },
+    async close() { child.stdin.end(); stop(); await closed },
   }
+}
+
+function stopAppServer(child, platform, spawnSync) {
+  if (platform !== 'win32') { child.kill('SIGTERM'); return }
+  // The shell is the direct child on Windows; killing it alone leaves Codex alive.
+  if (child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
 }
 
 function dispatchAppServerMessage(message, pending, send, notify) {
@@ -129,5 +143,5 @@ export async function publicAstraTurn(effort, prompt) {
   }
 }
 
-export const appServerSource = [openAppServer, dispatchAppServerMessage, terminalTurnCollector,
+export const appServerSource = [openAppServer, stopAppServer, dispatchAppServerMessage, terminalTurnCollector,
   finalAnswer, applyTerminalNotification, completeTerminalTurn, requireCleanTerminal, publicAstraTurn].map((fn) => fn.toString()).join('\n')

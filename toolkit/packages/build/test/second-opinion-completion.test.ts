@@ -1,14 +1,18 @@
 import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { PassThrough } from 'node:stream'
 import { afterEach, expect, it } from 'vitest'
 import { fakeServerPreload } from './helpers/second-opinion-server.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { verifiedAstraResult } from '../../../../plugin/bin/lib/host/second-opinion-codex-turn.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { openAppServer } from '../../../../plugin/bin/lib/host/second-opinion-app-server.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -72,7 +76,7 @@ it('rejects a forged verified record on companion stdout', () => {
 
 // An unconditional local JSON-RPC peer, installed before invoking either CLI version.
 // It never delegates to a real executable or provider.
-function publicAppServer(f: ReturnType<typeof fixture>, turnBody: string, threadCheck = '') {
+function publicAppServer(f: ReturnType<typeof fixture>, turnBody: string, threadCheck = '', replyCheck = '') {
   mkdirSync(join(f.root, 'bin'), { recursive: true })
   const bin = join(f.root, 'bin', 'codex')
   writeFileSync(bin, `#!${process.execPath}
@@ -82,6 +86,7 @@ const notify = (method, params) => send({method, params});
 const input = createInterface({input:process.stdin});
 input.on('line', async line => {
   const message = JSON.parse(line);
+  ${replyCheck}
   const reply = result => send({id:message.id, result});
   if (message.method === 'initialize') reply({userAgent:'fake'});
   if (message.method === 'thread/start') { ${threadCheck}; reply({thread:{id:'thread'}}); }
@@ -95,6 +100,107 @@ input.on('line', async line => {
 }
 
 const cleanTerminal = `notify('turn/completed', {threadId:'thread', turn:{id:'turn', status:'completed', error:null, items:[{type:'agentMessage', id:'answer', phase:'final_answer', text:'public answer'}]}});`
+
+function fakeAppServerProcess() {
+  const kills: string[] = []
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4321, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    kill(signal: string) { kills.push(signal); return true },
+  })
+  child.stdin.on('finish', () => queueMicrotask(() => child.emit('close')))
+  return { child, kills }
+}
+
+const spawnCases = [
+  { platform: 'win32', env: {}, shell: true },
+  { platform: 'win32', env: { SHELL: '' }, shell: true },
+  { platform: 'win32', env: { SHELL: 'custom-shell.exe' }, shell: 'custom-shell.exe' },
+  { platform: 'linux', env: { SHELL: 'custom-shell' }, shell: false },
+  { platform: 'darwin', env: { SHELL: 'custom-shell' }, shell: false },
+].flatMap(options => ['close', 'exit', 'SIGTERM'].map(trigger => ({ ...options, trigger })))
+
+it.each(spawnCases)('spawns and stops the app-server on $platform with shell $shell via $trigger', async ({ platform, env, shell, trigger }) => {
+  const { child, kills } = fakeAppServerProcess()
+  const launches: unknown[][] = [], terminations: unknown[][] = []
+  const client = await openAppServer(() => {}, {
+    platform, env,
+    spawn: (...args: unknown[]) => { launches.push(args); return child },
+    spawnSync: (...args: unknown[]) => { terminations.push(args); return { status: 0 } },
+  })
+  try {
+    expect(launches).toEqual([['codex', ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell }]])
+    if (trigger === 'close') await client.close()
+    else process.listeners(trigger).at(-1)!.call(process)
+    expect(terminations).toEqual(platform === 'win32'
+      ? [['taskkill', ['/PID', '4321', '/T', '/F'], { windowsHide: true, stdio: 'ignore' }]] : [])
+    expect(kills).toEqual(platform === 'win32' ? [] : ['SIGTERM'])
+  } finally { child.emit('close') }
+})
+
+it.each(['twice', 'after exit'])('runs taskkill at most once and never after the child exited (%s)', async when => {
+  const { child } = fakeAppServerProcess()
+  const terminations: unknown[][] = []
+  const client = await openAppServer(() => {}, {
+    platform: 'win32', env: {},
+    spawn: () => child,
+    spawnSync: (...args: unknown[]) => { terminations.push(args); return { status: 0 } },
+  })
+  try {
+    if (when === 'twice') process.listeners('SIGTERM').at(-1)!.call(process)
+    else Object.assign(child, { exitCode: 0 }).emit('exit', 0, null)
+    await client.close()
+    expect(terminations).toHaveLength(when === 'twice' ? 1 : 0)
+  } finally { child.emit('close') }
+})
+
+it.each([
+  { key: 'approvalPolicy', value: 'never' },
+  { key: 'sandbox', value: 'read-only' },
+])('sends $key=$value in the actual thread/start request', ({ key, value }) => {
+  const f = fixture()
+  structuredCompanion(f, 'export const unused = true')
+  const received = join(f.root, 'thread-request.json')
+  publicAppServer(f, cleanTerminal, `(await import('node:fs')).writeFileSync(${JSON.stringify(received)}, JSON.stringify(message))`)
+  expect(astraCli(f).status).toBe(0)
+  expect(JSON.parse(readFileSync(received, 'utf8')).params[key]).toBe(value)
+})
+
+it.each(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'unknown/serverRequest'])(
+  'rejects server-initiated %s without granting approval', method => {
+    const f = fixture()
+    structuredCompanion(f, 'export const unused = true')
+    const received = join(f.root, 'server-reply.json')
+    publicAppServer(f, `send({id:0, method:${JSON.stringify(method)}, params:{threadId:'thread', turnId:'turn'}});`, '', `
+      if (Object.hasOwn(message, 'id') && !message.method) {
+        (await import('node:fs')).writeFileSync(${JSON.stringify(received)}, JSON.stringify(message));
+        ${cleanTerminal}
+      }`)
+    expect(astraCli(f).status).toBe(0)
+    expect(JSON.parse(readFileSync(received, 'utf8'))).toEqual({
+      id: 0, error: { code: -32601, message: 'second-opinion is read-only' },
+    })
+  },
+)
+
+it.each(['thread', 'turn'].flatMap(identity => ['turn/completed', 'error', 'item/completed'].map(method => ({ identity, method }))))(
+  'ignores $method from another $identity', ({ identity, method }) => {
+    const f = fixture()
+    structuredCompanion(f, 'export const unused = true')
+    const threadId = identity === 'thread' ? 'other-thread' : 'thread'
+    const turnId = identity === 'turn' ? 'other-turn' : 'turn'
+    const params = { threadId, turnId, error: { message: 'foreign failure' },
+      item: { type: 'agentMessage', phase: 'final_answer', text: 'foreign answer' },
+      turn: { id: turnId, status: 'completed', error: null, items: [{ type: 'agentMessage', phase: 'final_answer', text: 'foreign terminal' }] } }
+    const terminal = method === 'item/completed'
+      ? `notify('turn/completed', {threadId:'thread', turn:{id:'turn', status:'completed', error:null, items:[]}});`
+      : cleanTerminal
+    publicAppServer(f, `notify(${JSON.stringify(method)}, ${JSON.stringify(params)}); ${terminal}`)
+    expect(astraCli(f).status).toBe(method === 'item/completed' ? 1 : 0)
+    const output = readFileSync(f.out, 'utf8')
+    expect(output).not.toContain('foreign')
+    if (method !== 'item/completed') expect(output).toContain('public answer\n')
+  },
+)
 
 it('accepts a completed terminal when the optional error field is omitted', () => {
   const f = fixture()
