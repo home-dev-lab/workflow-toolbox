@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.201.0] - 2026-11-20
+
 ### Fixed
 
 - A second opinion run against a repository no longer lets the reviewing model read that repository's git history: the review sandbox masks the repository's git directory and common directory, refuses to start when it cannot work out which paths to mask, and names what it held back in its plan line.
