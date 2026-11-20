@@ -132,6 +132,10 @@ function queueDependencies(config, t, options, steps, lease) {
   const judge = t.named(() => false, 'judge')
   let poll = 0
   return {
+    // Currency admission is separately locked using real cache copies; this differential
+    // continues to compare the acquisition mechanics after the admission predicate.
+    SUITE_LOCK_MODULE_URL: 'file:///checkout/plugin/bin/lib/suite-lock.mjs', SUITE_LOCK_ORDER_VERSION: 4,
+    assertCurrentSuiteLockClient() {},
     mkdirSync(...args) { t.call('mkdir', ...args); if (config.errorAt === 'mkdir') throw t.error('mkdir') },
     ensureLightCounter(root) { t.call('counter', root); return counter },
     p0QueueFields(...args) { t.call('p0', ...args); return fields },

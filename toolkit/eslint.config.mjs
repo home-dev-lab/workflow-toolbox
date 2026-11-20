@@ -199,11 +199,32 @@ export default tseslint.config(
     },
   },
   {
-    files: ['plugin/bin/lib/host/lane-admission-lock.mjs', 'plugin/bin/lib/host/lane-launch-admission.mjs',
-      '../plugin/bin/lib/host/lane-admission-lock.mjs', '../plugin/bin/lib/host/lane-launch-admission.mjs'],
+    files: ['plugin/bin/lib/host/git-history-mask.mjs', '../plugin/bin/lib/host/git-history-mask.mjs'],
     rules: {
       complexity: ['error', 10],
       'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
+    files: ['plugin/bin/lib/host/lane-admission-lock.mjs', 'plugin/bin/lib/host/lane-launch-admission.mjs',
+      '../plugin/bin/lib/host/lane-admission-lock.mjs', '../plugin/bin/lib/host/lane-launch-admission.mjs',
+      'plugin/bin/lib/host/suite-lock-client-currency.mjs', '../plugin/bin/lib/host/suite-lock-client-currency.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+    },
+  },
+  {
+    files: ['plugin/bin/wt-suite-lock.mjs', '../plugin/bin/wt-suite-lock.mjs',
+      'plugin/bin/lib/suite-lock-light-scope.mjs', '../plugin/bin/lib/suite-lock-light-scope.mjs',
+      'plugin/bin/lib/host/suite-lock-light-scope-log.mjs', '../plugin/bin/lib/host/suite-lock-light-scope-log.mjs',
+      'toolkit/test-support/suite-lease.global-setup.mjs', 'test-support/suite-lease.global-setup.mjs',
+      'toolkit/packages/build/test/suite-lock-light-scope.test.ts', 'packages/build/test/suite-lock-light-scope.test.ts'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
     },
   },
   {

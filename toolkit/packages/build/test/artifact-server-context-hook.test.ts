@@ -38,7 +38,7 @@ afterEach(async () => {
   for (const dir of temporaryDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-async function liveServerFixture() {
+async function liveServerFixture(remoteUrl: string | null = null) {
   const stateHome = fixture()
   const reports = join(fixture(), 'reports')
   mkdirSync(reports)
@@ -59,7 +59,8 @@ async function liveServerFixture() {
   mkdirSync(stateDir, { recursive: true })
   const discovery = join(stateDir, 'server.json')
   writeFileSync(discovery, JSON.stringify({
-    version: 'test', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: null,
+    version: 'test', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl,
+    tailnetDetection: { status: remoteUrl ? 'available' : 'no-tailnet', reason: remoteUrl ? null : 'tailscale reported no IPv4 address' },
     roots: [{ name: 'reports', path: reports }], startedAt: new Date().toISOString(),
   }))
   chmodSync(discovery, 0o600)
@@ -75,7 +76,9 @@ describe('artifact server SessionStart context', () => {
     const output = JSON.parse(hook.stdout) as { hookSpecificOutput: { hookEventName: string, additionalContext: string } }
     expect(output.hookSpecificOutput.hookEventName).toBe('SessionStart')
     expect(output.hookSpecificOutput.additionalContext.split('\n')).toHaveLength(1)
-    expect(output.hookSpecificOutput.additionalContext).toContain('wt-artifact-server.mjs\" url \"<absolute-file-path>\"')
+    expect(output.hookSpecificOutput.additionalContext).toContain('wt-artifact-server.mjs\" url \"<absolute-file-path>\" --remote')
+    expect(output.hookSpecificOutput.additionalContext).toContain('only when it exits 3')
+    expect(output.hookSpecificOutput.additionalContext).toContain('when its stderr says it printed the local URL, say that the link works only on this machine')
 
     const url = spawnSync(process.execPath, [SERVER, 'url', report], {
       encoding: 'utf8', env: { ...process.env, XDG_STATE_HOME: stateHome },
@@ -84,23 +87,65 @@ describe('artifact server SessionStart context', () => {
     expect(url.stdout.trim()).toBe(`http://localhost:${port}/reports/report.md`)
   })
 
-  it('announces a command the session shell can run as written, without CLAUDE_PLUGIN_ROOT', async () => {
-    const { stateHome, report, port } = await liveServerFixture()
+  it.each([true, false])('announces a runnable remote command without CLAUDE_PLUGIN_ROOT (tailnet available: %s)', async (available) => {
+    const { stateHome, report } = await liveServerFixture(available ? 'https://host.tailnet.ts.net/artifacts' : null)
     const hook = await runHook(stateHome)
     const context = (JSON.parse(hook.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
     const announced = /run (node .+?) and hand over/.exec(context)?.[1]
     expect(announced).toBeDefined()
+    expect(announced).toContain('--remote')
     const shellEnv: NodeJS.ProcessEnv = { ...process.env, XDG_STATE_HOME: stateHome }
     delete shellEnv.CLAUDE_PLUGIN_ROOT
     const run = spawnSync(String(announced).replace('<absolute-file-path>', report), {
       encoding: 'utf8', shell: true, env: shellEnv,
     })
-    expect(run.stderr).toBe('')
-    expect(run.status).toBe(0)
-    expect(run.stdout.trim()).toBe(`http://localhost:${port}/reports/report.md`)
+    expect(run.stderr).toBe(available ? '' : 'artifact server has no remote URL: tailscale reported no IPv4 address\n')
+    expect(run.status).toBe(available ? 0 : 3)
+    expect(run.stdout).toBe(available ? 'https://host.tailnet.ts.net/artifacts/reports/report.md\n' : '')
     expect(context).not.toContain('${')
   })
+})
 
+async function announcedHandoff(stateHome: string, report: string) {
+  const hook = await runHook(stateHome)
+  const context = (JSON.parse(hook.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
+  const announced = String(/run (node .+?) and hand over/.exec(context)?.[1]).replace('<absolute-file-path>', report)
+  const shellEnv: NodeJS.ProcessEnv = { ...process.env, XDG_STATE_HOME: stateHome }
+  delete shellEnv.CLAUDE_PLUGIN_ROOT
+  const run = (command: string) => spawnSync(command, { encoding: 'utf8', shell: true, env: shellEnv })
+  return { context, strict: () => run(announced), fallback: () => run(announced.replace(/ --remote$/, '')) }
+}
+
+describe('artifact server SessionStart context — the fallback after exit 3', () => {
+  it('announces a fallback that the exit-3 stderr matches and that prints the local link when run as told', async () => {
+    const { stateHome, report, port } = await liveServerFixture(null)
+    const { context, strict, fallback } = await announcedHandoff(stateHome, report)
+    expect(context).toContain('its stderr says the server has no remote URL, run the command without --remote')
+    const first = strict()
+    expect(first.status).toBe(3)
+    expect(first.stderr).toContain('has no remote URL')
+    const second = fallback()
+    expect(second.status).toBe(0)
+    expect(second.stdout).toBe(`http://localhost:${port}/reports/report.md\n`)
+    expect(second.stderr).toBe('artifact server has no remote URL: tailscale reported no IPv4 address; printed the local URL\n')
+    expect(context).toContain('when its stderr says it printed the local URL')
+    expect(second.stderr).toContain('printed the local URL')
+  })
+
+  it('keeps the local-only caveat off a fallback that prints a tailnet link after a restart', async () => {
+    const { stateHome, report } = await liveServerFixture(null)
+    const { context, strict, fallback } = await announcedHandoff(stateHome, report)
+    expect(strict().status).toBe(3)
+    const file = join(stateHome, 'wt-artifact-server', 'server.json')
+    const state = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    writeFileSync(file, JSON.stringify({ ...state, remoteUrl: 'https://host.tailnet.ts.net/artifacts', tailnetDetection: { status: 'available', reason: null } }))
+    chmodSync(file, 0o600)
+    const second = fallback()
+    expect(second.status).toBe(0)
+    expect(second.stdout).toBe('https://host.tailnet.ts.net/artifacts/reports/report.md\n')
+    expect(second.stderr).not.toContain('printed the local URL')
+    expect(context).toMatch(/hand over what it prints; when its stderr says it printed the local URL, say that the link works only on this machine/)
+  })
 })
 
 describe('artifact server SessionStart context — source and availability', () => {

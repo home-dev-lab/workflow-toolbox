@@ -46,20 +46,26 @@ export async function loadSdk() {
   return import(pathToFileURL(sdkPath).href)
 }
 
-async function main() {
-  const { agentPath, inputPath, outputPath } = parseRunnerArgs(process.argv.slice(2))
+export async function main(argv = process.argv.slice(2), queryOverride) {
+  const { agentPath, inputPath, outputPath } = parseRunnerArgs(argv)
   const { frontmatter, body } = parseAgentFrontmatter(readFileSync(agentPath, 'utf8'))
   const model = requireString(frontmatter, 'model')
   const effort = requireString(frontmatter, 'effort')
   if (requireString(frontmatter, 'sdk-only') !== 'true') throw new Error('agent frontmatter requires sdk-only: true')
-  const { query } = await loadSdk()
+  const { query } = queryOverride ? { query: queryOverride } : await loadSdk()
   const transcript = []
 
-  // Function hooks interfere with plain Agent SDK query() sessions.
+  // settingSources: [] does not keep plugin mods out: one inherited through CLAUDE_CODE_PLUGIN_DIRS
+  // loaded on 2.1.327. The SDK settings switch turns hooks and user mods off; organisation-managed
+  // mods are outside its reach.
+  // The variable is still deleted for older bundled CLIs (2.1.280) that gate mods on it.
   delete process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
   for await (const message of query({
     prompt: readFileSync(inputPath, 'utf8'),
-    options: { cwd: process.cwd(), effort, model, settingSources: [], systemPrompt: body, tools: [] },
+    options: {
+      cwd: process.cwd(), effort, model, settingSources: [],
+      settings: { disableAllHooks: true }, systemPrompt: body, tools: [],
+    },
   })) {
     transcript.push(message)
   }

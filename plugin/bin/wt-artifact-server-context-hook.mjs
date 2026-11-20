@@ -24,7 +24,7 @@ try {
     if (state) {
       const probe = await probeArtifactServer(state.port)
       if (probe.kind === 'ours' && probe.health.pid === state.pid) {
-        context = `Artifact server is running: before handing the user a report or artifact path, run node "${SERVER_BIN}" url "<absolute-file-path>" and hand over the clickable link.`
+        context = `Artifact server is running: before handing the user a report or artifact path, run node "${SERVER_BIN}" url "<absolute-file-path>" --remote and hand over the tailnet link it prints; only when it exits 3 and its stderr says the server has no remote URL, run the command without --remote and hand over what it prints; when its stderr says it printed the local URL, say that the link works only on this machine.`
       }
     }
     process.stdout.write(JSON.stringify({

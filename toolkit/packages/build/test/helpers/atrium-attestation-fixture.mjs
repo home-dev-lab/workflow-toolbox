@@ -13,7 +13,8 @@ export function attestation(statement, owner, options = {}) {
   const context = {
     version: 1, request_id: randomUUID(), native_session_id: 'test-session', kind: 'authorization',
     input_digest: createHash('sha256').update(statement).digest('hex'), expected_responder: owner.identity,
-    expires_at: Date.now() + 480_000, question_index: 0, multi_select: false, ...options.context,
+    // Well inside the verifier's 480 s maximum: a wall clock stepping back on the verifier side must not refuse it.
+    expires_at: Date.now() + 240_000, question_index: 0, multi_select: false, ...options.context,
   }
   const choice = options.choice ?? 'Yes'
   const answer = {

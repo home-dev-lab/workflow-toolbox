@@ -5,6 +5,40 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- A second opinion run against a repository no longer lets the reviewing model read that repository's git history: the review sandbox masks the repository's git directory and common directory, refuses to start when it cannot work out which paths to mask, and names what it held back in its plan line.
+- Cached suite-lock writers now refuse main-queue admission with exit 78 when the
+  effective enabled install has a higher queue-order version and passes a bounded
+  loadability check. Direct invocations print the replacement command; broker and
+  library writers name the install to restart from. Unknown or incomplete installs
+  fail open, and static tickets, bypasses and inherited leases retain their routes.
+  Resuming an older parked ticket upgrades its ordering version while preserving
+  its saved priority and queue class. Long-lived writers reuse currency verdicts
+  for at most 60 seconds, invalidating on registry, manifest and executable stat
+  identities. Project-scoped selection follows the acquisition directory or the
+  broker's selection-only root, with null roots using the project environment.
+  Broker tickets retain the service working directory. Replacement commands preserve the
+  running Node interpreter and execution flags; unrenderable Windows commands
+  retain the refusal with restart guidance.
+
+- Run cost on Windows: capture and the reader now match the forward-slash directory spelling OpenCode stores for the worktree realpath, so Windows lanes are priced instead of reported missing
+- wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
+- The session-start duplicate-hook notice now reads settings hook commands word by word: it recognises `node` after a
+  separator without a space, after leading blanks or a newline, as an absolute binary or behind `env NAME=value`, and with
+  redirections or expansions elsewhere in the command. A `node` call in an OR branch, inside a here-document or in a
+  malformed command no longer counts as a hook run.
+- When several installed copies of the loaded plugin apply and none sits at the running root, the session-start notice
+  now says it cannot tell which copy a reload would load, instead of naming whichever registry entry came first. Copies
+  that all match the running version produce no notice.
+
+### Changed
+- `wt-artifact-server url` now prints the tailnet URL (the Serve HTTPS name or the tailnet address) by default when one exists, and falls back to the local URL only when there is none, with the reason on stderr; `--check` then checks the printed URL, from the Tailscale host when it is the tailnet one. Use the new `--local` for tools on the same host (Playwright, curl, a local fetch); `--remote` still refuses to fall back. The session-start line now tells sessions to run `url <file> --remote` and hand over the tailnet link.
+
+### Added
+
+- wt-suite-lock warns when a light run covers several test files or a whole suite (node --test, vitest, pnpm/npm test; the toolkit's Vitest globalSetup for 2 to 8 selected files too), records each firing and its hold in light-scope.jsonl under the lock root, and lists them with wt-suite-lock light-scope. WT_SUITE_LOCK_LIGHT_SCOPE=refuse refuses instead; the default stays warn until at least 20 firings over at least 3 days are each confirmed to cover two or more test files with no false hit. The message names the command to run instead: with WT_SUITE_LOCK_HEAVY_JOB set to a heavy-job wrapper, that wrapper with --project, --expected-min and --suite-lock; with the variable unset (the public default) or inside a lane, the exclusive wt-suite-lock run -- <command>, with that reason. Blind spot: a script file (bash x.sh) and a shell string (bash -c "...") are opaque and never flagged; in a lane the warning prints but the host record is not written.
+
 ## [0.200.1] - 2026-11-13
 
 Patch release: fixes the two native-Windows test defects listed under Known issues in 0.200.0.

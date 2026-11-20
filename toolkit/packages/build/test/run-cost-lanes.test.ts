@@ -8,6 +8,8 @@ import { computeRunCost } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error runtime host helper
 import { canonicalDirectory } from '../../../../plugin/bin/lib/host/canonical-path.mjs'
+// @ts-expect-error runtime host helper
+import { openCodeStoredDirectory } from '../../../../plugin/bin/lib/host/opencode-directory.mjs'
 
 const roots: string[] = []
 const originalLstat = fs.lstatSync.bind(fs)
@@ -47,6 +49,117 @@ function hostLog(hostDir: string, name: string, birthtimeMs = 0, mtimeMs = 1500)
     return String(name) === file ? Object.assign(stat, { birthtimeMs }) : stat
   }) as typeof fs.lstatSync)
 }
+
+function windowsFixture() {
+  const f = fixture(); const canonical = 'C:\\repo\\A'
+  const original = fs.realpathSync.native.bind(fs.realpathSync)
+  vi.spyOn(fs.realpathSync, 'native').mockImplementation(((name: fs.PathLike) => String(name) === f.worktree ? canonical : original(name)) as typeof fs.realpathSync.native)
+  const launch = (round: number) => f.launch(round, canonical, { realpath: canonical, spellings: [canonical] })
+  const saveLaunch = (round: number) => writeFileSync(join(f.hostDir, `${f.lanes[round - 1]!.usage_file}.launch.json`), JSON.stringify(launch(round)))
+  const row = (id: string, directory = 'C:/repo/A') => ({ ...f.row(id), directory, tokens_cache_write: 0 })
+  const save = (round: number, sessions = [row(`s${round}`)], changes = {}) => f.save(round, { directory: canonical, store_kind: 'shared', sessions, launch: launch(round), ...changes })
+  const compute = (options = {}) => f.compute({ platform: 'win32', ...options })
+  return { ...f, canonical, launch, saveLaunch, row, save, compute }
+}
+
+it('R2 prices a stored-form shared fallback, retains inferred coverage and queries both canonical forms', () => {
+  const f = windowsFixture(); f.saveLaunch(1); f.save(2)
+  const query = vi.fn<(bin: string, args: string[]) => string>(() => JSON.stringify([f.row('shared')]))
+  const cost = f.compute({ sessions: undefined, execFile: query })
+  expect(cost.phases[0].lane?.models['openai/gpt']?.input).toBe(3)
+  expect(cost.phases[0].lane?.calls[0]?.status).toBe('inferred')
+  expect(cost.coverage.lanes?.status).toBe('incomplete')
+  expect(cost.unknown.join(' ')).not.toContain('ambiguous')
+  expect(query.mock.calls[0]?.[1][4]).toContain("directory='C:/repo/A'")
+  expect(query.mock.calls[0]?.[1][4]).toContain(`directory='${f.canonical}'`)
+})
+
+it.each(['stable', 'retargeted'])('R3 accepts a canonical stored-form receipt with %s alias binding', alias_binding => {
+  const f = windowsFixture(); f.save(1, undefined, { alias_binding }); f.save(2)
+  const cost = f.compute()
+  expect(cost.phases[0].lane?.models['openai/gpt']?.input).toBe(3)
+  expect(cost.unknown.join(' ')).not.toContain('ambiguous')
+  expect(cost.phases[0].lane?.calls[0]?.status).toBe('inferred')
+})
+
+it.each(['receipt', 'launch', 'timeline', 'spellings'])('R3 keeps native evidence exact for %s', kind => {
+  const f = windowsFixture(); const stored = 'C:/repo/A'
+  const launch = f.launch(1)
+  if (kind === 'launch') Object.assign(launch, { requested: stored, realpath: stored, spellings: [stored] })
+  if (kind === 'spellings') launch.spellings.push(stored)
+  f.save(1, [f.row('stored')], { launch, ...(kind === 'receipt' ? { directory: stored } : {}) })
+  if (kind === 'timeline') { Object.assign(f.timeline, { worktree_realpath: stored }); f.persist() }
+  const cost = f.compute()
+  expect(cost.families.openai?.input ?? 0).toBe(0)
+  expect(cost.coverage.lanes?.status).toBe('incomplete')
+})
+
+it.each(['C:/repo/B', 'c:/repo/A', 'C:/repo\\A', '/c/repo/A'])('R5 never admits unevidenced spelling %s', directory => {
+  const f = windowsFixture(); f.saveLaunch(1); f.save(2, [])
+  const cost = f.compute({ sessions: [f.row('foreign', directory)] })
+  expect(cost.families.openai?.input ?? 0).toBe(0)
+  expect(cost.unknown.join(' ')).not.toContain('foreign matched')
+})
+
+it.each([
+  { start: 900, end: 1000, unfinished: false },
+  { start: 2000, end: 2100, unfinished: false },
+  { start: 900, end: 2100, unfinished: false },
+  { start: 2500, end: 2600, unfinished: true },
+])('R6 quarantines stored rows overlapping a blocked lane: $start..$end', ({ start, end, unfinished }) => {
+  const f = windowsFixture()
+  Object.assign(f.lanes[0]!, { launch_evidence: true, ...(unfinished ? { ended_at: null, state: 'running' } : {}) })
+  Object.assign(f.lanes[1]!, { started_at: 3000, ended_at: 4000 })
+  Object.assign(f.timeline.phases[1]!, { entered_at: 3000, exited_at: 4000 }); f.timeline.ended_at = 4000; f.persist()
+  writeFileSync(join(f.hostDir, `${f.lanes[1]!.usage_file}.launch.json`), JSON.stringify({ ...f.launch(2), recorded_at: 3050 }))
+  const cost = f.compute({ sessions: [{ ...f.row('blocked'), time_created: start, time_updated: end }] })
+  expect(cost.families.openai?.input ?? 0).toBe(0)
+  expect(cost.unknown.join(' ')).toContain('overlaps lane window')
+})
+
+it.each([false, true])('R7 preserves duplicate and reserved ownership with reversed order=%s', reverse => {
+  const f = windowsFixture(); f.save(1, [f.row('reserved')]); f.saveLaunch(2)
+  if (reverse) { f.lanes.reverse(); f.persist() }
+  const sessions = [f.row('reserved'), f.row('reserved', f.canonical), f.row('fallback'), f.row('fallback', f.canonical)]
+  const cost = f.compute({ sessions })
+  const native = f.compute({ sessions: sessions.map(row => ({ ...row, directory: f.canonical })) })
+  expect(cost).toEqual(native)
+  expect(cost.families.openai?.input).toBe(6)
+})
+
+it.each([false, true])('R7 deduplicates receipt owners across both spellings with reversed order=%s', reverse => {
+  const f = windowsFixture(); f.save(1, [f.row('duplicate')]); f.save(2, [f.row('duplicate', f.canonical)])
+  if (reverse) { f.lanes.reverse(); f.persist() }
+  const cost = f.compute()
+  f.save(1, [f.row('duplicate', f.canonical)]); f.save(2, [f.row('duplicate', f.canonical)])
+  expect(cost).toEqual(f.compute())
+  expect(cost.families.openai?.input).toBe(3)
+  expect(cost.coverage.lanes?.counted).toBe(0)
+})
+
+it('R5 does not promote a different lane alias to canonical in the pooled query', () => {
+  const f = windowsFixture(); f.saveLaunch(1)
+  const alias = 'C:\\repo\\B'
+  f.save(2, [], { launch: { ...f.launch(2), requested: alias, spellings: [alias, f.canonical] } })
+  const cost = f.compute({ sessions: [f.row('foreign', 'C:/repo/B')] })
+  expect(cost.families.openai?.input ?? 0).toBe(0)
+})
+
+it('R2 includes the stored canonical form when a stable alias supplies launch spellings', () => {
+  const f = windowsFixture(); const alias = 'C:\\alias\\A'
+  f.save(1, [f.row('receipt')], { alias_binding: 'stable', launch: { ...f.launch(1), requested: alias, spellings: [alias, f.canonical] } }); f.saveLaunch(2)
+  const cost = f.compute({ sessions: [f.row('fallback')] })
+  expect(cost.families.openai?.input).toBe(6)
+  expect(cost.unknown.join(' ')).not.toContain('ambiguous')
+})
+
+it.each([
+  { platform: 'linux', input: '/repo/a\\b', expected: '/repo/a\\b' },
+  { platform: 'darwin', input: '/repo/a\\b', expected: '/repo/a\\b' },
+  { platform: 'win32', input: 'C:\\repo\\A', expected: 'C:/repo/A' },
+])('R4 keeps the stored directory identical to the native one off Windows ($platform)', ({ platform, input, expected }) => {
+  expect(openCodeStoredDirectory(input, platform)).toBe(expected)
+})
 
   it('marks one missing call incomplete in a two-call run', () => {
     const f = fixture(); f.save(1)

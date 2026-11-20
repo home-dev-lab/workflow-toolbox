@@ -29,11 +29,14 @@ import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
 import { acquireParkCliLease, clearParkRequest, finishParkRun, parkChildEnvironment, publishParkOutcome, shouldYieldParkLease, spawnParkEnvironment } from './lib/suite-lock-park.mjs'
 import { claimParkAttempt, parkSignalExit, watchParkChildSignals } from './lib/host/suite-lock-park-files.mjs'
 import { suiteLockPrecedenceCli } from './lib/suite-lock-precedence.mjs'
+import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
+import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
   node wt-suite-lock.mjs journal [--json] [--since <ISO>]
+  node wt-suite-lock.mjs light-scope [--json]
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   node wt-suite-lock.mjs precedence set --project NAME --until ISO --source ID | clear --project NAME | list
@@ -46,6 +49,8 @@ const USAGE = `Usage:
   Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
+  A light run over several test files or a whole suite is warned (WT_SUITE_LOCK_LIGHT_SCOPE=warn, the default) or
+  refused (=refuse) with the command to run instead (WT_SUITE_LOCK_HEAVY_JOB names a heavy-job wrapper); light-scope lists firings.
   Release priority is reserved for the main session's release and merge-train gates.`
 
 function parseSeconds(args, name, fallback) {
@@ -101,18 +106,40 @@ async function run(args) {
     const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
     if (inherited === 75) return 75
     if (inherited) return await spawnCommand(command, null, null, parkChildEnvironment(park))
-    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, light, static: staticRun, priority, project, size, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
-    if (typeof lease === 'number') return lease
-    if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
-    return await runLeasedCommand(command, lease, { light, staticRun, park, attempt })
+    return await queueAndRun(command, { waitS, staleS, light, staticRun, priority, project, size, park, attempt })
   } finally { try { publishParkOutcome(park, attempt.outcome) } finally { releaseAttempt() } }
+}
+
+// Queues one ticket and runs the command under it. A light request over several test files is warned, or
+// refused before it queues; its hold is recorded once the command ends.
+async function queueAndRun(command, options) {
+  const { waitS, staleS, light, staticRun, priority, project, size, park, attempt } = options
+  const scopeGuard = lightScopeGuard(command, { light, staticRun })
+  if (scopeGuard.refused) return 2
+  const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, light, static: staticRun, priority, project, size, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+  if (typeof lease === 'number') return lease
+  if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
+  const timing = {}
+  try { return await runLeasedCommand(command, lease, { light, staticRun, park, attempt, timing }) } finally { scopeGuard.end(timing.heldMs) }
+}
+
+// A light request is checked for its scope before it queues; a nested run under an inherited lease takes no
+// ticket and is not checked. Inside a lane the warning prints but the host's record is out of reach.
+function lightScopeGuard(command, requested) {
+  if (!requested.light || requested.staticRun) return { refused: false, end: () => {} }
+  let log = null
+  try {
+    const root = suiteLeaseDomain()
+    if (!root.startsWith('broker:')) log = lightScopeLog(root)
+  } catch { /* an unknown lock root only loses the record, never the check */ }
+  return guardLightRun({ command, route: 'cli', write: (text) => process.stderr.write(text), log })
 }
 
 async function runLeasedCommand(command, lease, requested) {
   const stopWarning = watchGrantedLease(lease, requested, command)
   let exit = 1
   let yielded = false
-  const timing = {}
+  const timing = requested.timing ?? {}
   try {
     yielded = shouldYieldParkLease(lease, requested.park, readSuiteLockParked)
     if (yielded) { exit = 75; return exit }
@@ -220,14 +247,19 @@ function release(args) {
   return 0
 }
 
+const SUBCOMMANDS = {
+  run,
+  status,
+  release,
+  journal: (args) => suiteLockJournalCli(args, suiteLeaseDomain()),
+  'light-scope': (args) => lightScopeCli(args, suiteLeaseDomain(), readLightScopeFirings),
+  precedence: (args) => suiteLockPrecedenceCli(args, suiteLeaseDomain()),
+}
+
 export async function runSuiteLockCli(argv = process.argv.slice(2)) {
   const [subcommand, ...args] = argv
   if (subcommand === '--help' || subcommand === '-h') { printHelp(); return 0 }
-  if (subcommand === 'run') return run(args)
-  if (subcommand === 'status') return status(args)
-  if (subcommand === 'release') return release(args)
-  if (subcommand === 'journal') return suiteLockJournalCli(args, suiteLeaseDomain())
-  if (subcommand === 'precedence') return suiteLockPrecedenceCli(args, suiteLeaseDomain())
+  if (Object.hasOwn(SUBCOMMANDS, subcommand)) return SUBCOMMANDS[subcommand](args)
   throw new Error(subcommand ? `unknown subcommand: ${subcommand}` : 'missing subcommand')
 }
 
@@ -235,6 +267,10 @@ export async function runSuiteLockCliEntrypoint(argv = process.argv.slice(2)) {
   try {
     return await runSuiteLockCli(argv)
   } catch (error) {
+    if (error?.code === 'WT_SUITE_LOCK_STALE_CLIENT') {
+      process.stderr.write(`wt-suite-lock: ${error.message}\n`)
+      return 78
+    }
     process.stderr.write(`wt-suite-lock: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`)
     return error.exitCode === 64 ? 64 : 2
   }

@@ -105,7 +105,7 @@ function hostLockOptions(env, priority, root) {
   const hostEnv = { ...env, WT_SUITE_LOCK_CONTEXT: 'lane' }
   const declared = laneSuiteLockPriority({ priority }, hostEnv)
   if (declared === 'release') throw new Error('release priority is not available to a lane broker')
-  return { env: hostEnv, priority: declared, ...suiteLockRankOptions({ cwd: root ?? process.cwd() }, hostEnv) }
+  return { env: hostEnv, priority: declared, selectionCwd: root ?? undefined, ...suiteLockRankOptions({ cwd: root ?? process.cwd() }, hostEnv) }
 }
 
 function replyStatus(socket, options, finish) {
@@ -230,8 +230,13 @@ async function handleBrokerRequest(state, chunk) {
   }
 }
 
+function brokerFailureText(cause) {
+  const message = cause?.message ?? String(cause)
+  return cause?.code === 'WT_SUITE_LOCK_STALE_CLIENT' ? `stale-client ${message.replace(/^REFUSED stale-client: /, '')}` : message
+}
+
 function reportBrokerRequestError(state, cause, request) {
-  if (!state.closed && cause?.code !== 'ABORT_ERR') state.error(`${cause?.message ?? String(cause)}; requested command ${JSON.stringify(request?.argv ?? 'unavailable')}`)
+  if (!state.closed && cause?.code !== 'ABORT_ERR') state.error(`${brokerFailureText(cause)}; requested command ${JSON.stringify(request?.argv ?? 'unavailable')}`)
 }
 
 function expireBrokerLease(state, request) {

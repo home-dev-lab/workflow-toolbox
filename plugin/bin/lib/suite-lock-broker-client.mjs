@@ -108,6 +108,13 @@ function receiveBrokerHandover(state, line) {
 }
 
 function receiveBrokerError(state, line) {
+  if (line.startsWith('error stale-client ')) {
+    const error = new Error(`REFUSED stale-client: ${line.slice(19)}`)
+    error.code = 'WT_SUITE_LOCK_STALE_CLIENT'
+    error.exitCode = 78
+    state.fail(error)
+    return
+  }
   const error = new Error(`suite lock broker ${state.socketPath}: ${line.slice(6)}; inspect with wt-suite-lock status`)
   if (line.includes('timed out waiting')) error.code = 'WT_SUITE_LOCK_TIMEOUT'
   else if (brokerCompatibilityRefusal(line, state.options, state.helpers.isOlderBrokerRefusal)) error.code = 'WT_SUITE_LOCK_BROKER_OLDER'

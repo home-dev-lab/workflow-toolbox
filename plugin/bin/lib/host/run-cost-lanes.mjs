@@ -4,6 +4,7 @@ import { laneHostDir } from './lane-host-dir.mjs'
 import { defaultOpenCodeDb, queryOpenCodeSessions, usageDirectory } from './opencode-session-store.mjs'
 import { priceRunCost } from '../model-prices.mjs'
 import { ambiguousReceiptRows, bindLaneLaunch } from './run-cost-launch.mjs'
+import { openCodeStoredDirectory } from './opencode-directory.mjs'
 
 function regularJson(file) {
   if (!fs.lstatSync(file).isFile()) throw new Error('host receipt is not a regular file')
@@ -116,8 +117,8 @@ function laneRecord(lane, hostDir, worktree, helpers, duplicateFiles) {
   const record = { lane, family, ...readReceipt(hostDir, lane, worktree) }
   if (record.receipt && family === 'openai') record.reason = openAiReceiptReason(record.receipt)
   if (record.receipt && family === 'anthropic') record.reason = claudeReason(record.receipt)
-  bindLaneLaunch(record, hostDir, worktree, regularJson)
-  record.ambiguousRows = ambiguousReceiptRows(record, worktree)
+  bindLaneLaunch(record, hostDir, worktree, regularJson, helpers.platform)
+  record.ambiguousRows = ambiguousReceiptRows(record, worktree, helpers.platform)
   if (!record.blocked && record.ambiguousRows.length) record.reason = 'OpenCode alias session rows have ambiguous directory binding'
   if (duplicateFiles.has(lane.usage_file)) {
     record.duplicateFile = true
@@ -248,16 +249,17 @@ function callStatus(record, result, reason) {
 }
 
 function overlappingLane(row, context) {
-  const { lanes, window, canonical, helpers } = context
-  return lanes.find((lane) => helpers.matchLaneSessions([row], canonical, lane.started_at, lane.ended_at ?? window.endedAt).length > 0)
+  const { lanes, window, canonical, helpers, canonicalDirectories } = context
+  const sameDirectory = (directory) => canonicalDirectories.has(directory)
+  return lanes.find((lane) => helpers.matchLaneSessions([row], canonical, lane.started_at, lane.ended_at ?? window.endedAt, { sameDirectory }).length > 0)
 }
 
 function collectUnmatched(context, output) {
-  const { sessions, assigned, reserved, helpers, directories, canonical } = context
+  const { sessions, assigned, reserved, helpers, directories, canonicalDirectories } = context
   for (const row of Array.isArray(sessions) ? sessions : []) {
     if (!directories.has(row.directory) || assigned.has(row.id) || reserved.has(row.id)) continue
     assigned.add(row.id)
-    if (row.directory !== canonical) { pushAmbiguousRow(row, { phase: 'unmatched' }, output, 'matched only an unevidenced or unbound worktree spelling'); continue }
+    if (!canonicalDirectories.has(row.directory)) { pushAmbiguousRow(row, { phase: 'unmatched' }, output, 'matched only an unevidenced or unbound worktree spelling'); continue }
     const lane = overlappingLane(row, context)
     if (lane) { pushAmbiguousRow(row, lane, output, `overlaps lane window for ${helpers.laneLabel(lane)} without lane attribution`); continue }
     const reason = `OpenCode session ${row.id} matched the run but no lane window`
@@ -287,8 +289,8 @@ function identityFailure(timeline, canonical, helpers) {
   return output
 }
 
-function laneDirectories(records, worktree, canonical) {
-  const directories = new Set([worktree, canonical])
+function laneDirectories(records, worktree, canonicalDirectories) {
+  const directories = new Set([worktree, ...canonicalDirectories])
   for (const record of records.filter((record) => !record.blocked)) {
     for (const value of record.queryDirectories) directories.add(value)
   }
@@ -296,6 +298,7 @@ function laneDirectories(records, worktree, canonical) {
 }
 
 export function collectLaneCosts(options, timeline, worktree, window, helpers) {
+  helpers = { ...helpers, platform: options.platform ?? process.platform }
   const canonical = usageDirectory(worktree)
   const failure = identityFailure(timeline, canonical, helpers)
   if (failure) return failure
@@ -303,13 +306,14 @@ export function collectLaneCosts(options, timeline, worktree, window, helpers) {
   const lanes = timeline.lanes ?? []
   const duplicateFiles = duplicateUsageFiles(lanes)
   const records = lanes.map((lane) => laneRecord(lane, hostDir, canonical, helpers, duplicateFiles))
-  const directories = laneDirectories(records, worktree, canonical)
+  const canonicalDirectories = new Set([canonical, openCodeStoredDirectory(canonical, helpers.platform)])
+  const directories = laneDirectories(records, worktree, canonicalDirectories)
   const duplicates = duplicateIds(records)
   const reserved = reservedSessionIds(records)
   const shared = sharedSessions(options, directories, window, records.some((record) => record.family === 'openai' && record.absent && !record.blocked))
   const assigned = new Set()
   const output = { entries: [], unknown: [], sources: new Set(), missing: [], counted: 0, calls: [] }
-  const context = { assigned, reserved, sessions: validatedSharedSessions(shared, output), worktree, helpers, duplicates, directories, canonical, lanes, window }
+  const context = { assigned, reserved, sessions: validatedSharedSessions(shared, output), worktree, helpers, duplicates, directories, canonical, canonicalDirectories, lanes, window }
   for (const record of records) collectRecord(record, context, output)
   collectUnmatched(context, output)
   const orphans = orphanLogs(hostDir, lanes, window)
