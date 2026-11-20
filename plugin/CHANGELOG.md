@@ -23,8 +23,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   retain the refusal with restart guidance.
 
 - Run cost on Windows: capture and the reader now match the forward-slash directory spelling OpenCode stores for the worktree realpath, so Windows lanes are priced instead of reported missing
-- wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.
-  Its preload now safely rolls back only its own changes and confirms compiler sharing during entry execution, including preserved symlink entries.
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
 - The session-start duplicate-hook notice now reads settings hook commands word by word: it recognises `node` after a
   separator without a space, after leading blanks or a newline, as an absolute binary or behind `env NAME=value`, and with

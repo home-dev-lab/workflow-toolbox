@@ -86,19 +86,12 @@ function tlsBackend(host) {
   return script && host.isFile(script) ? { status: 'launch', backend: 'typescript-language-server', command: host.execPath, args: [script, '--stdio'], root } : undefined
 }
 
-function typescriptMajor(version) {
-  if (typeof version !== 'string') return NaN
-  const match = /^(\d+)\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.exec(version)
-  return match ? Number(match[1]) : NaN
-}
-
-function typescriptAt(root, host, minimumMajor = 0) {
+function typescriptAt(root, host) {
   if (!root) return undefined
   const path = pathFor(host)
   const server = path.join(root, 'lib', 'tsserver.js')
   const pkg = metadata(path.join(root, 'package.json'), host)
-  return host.isFile(server) && pkg?.name === 'typescript' && pkg.version &&
-    (minimumMajor === 0 || typescriptMajor(pkg.version) >= minimumMajor) ? server : undefined
+  return host.isFile(server) && pkg?.name === 'typescript' && pkg.version ? server : undefined
 }
 
 // `.claude` first, then code-unit name order: the same tree always yields the same TypeScript.
@@ -117,7 +110,7 @@ function searchLevels(level, depth, host, budget) {
     for (const dir of level) {
       for (const child of searchOrder(host.readdir(dir)).map((name) => path.join(dir, name))) {
         if (--budget.left < 0) return undefined
-        const found = typescriptAt(path.join(child, 'node_modules', 'typescript'), host, 5)
+        const found = typescriptAt(path.join(child, 'node_modules', 'typescript'), host)
         if (found) return found
         next.push(child)
       }
