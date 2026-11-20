@@ -33,7 +33,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   that all match the running version produce no notice.
 
 ### Changed
-- Unmarked HTML pages from the artifact server no longer block Orca's annotation tool: they are served with `sandbox allow-scripts` and `script-src 'none'`, so the browser's injected script can run while page scripts, inline handlers and `javascript:` URLs stay blocked and the page keeps its opaque origin. Scripting enabled for the document also lets a meta refresh navigate on its own and hides `<noscript>` content. Rich, annotatable, interactive and non-HTML policies are unchanged.
 - `wt-artifact-server url` now prints the tailnet URL (the Serve HTTPS name or the tailnet address) by default when one exists, and falls back to the local URL only when there is none, with the reason on stderr; `--check` then checks the printed URL, from the Tailscale host when it is the tailnet one. Use the new `--local` for tools on the same host (Playwright, curl, a local fetch); `--remote` still refuses to fall back. The session-start line now tells sessions to run `url <file> --remote` and hand over the tailnet link.
 
 ### Added
