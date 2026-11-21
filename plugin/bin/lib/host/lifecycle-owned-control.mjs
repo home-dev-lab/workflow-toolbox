@@ -9,6 +9,18 @@ function submit(context, record, args) {
   execFileSync(process.execPath, command, { cwd: context.root, encoding: 'utf8', env: { ...process.env, WT_LANE_SUPERVISION_SLOT: undefined } })
 }
 
+export function abandonOwnedLanes(context) {
+  return [...context.state.ownedLanes.values()].map((record) => {
+    try {
+      submit(context, record, { decision: 'abandon' })
+      return { status: 'submitted' }
+    } catch (error) {
+      const detail = error?.stderr?.toString().trim() || (error instanceof Error ? error.message : String(error))
+      return { status: 'failed', error: detail }
+    }
+  })
+}
+
 function controlCode(context, record, error) {
   if (error?.status !== 1) return 'other'
   const current = readCurrentSupervision(context.root, record.slot)
