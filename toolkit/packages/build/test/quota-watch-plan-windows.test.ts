@@ -40,6 +40,7 @@ interface Step { cache?: Record<string, unknown> | null, uuid?: string, advanceM
 interface IdentitySwitch { when: 'during-cache-read' | 'after-cache-check', uuid: string }
 interface RunOptions { instrument?: boolean, cycles?: number, accountKey?: string | null, fingerprint?: boolean, steps?: Step[], poll?: number, identitySwitch?: IdentitySwitch }
 const fingerprint = (uuid: string) => createHash('sha256').update(uuid).digest('hex').slice(0, 8)
+const fixtureToken = (key: string | null) => key && key !== 'login' ? 'fixture-token' : ''
 
 /**
  * Preload fragment (needs `fs`, `fsp`, `cache`, `identity`, `writeIdentity` in scope).
@@ -140,7 +141,7 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...${JSON
       ANTHROPIC_BASE_URL: '',
       ANTHROPIC_AUTH_TOKEN: '',
       WT_SESSION_ROLE: '',
-      CLAUDE_CODE_OAUTH_TOKEN: '',
+      CLAUDE_CODE_OAUTH_TOKEN: fixtureToken(accountKey),
       CLAUDE_CONFIG_DIR: root,
       WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(root, 'sleeps'),
       WT_TEST_SNAPSHOTS: join(root, 'snapshots'),
