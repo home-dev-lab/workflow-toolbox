@@ -64,6 +64,97 @@ function expectSilentModelPin(result: ReturnType<typeof runToolInput>) {
   expectModelWarning(run('workflow-toolbox:leaf-readonly'))
 }
 
+function runPinned(input: Record<string, unknown>) {
+  return runToolInput({ prompt: 'Implement the requested change.', ...input })
+}
+
+function agentSetup(dir: string[], file: string, body: string) {
+  return (root: string) => {
+    const agents = join(root, ...dir)
+    mkdirSync(agents, { recursive: true })
+    writeFileSync(join(agents, file), body)
+  }
+}
+
+function installedPluginSetup(workerDefinition: string) {
+  return (root: string) => {
+    const plugin = join(root, 'plugin-install')
+    const config = join(root, 'claude-config', 'plugins')
+    mkdirSync(join(plugin, 'agents'), { recursive: true })
+    mkdirSync(config, { recursive: true })
+    writeFileSync(join(plugin, 'agents', 'worker.md'), workerDefinition)
+    writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
+    mkdirSync(join(config, 'marketplaces', 'market', '.claude-plugin'), { recursive: true })
+    writeFileSync(join(config, 'marketplaces', 'market', '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'example-plugin' }] }))
+  }
+}
+
+const customWorker = (dir: string[], frontmatter: string) => agentSetup(dir, 'custom-worker.md', `---\nname: custom-worker\n${frontmatter}---\nRead.\n`)
+const configAgents = ['claude-config', 'agents']
+const projectAgents = ['.claude', 'agents']
+
+const missing = () => null
+const noModel = () => ({ data: {} })
+const model = (value: unknown) => () => ({ data: { model: value } })
+const pin = (type: string, resolve: () => unknown, env: NodeJS.ProcessEnv = {}, requestedModel?: string) =>
+  resolveAgentModelPin(type, { resolve, env, requestedModel })
+
+function registerBuiltInDefaultTests() {
+  it.each(['statusline-setup', 'claude-code-guide'])('uses the own default of %s', (type) => {
+    expect(pin(type, missing)).toEqual({ status: 'pinned', type })
+  })
+
+  it.each(['Explore', 'Plan'])('does not let the environment default override built-in %s', (type) => {
+    expect(pin(type, missing, { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })).toEqual({ status: 'unpinned', type })
+  })
+
+  it.each(['general-purpose', 'claude'])('uses the environment default for built-in %s', (type) => {
+    expect(pin(type, missing, { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })).toEqual({ status: 'pinned', type })
+    expect(pin(type, missing)).toEqual({ status: 'unpinned', type })
+  })
+
+  it('lets a user definition shadow a built-in default', () => {
+    expect(pin('statusline-setup', noModel)).toEqual({ status: 'unpinned', type: 'statusline-setup' })
+  })
+
+  it.each([noModel, model(''), model('null'), model('~')])('uses the environment default when a definition has no model pin', (resolve) => {
+    expect(pin('worker', resolve, { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })).toEqual({ status: 'pinned', type: 'worker' })
+  })
+
+  it.each(['inherit', ''])('treats environment default %s as unset', (defaultModel) => {
+    expect(pin('worker', noModel, { CLAUDE_CODE_SUBAGENT_MODEL: defaultModel })).toEqual({ status: 'unpinned', type: 'worker' })
+  })
+}
+
+function registerEnvironmentDefaultTests() {
+  it('does not let the environment default override explicit inherit at spawn or definition', () => {
+    const env = { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' }
+    expect(pin('worker', model('sonnet'), env, 'inherit')).toEqual({ status: 'unpinned', type: 'worker' })
+    expect(pin('worker', model('inherit'), env)).toEqual({ status: 'unpinned', type: 'worker' })
+  })
+
+  it('forces the environment model over explicit pins and built-in defaults', () => {
+    const env = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' }
+    expect(pin('worker', model('inherit'), env, 'sonnet')).toEqual({ status: 'pinned', type: 'worker' })
+    expect(pin('Explore', missing, env)).toEqual({ status: 'pinned', type: 'Explore' })
+  })
+
+  it('forces the main model when the environment model is unset or inherit', () => {
+    for (const defaultModel of [undefined, 'inherit']) {
+      const env = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: defaultModel }
+      expect(pin('worker', model('sonnet'), env, 'opus')).toEqual({ status: 'unpinned', type: 'worker' })
+    }
+  })
+
+  it('exempts fork even when its definition has no model and force is enabled', () => {
+    expect(pin('fork', noModel, { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })).toEqual({ status: 'exempt', type: 'fork' })
+  })
+
+  it('treats tilde as YAML null without an environment default', () => {
+    expect(pin('worker', model('~'))).toEqual({ status: 'unpinned', type: 'worker' })
+  })
+}
+
 describe('wt-right-sized-spawn-guard-hook', () => {
   it('denies general-purpose without a reason and names every cheaper alternative', () => {
     const result = run('general-purpose', 'Implement the requested change.')
@@ -77,33 +168,30 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     expect(result.stdout).toContain('workflow-toolbox:wt-implementer-sonnet')
     expect(result.journal).toContain('"class":"general-purpose"')
   })
-
 })
 
 describe('a spawn that pins both model and effort still needs justification', () => {
-  const pinned = (input: Record<string, unknown>) => runToolInput({ prompt: 'Implement the requested change.', ...input })
-
   it.each([
     ['general-purpose', { subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' }],
     ['an absent type', { model: 'opus', effort: 'xhigh' }],
     ['an empty type', { subagent_type: '', model: 'haiku', effort: 'medium' }],
     ['a full model id and max effort', { subagent_type: 'general-purpose', model: 'claude-opus-5-5', effort: 'max' }],
   ])('denies %s without a reason despite both pins', (_label, input) => {
-    const result = pinned(input)
+    const result = runPinned(input)
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('"permissionDecision":"deny"')
     expect(result.journal).toContain('"decision":"blocked"')
   })
 
   it('passes a pinned non-general-purpose type without a reason', () => {
-    const result = pinned({ subagent_type: 'Explore', model: 'sonnet', effort: 'high' })
+    const result = runPinned({ subagent_type: 'Explore', model: 'sonnet', effort: 'high' })
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(result.journal).toBe('')
   })
 
   it.each(['general-purpose', undefined])('allows a pinned %s spawn with a reason and journals the override', (subagent_type) => {
-    const result = pinned({ subagent_type, model: 'sonnet', effort: 'low', prompt: 'general-purpose because: no specialist fits' })
+    const result = runPinned({ subagent_type, model: 'sonnet', effort: 'low', prompt: 'general-purpose because: no specialist fits' })
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(result.journal).toContain('"class":"general-purpose-override"')
@@ -111,20 +199,22 @@ describe('a spawn that pins both model and effort still needs justification', ()
   })
 
   it.each(['```', '~~~'])('denies a pinned spawn whose only reason is inside a %s fence', (fence) => {
-    const result = pinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low', prompt: `${fence}text\ngeneral-purpose because: no specialist fits\n${fence}` })
+    const result = runPinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low', prompt: `${fence}text\ngeneral-purpose because: no specialist fits\n${fence}` })
     expect(result.stdout).toContain('"permissionDecision":"deny"')
     expect(result.journal).toContain('"decision":"blocked"')
   })
+})
 
+describe('a spawn that pins both model and effort still needs justification', () => {
   it('requires the reason line instead of offering pinning as an alternative', () => {
-    const result = pinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' })
+    const result = runPinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' })
     expect(result.stdout).toContain('`general-purpose because: <reason>`')
     expect(result.stdout).toContain('Pinning both `model` and `effort` is still expected but does not replace this line')
     expect(result.stdout).not.toContain('Re-issue this call and pin both')
   })
 
   it('keeps a pinned resume exempt without a reason', () => {
-    const result = pinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low', resume: 'existing-specialist-id' })
+    const result = runPinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low', resume: 'existing-specialist-id' })
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(result.journal).toBe('')
@@ -139,13 +229,15 @@ describe('a spawn that pins both model and effort still needs justification', ()
     ['a numeric effort', { model: 'sonnet', effort: 5 }],
     ['neither', {}],
   ])('still denies general-purpose with %s', (_label, input) => {
-    const result = pinned({ subagent_type: 'general-purpose', ...input })
+    const result = runPinned({ subagent_type: 'general-purpose', ...input })
     expect(result.stdout).toContain('"permissionDecision":"deny"')
     expect(result.journal).toContain('"decision":"blocked"')
   })
+})
 
+describe('a spawn that pins both model and effort still needs justification', () => {
   it('still warns an Explore spawn that pins neither', () => {
-    expectModelWarning(pinned({ subagent_type: 'Explore' }))
+    expectModelWarning(runPinned({ subagent_type: 'Explore' }))
   })
 
   it('is what the shipped routing rule tells a spawner to do', () => {
@@ -172,7 +264,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
 
   it.each([
     ['the literal placeholder', 'general-purpose because: <reason>'],
-    ['an invisible-only reason', 'general-purpose because: \u200B'],
+    ['an invisible-only reason', 'general-purpose because: ​'],
     ['a single-word reason', 'general-purpose because: specialist'],
     ['a line inside a fenced sample', 'Example:\n```text\ngeneral-purpose because: use an unusual specialist\n```'],
   ])('denies %s', (_label, prompt) => {
@@ -186,7 +278,9 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   it('accepts stringified tool input', () => {
     expect(runToolInput(JSON.stringify({ subagent_type: 'workflow-toolbox:wt-reviewer', prompt: 'Read' })).stdout).toBe('')
   })
+})
 
+describe('wt-right-sized-spawn-guard-hook', () => {
   it('accepts prompt arrays made of text parts', () => {
     const result = run('general-purpose', [
       { type: 'text', text: 'This needs a special route.' },
@@ -221,22 +315,16 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   it('exempts fork even without a model pin', () => {
     expectSilentModelPin(run('fork', 'Continue'))
   })
+})
 
+describe('wt-right-sized-spawn-guard-hook', () => {
   it('reads a custom agent model pin from the active config directory', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
-      const agents = join(root, 'claude-config', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: "sonnet"\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, customWorker(configAgents, 'description: Read.\nmodel: "sonnet"\n'))
     expectSilentModelPin(result)
   })
 
   it('warns for an unpinned custom agent in the active config directory', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
-      const agents = join(root, 'claude-config', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker' }, customWorker(configAgents, 'description: Read.\n'))
     expectModelWarning(result)
   })
 
@@ -250,57 +338,29 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   it('treats YAML tilde as a missing model pin', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: ~\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker' }, customWorker(projectAgents, 'description: Read.\nmodel: ~\n'))
     expectModelWarning(result)
   })
 
   it('warns for a custom agent with no frontmatter model pin', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, customWorker(projectAgents, 'description: Read.\n'))
     expectModelWarning(result)
   })
 
   it('treats a custom agent frontmatter model of inherit as unpinned', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: inherit\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, customWorker(projectAgents, 'description: Read.\nmodel: inherit\n'))
     expectModelWarning(result)
   })
+})
 
+describe('wt-right-sized-spawn-guard-hook', () => {
   it('resolves a third-party plugin agent through its installed definition', () => {
-    const result = runToolInput({ subagent_type: 'example-plugin:worker', prompt: 'Read' }, (root) => {
-      const plugin = join(root, 'plugin-install')
-      const config = join(root, 'claude-config', 'plugins')
-      mkdirSync(join(plugin, 'agents'), { recursive: true })
-      mkdirSync(config, { recursive: true })
-      writeFileSync(join(plugin, 'agents', 'worker.md'), '---\nname: worker\nmodel: opus\n---\nRead.\n')
-      writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
-      mkdirSync(join(config, 'marketplaces', 'market', '.claude-plugin'), { recursive: true })
-      writeFileSync(join(config, 'marketplaces', 'market', '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'example-plugin' }] }))
-    })
+    const result = runToolInput({ subagent_type: 'example-plugin:worker', prompt: 'Read' }, installedPluginSetup('---\nname: worker\nmodel: opus\n---\nRead.\n'))
     expectSilentModelPin(result)
   })
 
   it('warns for an installed third-party plugin agent without a frontmatter model pin', () => {
-    const result = runToolInput({ subagent_type: 'example-plugin:worker', prompt: 'Read' }, (root) => {
-      const plugin = join(root, 'plugin-install')
-      const config = join(root, 'claude-config', 'plugins')
-      mkdirSync(join(plugin, 'agents'), { recursive: true })
-      mkdirSync(config, { recursive: true })
-      writeFileSync(join(plugin, 'agents', 'worker.md'), '---\nname: worker\n---\nRead.\n')
-      writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
-      mkdirSync(join(config, 'marketplaces', 'market', '.claude-plugin'), { recursive: true })
-      writeFileSync(join(config, 'marketplaces', 'market', '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'example-plugin' }] }))
-    })
+    const result = runToolInput({ subagent_type: 'example-plugin:worker', prompt: 'Read' }, installedPluginSetup('---\nname: worker\n---\nRead.\n'))
     expectModelWarning(result)
   })
 
@@ -318,13 +378,11 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     expect(result.journal).not.toContain('model-unpinned')
     expectModelWarning(run('workflow-toolbox:leaf-readonly'))
   })
+})
 
+describe('wt-right-sized-spawn-guard-hook', () => {
   it('honors a project Explore definition before the built-in, including an unpinned control', () => {
-    const projectAgent = (model: string) => (root: string) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'Explore.md'), `---\nname: Explore\ndescription: Search the project.\n${model}---\nRead.\n`)
-    }
+    const projectAgent = (model: string) => agentSetup(projectAgents, 'Explore.md', `---\nname: Explore\ndescription: Search the project.\n${model}---\nRead.\n`)
     expectSilentModelPin(runToolInput({ subagent_type: 'Explore' }, projectAgent('model: sonnet\n')))
     expectModelWarning(runToolInput({ subagent_type: 'Explore' }, projectAgent('')))
   })
@@ -338,39 +396,25 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   it('parses an inline YAML comment on inherit instead of treating it as a pin', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: inherit # comment\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker' }, customWorker(projectAgents, 'description: Read.\nmodel: inherit # comment\n'))
     expectModelWarning(result)
   })
 
   it('resolves a nested file by frontmatter identity, pinned and unpinned', () => {
-    const nestedAgent = (model: string) => (root: string) => {
-      const agents = join(root, '.claude', 'agents', 'sub', 'dir')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'file-name.md'), `---\nname: nested-worker\ndescription: Read nested files.\n${model}---\nRead.\n`)
-    }
+    const nestedAgent = (model: string) => agentSetup(['.claude', 'agents', 'sub', 'dir'], 'file-name.md', `---\nname: nested-worker\ndescription: Read nested files.\n${model}---\nRead.\n`)
     expectSilentModelPin(runToolInput({ subagent_type: 'nested-worker' }, nestedAgent('model: opus\n')))
     expectModelWarning(runToolInput({ subagent_type: 'nested-worker' }, nestedAgent('')))
   })
 
   it('stays silent when the matching definition has malformed frontmatter', () => {
-    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: [broken\n---\nRead.\n')
-    })
+    const result = runToolInput({ subagent_type: 'custom-worker' }, customWorker(projectAgents, 'description: [broken\n'))
     expectSilentModelPin(result)
   })
+})
 
+describe('wt-right-sized-spawn-guard-hook', () => {
   it('lets spawn-level inherit override a pinned definition', () => {
-    const projectAgent = (root: string) => {
-      const agents = join(root, '.claude', 'agents')
-      mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: sonnet\n---\nRead.\n')
-    }
+    const projectAgent = customWorker(projectAgents, 'description: Read.\nmodel: sonnet\n')
     expectModelWarning(runToolInput({ subagent_type: 'custom-worker', model: 'inherit' }, projectAgent))
     expectSilentModelPin(runToolInput({ subagent_type: 'custom-worker' }, projectAgent))
   })
@@ -382,63 +426,8 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   describe('model precedence and built-in defaults', () => {
-    const missing = () => null
-    const noModel = () => ({ data: {} })
-    const model = (value: unknown) => () => ({ data: { model: value } })
-    const pin = (type: string, resolve: () => unknown, env: NodeJS.ProcessEnv = {}, requestedModel?: string) =>
-      resolveAgentModelPin(type, { resolve, env, requestedModel })
-
-    it.each(['statusline-setup', 'claude-code-guide'])('uses the own default of %s', (type) => {
-      expect(pin(type, missing)).toEqual({ status: 'pinned', type })
-    })
-
-    it.each(['Explore', 'Plan'])('does not let the environment default override built-in %s', (type) => {
-      expect(pin(type, missing, { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })).toEqual({ status: 'unpinned', type })
-    })
-
-    it.each(['general-purpose', 'claude'])('uses the environment default for built-in %s', (type) => {
-      expect(pin(type, missing, { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })).toEqual({ status: 'pinned', type })
-      expect(pin(type, missing)).toEqual({ status: 'unpinned', type })
-    })
-
-    it('lets a user definition shadow a built-in default', () => {
-      expect(pin('statusline-setup', noModel)).toEqual({ status: 'unpinned', type: 'statusline-setup' })
-    })
-
-    it.each([noModel, model(''), model('null'), model('~')])('uses the environment default when a definition has no model pin', (resolve) => {
-      expect(pin('worker', resolve, { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })).toEqual({ status: 'pinned', type: 'worker' })
-    })
-
-    it.each(['inherit', ''])('treats environment default %s as unset', (defaultModel) => {
-      expect(pin('worker', noModel, { CLAUDE_CODE_SUBAGENT_MODEL: defaultModel })).toEqual({ status: 'unpinned', type: 'worker' })
-    })
-
-    it('does not let the environment default override explicit inherit at spawn or definition', () => {
-      const env = { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' }
-      expect(pin('worker', model('sonnet'), env, 'inherit')).toEqual({ status: 'unpinned', type: 'worker' })
-      expect(pin('worker', model('inherit'), env)).toEqual({ status: 'unpinned', type: 'worker' })
-    })
-
-    it('forces the environment model over explicit pins and built-in defaults', () => {
-      const env = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' }
-      expect(pin('worker', model('inherit'), env, 'sonnet')).toEqual({ status: 'pinned', type: 'worker' })
-      expect(pin('Explore', missing, env)).toEqual({ status: 'pinned', type: 'Explore' })
-    })
-
-    it('forces the main model when the environment model is unset or inherit', () => {
-      for (const defaultModel of [undefined, 'inherit']) {
-        const env = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: defaultModel }
-        expect(pin('worker', model('sonnet'), env, 'opus')).toEqual({ status: 'unpinned', type: 'worker' })
-      }
-    })
-
-    it('exempts fork even when its definition has no model and force is enabled', () => {
-      expect(pin('fork', noModel, { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })).toEqual({ status: 'exempt', type: 'fork' })
-    })
-
-    it('treats tilde as YAML null without an environment default', () => {
-      expect(pin('worker', model('~'))).toEqual({ status: 'unpinned', type: 'worker' })
-    })
+    registerBuiltInDefaultTests()
+    registerEnvironmentDefaultTests()
   })
 
   it('is registered as a PreToolUse Agent hook', () => {
