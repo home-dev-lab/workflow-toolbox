@@ -40,6 +40,7 @@ interface Step { cache?: Record<string, unknown> | null, uuid?: string, advanceM
 interface IdentitySwitch { when: 'during-cache-read' | 'after-cache-check', uuid: string }
 interface RunOptions { instrument?: boolean, cycles?: number, accountKey?: string | null, fingerprint?: boolean, steps?: Step[], poll?: number, identitySwitch?: IdentitySwitch }
 const fingerprint = (uuid: string) => createHash('sha256').update(uuid).digest('hex').slice(0, 8)
+const fixtureToken = (key: string | null) => key && key !== 'login' ? 'fixture-token' : ''
 
 /**
  * Preload fragment (needs `fs`, `fsp`, `cache`, `identity`, `writeIdentity` in scope).
@@ -136,11 +137,12 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...${JSON
     timeout: 20_000,
     env: {
        ...process.env,
+       WT_SESSION_CONFIG_DIR_SET: '1',
        NODE_OPTIONS: sequencePreload(root, accountKey, options.steps ?? [], options.identitySwitch),
       ANTHROPIC_BASE_URL: '',
       ANTHROPIC_AUTH_TOKEN: '',
       WT_SESSION_ROLE: '',
-      CLAUDE_CODE_OAUTH_TOKEN: '',
+      CLAUDE_CODE_OAUTH_TOKEN: fixtureToken(accountKey),
       CLAUDE_CONFIG_DIR: root,
       WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(root, 'sleeps'),
       WT_TEST_SNAPSHOTS: join(root, 'snapshots'),
@@ -347,7 +349,7 @@ let n = 0; try { n = Number(readFileSync(${JSON.stringify(counter)}, 'utf8')) } 
 writeFileSync(${JSON.stringify(counter)}, String(n + 1));
 console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, accountKey: 'login', ...${JSON.stringify(live)} }));\n`)
   writeFileSync(sleeps, '')
-  const child = spawn(process.execPath, [WATCH, '--probe', probe, '--poll', '5', '--timeout', '3'], { env: { ...process.env, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '', CLAUDE_CODE_OAUTH_TOKEN: '', CLAUDE_CONFIG_DIR: root, WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1', WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleeps, WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: barrier, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' } })
+  const child = spawn(process.execPath, [WATCH, '--probe', probe, '--poll', '5', '--timeout', '3'], { env: { ...process.env, WT_SESSION_CONFIG_DIR_SET: '1', ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '', CLAUDE_CODE_OAUTH_TOKEN: '', CLAUDE_CONFIG_DIR: root, WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1', WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleeps, WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: barrier, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' } })
   let stdout = ''
   child.stdout.on('data', (chunk) => { stdout += chunk })
   const done = new Promise<number | null>((resolve, reject) => { child.on('error', reject); child.on('close', resolve) })
@@ -568,7 +570,7 @@ globalThis.fetch = async () => {
   return spawnSync(process.execPath, [WATCH, '--probe', BUNDLED_PROBE, '--poll', '5', '--timeout', '3'], {
     encoding: 'utf8',
     timeout: 20_000,
-    env: { ...process.env, NODE_OPTIONS: `--import=${pathToFileURL(stub).href}`, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '', CLAUDE_CODE_OAUTH_TOKEN: 'stub-session', CLAUDE_CONFIG_DIR: root, WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(root, 'sleeps'), WT_QUOTA_WATCH_TEST_MAX_CYCLES: String(cycles) },
+    env: { ...process.env, WT_SESSION_CONFIG_DIR_SET: '1', NODE_OPTIONS: `--import=${pathToFileURL(stub).href}`, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '', CLAUDE_CODE_OAUTH_TOKEN: 'stub-session', CLAUDE_CONFIG_DIR: root, WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(root, 'sleeps'), WT_QUOTA_WATCH_TEST_MAX_CYCLES: String(cycles) },
   }).stdout
 }
 
