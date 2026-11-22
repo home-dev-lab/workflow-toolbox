@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeQueuedReplacement, finishQueuedReplacement, replacementQueueFields } from './host/suite-lock-replace.mjs'
 import path from 'node:path'
 import { foreignNamespaceStale, pidProvesGone, platformOf, ticketIsStale, TICKET_SILENCE_MS } from './host/suite-lock-liveness.mjs'
 import { suiteLockDir } from './host/suite-lock-dir.mjs'
@@ -308,6 +309,7 @@ function waiterRecord(options, counter, priority, p0Fields) {
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
     startTime: options.startTime ?? processStartTime(process.pid),
+    ...replacementQueueFields(options),
   }, options, priority)
 }
 
@@ -359,7 +361,8 @@ function confirmAdmission(state, holder, place, options) {
     recordAdmissionGrant(root)
     lease.rankLevel = confirmed.rankLevel
     lease.reason = confirmed.reason
-    return { lease }
+    closeQueuedReplacement(state, options.replacementSeams, options.onWait)
+    return { lease: record.replaceToken ? { ...lease, replacementArgv: record.argv } : lease }
   } catch (error) {
     releaseSuiteLock(lease, { served: false })
     throw error
@@ -447,7 +450,7 @@ async function acquireSuiteLock(options = {}) {
       await sleep(Math.min(delay, budget / 4, remaining), options.signal)
     }
   } finally {
-    finishParkQueue(state, options.park, () => removeTicket(queueDir, ticket))
+    try { finishQueuedReplacement(state) } finally { finishParkQueue(state, options.park, () => removeTicket(queueDir, ticket)) }
   }
 }
 
