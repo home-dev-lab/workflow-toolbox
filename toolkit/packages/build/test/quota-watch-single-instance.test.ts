@@ -65,6 +65,7 @@ function arm(configDir: string, cwd: string, probe: string, env: Record<string, 
     cwd,
     env: {
       ...process.env,
+      WT_SESSION_CONFIG_DIR_SET: '1',
       CLAUDE_CONFIG_DIR: configDir,
       WT_QUOTA_WATCH_TEST_MAX_CYCLES: '1',
       ...env,

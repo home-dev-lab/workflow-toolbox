@@ -63,8 +63,10 @@ prepare(index())
 console.log(JSON.stringify(reading(index())))`)
     const result = spawnSync(process.execPath, [instrumentWatcher(cfg), '--probe', probe, '--poll', '5', '--timeout', '3'], {
       encoding: 'utf8', timeout: 60_000,
-      env: { ...process.env, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '',
-        CLAUDE_CONFIG_DIR: cfg, CLAUDE_CODE_OAUTH_TOKEN: '', WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1',
+      // A token-launched session: the watcher reads the token-keyed file the fixture seeds and
+      // never refills it, so a reading the fixture does not seed is measured live.
+      env: { ...process.env, WT_SESSION_CONFIG_DIR_SET: '1', ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '',
+        CLAUDE_CONFIG_DIR: cfg, CLAUDE_CODE_OAUTH_TOKEN: 'fixture-token', WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1',
         WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(cfg, 'sleeps'), WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: '',
         WT_QUOTA_WATCH_TEST_MAX_CYCLES: String(readings.length) },
     })
