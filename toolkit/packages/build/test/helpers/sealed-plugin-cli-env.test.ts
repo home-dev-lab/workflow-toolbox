@@ -33,6 +33,15 @@ describe('sealedPluginCliEnv', () => {
     }
   })
 
+  // A host that exports its own lane model list (WT_LANE_MODELS replaces the shipped default) must not change what
+  // the spawned launcher refuses: the refusal message embeds the resolved list, so an ambient list made the
+  // default-list refusal tests depend on the machine. A test that needs a list passes it explicitly.
+  it('drops an ambient WT_LANE_MODELS, while an explicit override still wins', () => {
+    vi.stubEnv('WT_LANE_MODELS', 'host/extra-model')
+    expect(sealedPluginCliEnv('/fixture', {}, 'linux').WT_LANE_MODELS).toBeUndefined()
+    expect(sealedPluginCliEnv('/fixture', { WT_LANE_MODELS: 'test/one' }, 'linux').WT_LANE_MODELS).toBe('test/one')
+  })
+
   it('isolates both USERPROFILE and HOME on Windows', () => {
     const env = sealedPluginCliEnv('C:\\fixture', {}, 'win32')
     expect(env.HOME).toBe(join('C:\\fixture', 'home'))
