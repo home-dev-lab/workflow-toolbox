@@ -21,10 +21,11 @@ import {
   windowsShimArgumentRefusal,
 } from './lib/suite-lock.mjs'
 import { parseSuiteLockPriority } from './lib/suite-lock-priority.mjs'
+import { replaceQueuedCommand } from './lib/host/suite-lock-replace.mjs'
 import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-status.mjs'
 import { suiteLockJournalCli } from './lib/suite-lock-journal.mjs'
 import { staticLaneStatusLines } from './lib/suite-lock-static.mjs'
-import { acquireCliLease, cliInheritedLease, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
+import { acquireCliLease, cliInheritedLease, parseReplaceRun, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
 import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
 import { acquireParkCliLease, clearParkRequest, finishParkRun, parkChildEnvironment, publishParkOutcome, shouldYieldParkLease, spawnParkEnvironment } from './lib/suite-lock-park.mjs'
 import { claimParkAttempt, parkSignalExit, watchParkChildSignals } from './lib/host/suite-lock-park-files.mjs'
@@ -35,6 +36,8 @@ import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-ligh
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
+  Replace queued command: run --replace <ticket-number> -- <command> [args...]
+  Replacement keeps rank and uses the original waiter's cwd, environment, streams and exit recipient; refused after admission.
   node wt-suite-lock.mjs journal [--json] [--since <ISO>]
   node wt-suite-lock.mjs light-scope [--json]
   node wt-suite-lock.mjs status [--json]
@@ -84,6 +87,8 @@ function applyRunPriority(priority) {
 }
 
 async function run(args) {
+  const replacement = parseReplaceRun(args)
+  if (replacement) return replaceRun(replacement)
   const { command, staticRun, waitS, staleS, light, priority, park, project, size } = parseSuiteRunOptions(args,
     { parseSeconds, parsePriority: parseRunPriority, waitSeconds: suiteLockWaitSeconds, defaultStaleS: DEFAULT_SUITE_LOCK_STALE_S })
   const attempt = { outcome: 'not-parked\n' }
@@ -110,17 +115,25 @@ async function run(args) {
   } finally { try { publishParkOutcome(park, attempt.outcome) } finally { releaseAttempt() } }
 }
 
+function replaceRun({ ticket, argv }) {
+  const root = suiteLeaseDomain()
+  if (root.startsWith('broker:')) throw new Error('--replace is not available inside a lane sandbox; use the host CLI')
+  const result = replaceQueuedCommand(root, ticket, argv)
+  process.stdout.write(`suite ticket ${result.ticket} replaced (revision ${result.revision}); original waiter retains execution and rank\n`)
+  return 0
+}
+
 // Queues one ticket and runs the command under it. A light request over several test files is warned, or
 // refused before it queues; its hold is recorded once the command ends.
 async function queueAndRun(command, options) {
   const { waitS, staleS, light, staticRun, priority, project, size, park, attempt } = options
   const scopeGuard = lightScopeGuard(command, { light, staticRun })
   if (scopeGuard.refused) return 2
-  const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, light, static: staticRun, priority, project, size, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+  const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: !park && !light && !staticRun, light, static: staticRun, priority, project, size, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
   if (typeof lease === 'number') return lease
   if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
   const timing = {}
-  try { return await runLeasedCommand(command, lease, { light, staticRun, park, attempt, timing }) } finally { scopeGuard.end(timing.heldMs) }
+  try { return await runLeasedCommand(lease.replacementArgv ?? command, lease, { light, staticRun, park, attempt, timing }) } finally { scopeGuard.end(timing.heldMs) }
 }
 
 // A light request is checked for its scope before it queues; a nested run under an inherited lease takes no

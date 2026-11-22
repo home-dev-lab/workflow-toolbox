@@ -136,6 +136,8 @@ function queueDependencies(config, t, options, steps, lease) {
     // continues to compare the acquisition mechanics after the admission predicate.
     SUITE_LOCK_MODULE_URL: 'file:///checkout/plugin/bin/lib/suite-lock.mjs', SUITE_LOCK_ORDER_VERSION: 4,
     assertCurrentSuiteLockClient() {},
+    // Replacement closure is separately exercised with real immutable publication slots.
+    finishQueuedReplacement() {},
     mkdirSync(...args) { t.call('mkdir', ...args); if (config.errorAt === 'mkdir') throw t.error('mkdir') },
     ensureLightCounter(root) { t.call('counter', root); return counter },
     p0QueueFields(...args) { t.call('p0', ...args); return fields },

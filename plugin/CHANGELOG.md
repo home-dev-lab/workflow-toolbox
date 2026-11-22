@@ -5,6 +5,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- `wt-suite-lock run --replace <ticket-number> -- <command> [args...]` can replace a
+  queued exclusive CLI command without losing its rank. The original waiter executes
+  the latest command with its existing working directory, environment and output
+  streams. Started, stale, legacy, parked, light and broker tickets are refused.
+
 ### Fixed
 
 - A second opinion run against a repository no longer lets the reviewing model read that repository's git history: the review sandbox masks the repository's git directory and common directory, refuses to start when it cannot work out which paths to mask, and names what it held back in its plan line.

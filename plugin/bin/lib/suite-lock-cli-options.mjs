@@ -39,6 +39,17 @@ export function parseSuiteRunOptions(args, dependencies) {
   return { command, waitS, staleS, light, priority, staticRun, ...metadata, ...parkRunFields(park) }
 }
 
+export function parseReplaceRun(args) {
+  const separator = args.indexOf('--')
+  const flags = separator < 0 ? args : args.slice(0, separator)
+  if (!flags.includes('--replace')) return null
+  if (flags.length !== 2 || flags[0] !== '--replace') throw new Error('--replace accepts only a ticket and command; scheduling flags cannot change')
+  const ticket = Number(flags[1])
+  if (!/^\d+$/.test(flags[1]) || !Number.isSafeInteger(ticket) || ticket < 1) throw new Error('--replace requires a positive safe ticket number')
+  if (separator < 0 || separator === args.length - 1) throw new Error('run requires -- followed by a command')
+  return { ticket, argv: args.slice(separator + 1) }
+}
+
 export async function cliInheritedLease(hasLease) {
   try { return await hasLease() } catch (error) {
     if (error?.code !== 'WT_SUITE_LOCK_UNAVAILABLE') throw error
