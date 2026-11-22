@@ -11,7 +11,7 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 type Seed = { key: string, fileKey: string, uuid?: string }
-type Session = { configSet?: boolean, switchDuringProbe?: boolean }
+type Session = { configSet?: boolean, sessionFlag?: string | undefined, switchDuringProbe?: boolean }
 
 function fixture(session: Session) {
   const home = mkdtempSync(join(tmpdir(), 'wt-quota-account-'))
@@ -20,7 +20,9 @@ function fixture(session: Session) {
   mkdirSync(root)
   writeFileSync(join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'home-account' } }))
   writeFileSync(join(root, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'quota-fixture-account' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, WT_SESSION_CONFIG_DIR_SET: session.configSet === false ? '1' : '0' }
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home }
+  delete env.WT_SESSION_CONFIG_DIR_SET
+  if (session.sessionFlag !== undefined) env.WT_SESSION_CONFIG_DIR_SET = session.sessionFlag
   delete env.CLAUDE_CONFIG_DIR
   if (session.configSet !== false) env.CLAUDE_CONFIG_DIR = root
   return { root, env }
@@ -98,6 +100,31 @@ describe('quota watcher account cache', () => {
     expect(result.caches).toEqual([])
     expect(result.stdout).toContain('QUOTA WATCH ARMED:')
     expect(result.stdout).not.toContain('internal watcher error')
+  })
+})
+
+describe('quota watcher inherited session config decision', () => {
+  it.each([
+    { flag: '0', configSet: true, uuid: 'home-account', accepted: true },
+    { flag: '0', configSet: true, uuid: 'quota-fixture-account', accepted: false },
+    { flag: '1', configSet: false, uuid: 'quota-fixture-account', accepted: true },
+    { flag: '1', configSet: false, uuid: 'home-account', accepted: false },
+  ])('inherited flag $flag with configSet=$configSet: cache $uuid accepted=$accepted', async ({ flag, configSet, uuid, accepted }) => {
+    const result = await run(['login'], { key: 'login', fileKey: 'login', uuid }, '', { configSet, sessionFlag: flag })
+    expect(result.count, 'only the session-selected account cache may avoid a second live probe').toBe(accepted ? 1 : 2)
+    expect(result.stdout.includes('99%')).toBe(accepted)
+    expect(result.childFlag).toBe(flag)
+  })
+  it.each([
+    { flag: '0', configSet: true, expected: '0' },
+    { flag: '1', configSet: false, expected: '1' },
+    ...[undefined, '', 'other'].flatMap((flag) => [
+      { flag, configSet: true, expected: '1' },
+      { flag, configSet: false, expected: '0' },
+    ]),
+  ])('passes decided child flag $expected for inherited=$flag and configSet=$configSet', async ({ flag, configSet, expected }) => {
+    const result = await run(['login'], undefined, '', { configSet, sessionFlag: flag })
+    expect(result.childFlag).toBe(expected)
   })
 })
 

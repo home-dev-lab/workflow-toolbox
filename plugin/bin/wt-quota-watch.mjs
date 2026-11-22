@@ -36,6 +36,13 @@
 // "QUOTA DROP ... cause undetermined (reset or account change)", and the
 // state is simply re-baselined — it does not claim to know more than it does.
 //
+// SESSION ENVIRONMENT: the watcher is assumed to be launched from the session's own
+// environment. An inherited WT_SESSION_CONFIG_DIR_SET of exactly '0' or '1' wins over
+// CLAUDE_CONFIG_DIR presence; the same decision selects the fingerprint and reaches
+// the child probe. Unlike the private probe, this watcher does not inspect ancestor
+// environments: no cross-platform ancestor-environment reader is available here.
+// A decisive ancestor that disagrees with the launch environment remains unsupported.
+//
 // SHARED CACHE + BACKOFF (added after a live 429 was observed on this
 // machine). Before this, every poll hit the usage endpoint live, with no
 // coordination between this watcher, other watchers (one per session), and
@@ -88,7 +95,9 @@ const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000)
 const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * MINUTE_MS
 const DEGRADED_REMINDER_STEPS_MS = [5 * MINUTE_MS, 15 * MINUTE_MS, 45 * MINUTE_MS]
-const SESSION_CONFIG_DIR_SET = Boolean(process.env.CLAUDE_CONFIG_DIR)
+const SESSION_CONFIG_DIR_SET = ['0', '1'].includes(process.env.WT_SESSION_CONFIG_DIR_SET)
+  ? process.env.WT_SESSION_CONFIG_DIR_SET === '1'
+  : Boolean(process.env.CLAUDE_CONFIG_DIR)
 const SESSION_HOME = homedir()
 const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(SESSION_HOME, '.claude')
 const ROUTE = resolveRoute(process.env)
