@@ -8,7 +8,7 @@ const HELPER = fileURLToPath(new URL('./helpers/guard-deny-replay.mjs', import.m
 const GUARDS = ['right-sized-spawn', 'plugin-release-record', 'concurrent-test', 'grounding-pre-send', 'release-push-evidence']
 const DELIVERING = new Set(['plugin-release-record', 'release-push-evidence'])
 const MAIN_BYTES: Record<string, string> = {
-  'right-sized-spawn': '59c087b559dc6e77f93b72f7a88406799c2bb73aea62870cbfe0c4aec1701f78',
+  'right-sized-spawn': '706b7d6b3d2cf1e49c20a8a3fa2bb0ce334d140890856c55c0fe6bbf11060873',
   'plugin-release-record': '8cfd97dbd8e5f84b6b7fda900fd6d2810527e3f8f913b2a179706294f113e6ff',
   'concurrent-test': '87cd5252f6eca7231c2e2249b7a01fd1240c5f1f5f4b031ec414598c18b51e36',
   'grounding-pre-send': '1b6ef6bb5335ec1ca129b8a3cdd78486ca37e2332ae8cdb6f547cfdb2821aaf6',

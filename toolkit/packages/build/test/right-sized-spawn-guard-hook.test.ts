@@ -68,10 +68,11 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   it('denies general-purpose without a reason and names every cheaper alternative', () => {
     const result = run('general-purpose', 'Implement the requested change.')
     expect(result.stdout).toContain('"permissionDecision":"deny"')
-    expect(result.stdout).toContain('pin both `model` and `effort`')
+    expect(result.stdout).toContain('Pinning both `model` and `effort`')
     expect(result.stdout).toContain('wt-implementer-sonnet')
     expect(result.stdout).toContain('wt-implementer-opus')
     expect(result.stdout).toContain('wt-reviewer')
+    expect(result.stdout).toContain('workflow-toolbox:leaf-readonly')
     expect(result.stdout).not.toContain('wt-chores')
     expect(result.stdout).toContain('workflow-toolbox:wt-implementer-sonnet')
     expect(result.journal).toContain('"class":"general-purpose"')
@@ -79,7 +80,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
 
 })
 
-describe('a spawn that pins both model and effort needs no justification', () => {
+describe('a spawn that pins both model and effort still needs justification', () => {
   const pinned = (input: Record<string, unknown>) => runToolInput({ prompt: 'Implement the requested change.', ...input })
 
   it.each([
@@ -87,9 +88,43 @@ describe('a spawn that pins both model and effort needs no justification', () =>
     ['an absent type', { model: 'opus', effort: 'xhigh' }],
     ['an empty type', { subagent_type: '', model: 'haiku', effort: 'medium' }],
     ['a full model id and max effort', { subagent_type: 'general-purpose', model: 'claude-opus-5-5', effort: 'max' }],
-    ['Explore', { subagent_type: 'Explore', model: 'sonnet', effort: 'high' }],
-  ])('passes %s silently, with no journal record', (_label, input) => {
+  ])('denies %s without a reason despite both pins', (_label, input) => {
     const result = pinned(input)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('"permissionDecision":"deny"')
+    expect(result.journal).toContain('"decision":"blocked"')
+  })
+
+  it('passes a pinned non-general-purpose type without a reason', () => {
+    const result = pinned({ subagent_type: 'Explore', model: 'sonnet', effort: 'high' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('')
+    expect(result.journal).toBe('')
+  })
+
+  it.each(['general-purpose', undefined])('allows a pinned %s spawn with a reason and journals the override', (subagent_type) => {
+    const result = pinned({ subagent_type, model: 'sonnet', effort: 'low', prompt: 'general-purpose because: no specialist fits' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('')
+    expect(result.journal).toContain('"class":"general-purpose-override"')
+    expect(result.journal).not.toContain('model-unpinned')
+  })
+
+  it.each(['```', '~~~'])('denies a pinned spawn whose only reason is inside a %s fence', (fence) => {
+    const result = pinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low', prompt: `${fence}text\ngeneral-purpose because: no specialist fits\n${fence}` })
+    expect(result.stdout).toContain('"permissionDecision":"deny"')
+    expect(result.journal).toContain('"decision":"blocked"')
+  })
+
+  it('requires the reason line instead of offering pinning as an alternative', () => {
+    const result = pinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' })
+    expect(result.stdout).toContain('`general-purpose because: <reason>`')
+    expect(result.stdout).toContain('Pinning both `model` and `effort` is still expected but does not replace this line')
+    expect(result.stdout).not.toContain('Re-issue this call and pin both')
+  })
+
+  it('keeps a pinned resume exempt without a reason', () => {
+    const result = pinned({ subagent_type: 'general-purpose', model: 'sonnet', effort: 'low', resume: 'existing-specialist-id' })
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(result.journal).toBe('')
@@ -138,6 +173,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   it.each([
     ['the literal placeholder', 'general-purpose because: <reason>'],
     ['an invisible-only reason', 'general-purpose because: \u200B'],
+    ['a single-word reason', 'general-purpose because: specialist'],
     ['a line inside a fenced sample', 'Example:\n```text\ngeneral-purpose because: use an unusual specialist\n```'],
   ])('denies %s', (_label, prompt) => {
     expect(run('general-purpose', prompt).stdout).toContain('"permissionDecision":"deny"')
