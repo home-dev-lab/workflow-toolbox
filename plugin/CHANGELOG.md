@@ -11,6 +11,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   queued exclusive CLI command without losing its rank. The original waiter executes
   the latest command with its existing working directory, environment and output
   streams. Started, stale, legacy, parked, light and broker tickets are refused.
+  On storage without hard links, queued tickets still start their original command
+  and `--replace` refuses with a filesystem limitation message.
 
 ### Fixed
 

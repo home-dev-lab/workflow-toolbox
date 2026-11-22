@@ -37,7 +37,7 @@ const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
   Replace queued command: run --replace <ticket-number> -- <command> [args...]
-  Replacement keeps rank and uses the original waiter's cwd, environment, streams and exit recipient; refused after admission.
+  Replacement keeps rank and uses the original waiter's cwd, environment, streams and exit recipient; refused once the waiter closes replacement acceptance before starting.
   node wt-suite-lock.mjs journal [--json] [--since <ISO>]
   node wt-suite-lock.mjs light-scope [--json]
   node wt-suite-lock.mjs status [--json]

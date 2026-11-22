@@ -361,7 +361,7 @@ function confirmAdmission(state, holder, place, options) {
     recordAdmissionGrant(root)
     lease.rankLevel = confirmed.rankLevel
     lease.reason = confirmed.reason
-    closeQueuedReplacement(state)
+    closeQueuedReplacement(state, options.replacementSeams, options.onWait)
     return { lease: record.replaceToken ? { ...lease, replacementArgv: record.argv } : lease }
   } catch (error) {
     releaseSuiteLock(lease, { served: false })

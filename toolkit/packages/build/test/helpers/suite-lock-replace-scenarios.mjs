@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 function environment(root) {
   const env = { ...process.env }
   for (const key of Object.keys(env)) if (/^WT_SUITE_(LOCK|LEASE)/.test(key)) delete env[key]
-  return { ...env, WT_SUITE_LOCK_DIR: root }
+  return { ...env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_STATIC_LANE: '0' }
 }
 
 async function until(predicate) {
@@ -116,4 +116,22 @@ export const replaceScenarios = {
     assert.equal(result.status, 2)
     assert.match(result.stderr, /--replace accepts only a ticket and command/, 'replacement must reject rank-changing options')
   }),
+  'light static and parked CLI tickets never receive a replacement token': async (cli) => {
+    for (const kind of ['light', 'static', 'park']) {
+      const f = fixture(cli)
+      mkdirSync(join(f.root, 'lock.d'))
+      writeFileSync(join(f.root, 'lock.d/holder.json'), JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }))
+      try {
+        mkdirSync(join(f.root, 'park'), { mode: 0o700 })
+        writeFileSync(join(f.root, 'park/key'), 'x'.repeat(32), { mode: 0o600 })
+        const options = kind === 'park' ? ['--park-dir', join(f.root, 'park'), '--park-s', '60', '--park-owner-pid', String(process.pid)] : [`--${kind}`]
+        const child = f.start('process.exit(0)', options)
+        await until(() => f.tickets().length === 1)
+        const record = JSON.parse(readFileSync(join(f.queue, f.tickets().at(-1)), 'utf8'))
+        assert.equal(record.replaceToken, undefined, 'non-replaceable CLI classes must have no token')
+        child.child.kill('SIGTERM')
+        await child.done
+      } finally { await f.finish() }
+    }
+  },
 }
