@@ -47,6 +47,8 @@ export function sealedPluginCliEnv(
     // The outer gate run's own lock wait (a wrapper may export up to 12 h) is not the spawned CLI's: a broker refuses
     // a client waitS above 10800 s. A test that needs a wait passes it as an override.
     WT_SUITE_LOCK_WAIT_S: undefined,
+    // A host lane model list replaces the shipped default and is embedded in refusal messages.
+    WT_LANE_MODELS: undefined,
     HOME: home,
     USERPROFILE: platform === 'win32' ? home : undefined,
     ...overrides,
