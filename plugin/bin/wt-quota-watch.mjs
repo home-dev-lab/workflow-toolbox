@@ -30,11 +30,18 @@
 // warning. This watcher polls independently of the session's own turns.
 // Model-token cost: zero, it is a script.
 //
-// If `<configDir>/.claude.json` is unreadable, missing, invalid, or has no
+// If the session's global config is unreadable, missing, invalid, or has no
 // `oauthAccount.accountUuid`, this watcher cannot tell a window RESET apart
 // from an ACCOUNT SWITCH. In that case a drop is reported as
 // "QUOTA DROP ... cause undetermined (reset or account change)", and the
 // state is simply re-baselined — it does not claim to know more than it does.
+//
+// SESSION ENVIRONMENT: the watcher is assumed to be launched from the session's own
+// environment. An inherited WT_SESSION_CONFIG_DIR_SET of exactly '0' or '1' wins over
+// CLAUDE_CONFIG_DIR presence; the same decision selects the fingerprint and reaches
+// the child probe. Unlike the private probe, this watcher does not inspect ancestor
+// environments: no cross-platform ancestor-environment reader is available here.
+// A decisive ancestor that disagrees with the launch environment remains unsupported.
 //
 // SHARED CACHE + BACKOFF (added after a live 429 was observed on this
 // machine). Before this, every poll hit the usage endpoint live, with no
@@ -42,7 +49,7 @@
 // the private per-turn hook that ALSO probes the same endpoint. Several of
 // those running against the same account is enough independent traffic to
 // trip the endpoint's own rate limit. Now: a fresh reading in the shared
-// cache named for the latest live account (same names and format the per-turn
+// cache named for the session's cache key (same names and format the per-turn
 // hook uses) is used instead of a live call. Live login readings refill the login
 // cache; token-account files remain hook-owned — see `lib/quota-cache.mjs`. A failed or
 // rate-limited probe backs off with a growing, capped interval instead of
@@ -88,7 +95,11 @@ const MAX_TIMER_SECONDS = Math.floor(0x7fffffff / 1000)
 const MINUTE_MS = 60 * 1000
 const HOUR_MS = 60 * MINUTE_MS
 const DEGRADED_REMINDER_STEPS_MS = [5 * MINUTE_MS, 15 * MINUTE_MS, 45 * MINUTE_MS]
-const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+const SESSION_CONFIG_DIR_SET = ['0', '1'].includes(process.env.WT_SESSION_CONFIG_DIR_SET)
+  ? process.env.WT_SESSION_CONFIG_DIR_SET === '1'
+  : Boolean(process.env.CLAUDE_CONFIG_DIR)
+const SESSION_HOME = homedir()
+const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(SESSION_HOME, '.claude')
 const ROUTE = resolveRoute(process.env)
 const USER_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
 const BUNDLED_PROBE = join(dirname(fileURLToPath(import.meta.url)), 'wt-quota-probe.mjs')
@@ -99,26 +110,33 @@ function probeAccountKey(data) {
   return data?.accountKey ?? 'login'
 }
 
+// Pool login names identify the account, but the hook still caches them under login.
+function sessionCacheKey(accountKey) {
+  return process.env.CLAUDE_CODE_OAUTH_TOKEN ? accountKey : 'login'
+}
+
 async function readAccountCache(state) {
-  if (!state.hasReading || state.accountKey === null) return null
+  const cacheKey = sessionCacheKey(state.accountKey)
+  if (!state.hasReading || cacheKey === null) return null
   // A refreshed partial cache must not postpone discovery of an unreported window forever.
   if (state.liveMissing && Date.now() - state.lastLiveAt >= WATCHER_CACHE_TOLERANCE_MS) return null
   try {
     const fingerprint = readAccountFingerprint(CONFIG_DIR)
-    const cached = await readQuotaCache(quotaCachePathFor(CONFIG_DIR, state.accountKey), WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR, state.accountKey)
+    const cached = await readQuotaCache(quotaCachePathFor(CONFIG_DIR, cacheKey), WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR, cacheKey)
     // A cache key selects a file, not the account currently logged in. Require a fingerprint
     // recorded with the reading, stable across the cache read; unknown identity probes live.
     if (!fingerprint || cached?.data.accountFingerprint !== fingerprint || readAccountFingerprint(CONFIG_DIR) !== fingerprint) return null
     // The reading belongs to the identity compared around the read: never a later, separate read.
-    return { ...cached, fingerprint }
+    return { ...cached, data: { ...cached.data, accountKey: state.accountKey }, fingerprint }
   } catch { return null /* unsafe key or cache error: continue with a live probe */ }
 }
 
 /** Stamp a live login reading with the identity read on BOTH sides of the probe (null when unknown). */
 async function refillLoginCache(data, boundFingerprint) {
-  if (probeAccountKey(data) !== 'login') return
+  const cacheKey = sessionCacheKey(probeAccountKey(data))
+  if (cacheKey !== 'login') return
   try {
-    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, 'login'), { ...data, accountFingerprint: boundFingerprint }, CONFIG_DIR, 'login')
+    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, cacheKey), { ...data, accountKey: cacheKey, accountFingerprint: boundFingerprint }, CONFIG_DIR, cacheKey)
   } catch { /* best effort: cache errors must never stop live monitoring */ }
 }
 
@@ -254,7 +272,7 @@ function runProbe(probePath, timeoutMs) {
     // the exact divergence that let a foreign reading reach the cache in the first place.
     const child = spawn(process.execPath, [probePath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, CLAUDE_CONFIG_DIR: CONFIG_DIR },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: CONFIG_DIR, WT_SESSION_CONFIG_DIR_SET: SESSION_CONFIG_DIR_SET ? '1' : '0' },
     })
 
     let stdout = ''
@@ -324,7 +342,9 @@ function extractWindows(source) {
 function readAccountFingerprint(configDir) {
   try {
     if (typeof configDir !== 'string' || configDir.length === 0) return null
-    const claudeJsonPath = join(configDir, '.claude.json')
+    const claudeJsonPath = configDir === CONFIG_DIR && !SESSION_CONFIG_DIR_SET
+      ? join(SESSION_HOME, '.claude.json')
+      : join(configDir, '.claude.json')
     const parsed = JSON.parse(readFileSync(claudeJsonPath, 'utf8'))
     const accountUuid = parsed?.oauthAccount?.accountUuid
     if (typeof accountUuid !== 'string' || accountUuid.length === 0) return null

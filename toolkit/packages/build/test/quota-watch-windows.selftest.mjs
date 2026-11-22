@@ -31,8 +31,11 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, accountKe
 `)
     const result = spawnSync(process.execPath, [WATCH, '--probe', probe, '--poll', '5', '--timeout', '3'], {
       encoding: 'utf8', timeout: 30_000,
-      env: { ...process.env, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '',
-        CLAUDE_CONFIG_DIR: cfg, CLAUDE_CODE_OAUTH_TOKEN: '', WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1',
+      // A token-launched session: its token-keyed cache file belongs to the hook, so the watcher
+      // never refills it and every cycle reaches the probe. With an empty token the same key is a
+      // pool login session, cached under the login file the watcher refills itself.
+      env: { ...process.env, WT_SESSION_CONFIG_DIR_SET: '1', ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '',
+        CLAUDE_CONFIG_DIR: cfg, CLAUDE_CODE_OAUTH_TOKEN: 'fixture-token', WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1',
         WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleepLog, WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: '',
         WT_QUOTA_WATCH_TEST_MAX_CYCLES: String(readings.length) },
     })
