@@ -10,26 +10,17 @@ import { readStdinJson } from './lib/host/read-stdin-json.mjs'
 
 const GUARD = 'wt-right-sized-spawn-guard-hook.mjs'
 const GENERAL_PURPOSE_PREFIX = 'general-purpose because:'
-// The Agent tool's documented effort levels; a call parameter overrides the type's frontmatter.
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
 function refusal() {
   return '[workflow-toolbox right-sized-spawn] Refused: general-purpose is the expensive session default. ' +
-    'Re-issue this call and pin both `model` and `effort` for the task ' +
-    '(for example model "sonnet" with effort "low" for board/card work, CI-log triage, mechanical reads, and summaries), ' +
-    'or use workflow-toolbox:wt-implementer-sonnet for a well-specified test-first increment; ' +
+    'Use workflow-toolbox:wt-implementer-sonnet for a well-specified test-first increment; ' +
     'workflow-toolbox:wt-implementer-opus for implementation needing judgment; or ' +
-    'workflow-toolbox:wt-reviewer for an adversarial read-only plan or diff review. ' +
+    'workflow-toolbox:wt-reviewer for an adversarial read-only plan or diff review; ' +
+    'workflow-toolbox:leaf-readonly for read-only reading. ' +
     'When none fits, create a dedicated agent and start a new session so the host discovers it, ' +
     'or re-issue this call with a prompt line ' +
-    '`general-purpose because: <reason>`.'
-}
-
-// A spawn that names its own model and effort is no longer the expensive inherited default.
-function pinsModelAndEffort(toolInput) {
-  const model = typeof toolInput.model === 'string' ? toolInput.model.trim() : ''
-  const effort = typeof toolInput.effort === 'string' ? toolInput.effort.trim() : ''
-  return model !== '' && model.toLowerCase() !== 'inherit' && EFFORT_LEVELS.has(effort)
+    '`general-purpose because: <reason>`. Use at least two words outside any code fence. ' +
+    'Pinning both `model` and `effort` is still expected but does not replace this line.'
 }
 
 function generalPurposeReason(prompt) {
@@ -136,8 +127,6 @@ function main() {
     warnIfUnpinned(input, toolInput)
     return
   }
-  if (pinsModelAndEffort(toolInput)) return
-
   const prompt = promptText(toolInput.prompt)
   const reason = generalPurposeReason(prompt)
   if (reason) {
