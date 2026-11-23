@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const WATCH = resolve(__dirname, '../../../../plugin/bin/wt-quota-watch.mjs')
@@ -11,7 +12,7 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 type Seed = { key: string, fileKey: string, uuid?: string }
-type Session = { configSet?: boolean, sessionFlag?: string | undefined, switchDuringProbe?: boolean }
+type Session = { configSet?: boolean, sessionFlag?: string | undefined, switchDuringProbe?: boolean, differentOsHome?: boolean }
 
 function fixture(session: Session) {
   const home = mkdtempSync(join(tmpdir(), 'wt-quota-account-'))
@@ -20,16 +21,27 @@ function fixture(session: Session) {
   mkdirSync(root)
   writeFileSync(join(home, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'home-account' } }))
   writeFileSync(join(root, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'quota-fixture-account' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home }
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home }
+  const nodeArgs: string[] = []
+  if (session.differentOsHome) {
+    env.USERPROFILE = join(home, 'os-home')
+    mkdirSync(env.USERPROFILE)
+    const preload = join(root, 'os-home.mjs')
+    writeFileSync(preload, `import os from 'node:os';
+import { syncBuiltinESMExports } from 'node:module';
+os.homedir = () => process.env.USERPROFILE;
+syncBuiltinESMExports();`)
+    nodeArgs.push('--import', pathToFileURL(preload).href)
+  }
   delete env.WT_SESSION_CONFIG_DIR_SET
   if (session.sessionFlag !== undefined) env.WT_SESSION_CONFIG_DIR_SET = session.sessionFlag
   delete env.CLAUDE_CONFIG_DIR
   if (session.configSet !== false) env.CLAUDE_CONFIG_DIR = root
-  return { root, env }
+  return { root, env, nodeArgs }
 }
 
 async function run(keys: Array<string | null>, seed?: Seed, tokenEnv = '', session: Session = {}) {
-  const { root, env } = fixture(session)
+  const { root, env, nodeArgs } = fixture(session)
   const probe = join(root, 'probe.mjs')
   const counter = join(root, 'counter')
   const sleep = join(root, 'sleep')
@@ -51,7 +63,7 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...(key =
       resolve()
     })
   })
-  const child = spawn(process.execPath, [WATCH, '--probe', probe, '--poll', '5', '--timeout', '3'], { env: { ...env, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '', CLAUDE_CODE_OAUTH_TOKEN: tokenEnv, WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1', WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleep, WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: barrier, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' } })
+  const child = spawn(process.execPath, [...nodeArgs, WATCH, '--probe', probe, '--poll', '5', '--timeout', '3'], { env: { ...env, ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: '', WT_SESSION_ROLE: '', CLAUDE_CODE_OAUTH_TOKEN: tokenEnv, WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1', WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleep, WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: barrier, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' } })
   let stdout = ''
   child.stdout.on('data', (chunk) => { stdout += chunk })
   const done = new Promise<number | null>((resolve, reject) => { child.on('error', reject); child.on('close', resolve) })
