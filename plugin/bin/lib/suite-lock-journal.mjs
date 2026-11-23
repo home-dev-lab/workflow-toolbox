@@ -5,6 +5,7 @@ import { orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 import { ticketIsStale } from './host/suite-lock-liveness.mjs'
+import { firstTerminalPerLease } from './suite-lock-terminal-outcome.mjs'
 
 export function journalCommand(argv) {
   const args = Array.isArray(argv) ? argv : []
@@ -114,23 +115,32 @@ function journalSummary(tickets) {
   return summary
 }
 
-/** Read both generations before filtering joined lifecycles by their first retained timestamp. */
-export function readSuiteLockJournal(root, { since, until } = {}) {
-  const window = journalWindow(since, until)
-  const groups = new Map()
-  const precedence = []
+function parsedJournal(root) {
+  const records = []
   let invalidLines = 0
   for (const line of suiteJournalLines(root)) {
-    try {
-      const event = parseJournalEvent(line)
-      if (Date.parse(event.ts) > window.end) continue
-      if (event.event === 'precedence') { if (Date.parse(event.ts) >= window.start) precedence.push(event); continue }
-      if (!groups.has(event.leaseId)) groups.set(event.leaseId, [])
-      groups.get(event.leaseId).push(event)
-    } catch { invalidLines += 1 }
+    try { records.push(parseJournalEvent(line)) } catch { invalidLines += 1 }
+  }
+  return { ...firstTerminalPerLease(records), invalidLines }
+}
+
+/** Choose terminal outcomes across both generations before applying the window. */
+export function readSuiteLockJournal(root, { since, until } = {}) {
+  const window = journalWindow(since, until)
+  const { records, invalidLines, ignoredDuplicateTerminals } = parsedJournal(root)
+  const groups = new Map()
+  const precedence = []
+  for (const event of records) {
+    if (Date.parse(event.ts) > window.end) continue
+    if (event.event === 'precedence') {
+      if (Date.parse(event.ts) >= window.start) precedence.push(event)
+      continue
+    }
+    if (!groups.has(event.leaseId)) groups.set(event.leaseId, [])
+    groups.get(event.leaseId).push(event)
   }
   const tickets = [...groups.values()].map(joinedTicket).filter((ticket) => Date.parse(ticket.ts) >= window.start)
-  return { tickets, precedence, summary: journalSummary(tickets), invalidLines,
+  return { tickets, precedence, summary: journalSummary(tickets), invalidLines, ignoredDuplicateTerminals,
     censored: tickets.filter((ticket) => ticket.censored).length,
     grantsWithoutRequest: tickets.filter((ticket) => ticket.grant && !ticket.request).length }
 }

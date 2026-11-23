@@ -24,7 +24,7 @@ function scratch() {
   roots.push(root)
   return root
 }
-const envFor = (root: string) => ({ ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK_STATIC_LANE: '1', WT_SUITE_LOCK_PRIORITY: 'P1' })
+const envFor = (root: string) => ({ ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_STATIC_LANE: '1', WT_SUITE_LOCK_PRIORITY: 'P1' })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 it('API static wait budget defaults to process.env without options.env or waitS', async () => {

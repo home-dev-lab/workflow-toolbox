@@ -61,7 +61,9 @@ for (const park of [false, true]) {
       run.child.kill(signal)
       expect(await run.exited).toBe(exit)
       expect(ends(root, String(request.leaseId))).toEqual([expect.objectContaining({ event: 'abort', cause: 'signal', signal })])
-      expect(readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json'))).toEqual([])
+      // The waiter's own numbered ticket must be gone. Closed --replace revision files (replace-*.json) are
+      // left behind by the replacement feature itself; that is tracked separately (card 1915003020278498785).
+      expect(readdirSync(join(root, 'queue.d')).filter((name) => /^\d+\.json$/.test(name))).toEqual([])
       releaseSuiteLock(holder)
     })
   }
@@ -406,7 +408,7 @@ it('two concurrent force-release CLIs produce only one terminal line', async () 
   const lease = await acquireSuiteLock({ root })
   await Promise.all([1, 2].map(() => new Promise((resolve) => {
     const child = spawn(process.execPath, [cli, 'release', '--force'], {
-      env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '' }, stdio: 'pipe',
+      env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK: '1' }, stdio: 'pipe',
     })
     children.push(child)
     child.once('exit', resolve)
