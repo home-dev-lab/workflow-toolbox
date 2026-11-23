@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parse } from 'yaml'
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { historySkipReason } from './helpers/environment-guards.js'
 // @ts-expect-error JS script module
 import * as shardChecker from '../../../scripts/check-posix-shards.mjs'
 
@@ -18,23 +18,10 @@ const root = resolve(import.meta.dirname, '../../../..')
 const WORKFLOW = join(root, '.github/workflows/cross-os.yml')
 const DESCRIPTOR = 'toolkit/test-support/base-version-client.json'
 const baseClients = JSON.parse(readFileSync(join(root, DESCRIPTOR), 'utf8')) as { clients: Record<string, string> }
-const laneContext = laneSandboxContext()
-function omittedHistoryReason(root: string, clients: Record<string, string>): string | null {
-  const history = spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: root, encoding: 'utf8' })
-  if (history.status !== 0 || history.stdout.trim() !== '1') return null
-  const missing = Object.entries(clients).filter(([, commit]) =>
-    spawnSync('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd: root }).status !== 0,
-  )
-  return missing.length ? `${DESCRIPTOR}: historical clients unavailable: ${missing.map(([role, commit]) => `${role} (${commit})`).join(', ')}` : null
-}
-beforeEach((ctx) => {
-  if (!laneContext.inside || ctx.task.name !== 'resolves every descriptor client in this clone; only a local shallow clone may skip missing history') return
-  skipInsideLaneSandbox(ctx, omittedHistoryReason(root, baseClients.clients), laneContext)
-})
-
 const historyRoots: string[] = []
 function historyGit(root: string, args: string[]): string {
-  const result = spawnSync('git', ['-c', 'user.name=Workflow Test', '-c', 'user.email=workflow-test@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8' })
+  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'unused-global-config') }
+  const result = spawnSync('git', ['-c', 'user.name=Workflow Test', '-c', 'user.email=workflow-test@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: root, env, encoding: 'utf8' })
   expect(result.status, result.stderr).toBe(0)
   return result.stdout.trim()
 }
@@ -54,20 +41,34 @@ afterEach(() => {
 })
 
 describe('omitted descriptor history evidence', () => {
-  it('names an absent client in a one-commit export', () => {
-    const { root } = historyFixture(1)
-    const absent = '0'.repeat(40)
-    expect(omittedHistoryReason(root, { absentClient: absent })).toContain(`absentClient (${absent})`)
+  it.each([1, 2])('allows missing clients in a local %i-commit parentless history', (count) => {
+    const { root } = historyFixture(count)
+    expect(historySkipReason(root, '')).toContain(`history-free repository: HEAD ancestry has ${count} commit(s)`)
   })
 
-  it('does not excuse an absent client in a two-commit repository', () => {
+  it('does not excuse missing clients in a four-commit repository', () => {
+    const { root } = historyFixture(4)
+    expect(historySkipReason(root, '')).toBeNull()
+  })
+
+  it.each(['1', 'true', 'yes', 'false'])('never skips missing history when CI is nonempty (%s)', (ci) => {
     const { root } = historyFixture(2)
-    expect(omittedHistoryReason(root, { absentClient: '0'.repeat(40) })).toBeNull()
+    expect(historySkipReason(root, ci)).toBeNull()
   })
 
-  it('needs no exemption when every client is present in a two-commit repository', () => {
-    const { root, commits } = historyFixture(2)
-    expect(omittedHistoryReason(root, { first: commits[0]!, second: commits[1]! })).toBeNull()
+  it('keeps the local shallow-clone exemption but refuses it under CI', () => {
+    const source = historyFixture(4).root
+    const clone = mkdtempSync(join(tmpdir(), 'workflow-shallow-'))
+    historyRoots.push(clone)
+    historyGit(source, ['clone', '--quiet', '--depth=1', pathToFileURL(source).href, clone])
+    expect(historySkipReason(clone, '')).toContain('local shallow clone')
+    expect(historySkipReason(clone, 'true')).toBeNull()
+  })
+
+  it('does not grant an exemption when git cannot establish HEAD ancestry', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'workflow-no-history-'))
+    historyRoots.push(empty)
+    expect(historySkipReason(empty, '')).toBeNull()
   })
 })
 
@@ -303,15 +304,15 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once (
     }
   })
 
-  it('resolves every descriptor client in this clone; only a local shallow clone may skip missing history', ({ skip }) => {
+  it('resolves every descriptor client in this clone; skips missing history only in local shallow or history-free repositories', ({ skip }) => {
     expect(baseClients.clients, `clients in ${DESCRIPTOR}`).toBeDefined()
     const missing = Object.entries(baseClients.clients).filter(([, commit]) =>
       spawnSync('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd: root }).status !== 0,
     )
     if (missing.length === 0) return
     const reason = `${DESCRIPTOR}: historical clients unavailable: ${missing.map(([role, commit]) => `${role} (${commit})`).join(', ')}`
-    const shallow = spawnSync('git', ['rev-parse', '--is-shallow-repository'], { cwd: root, encoding: 'utf8' })
-    if (!/^(1|true)$/i.test(process.env.CI ?? '') && shallow.status === 0 && shallow.stdout.trim() === 'true') skip(reason)
+    const exemption = historySkipReason(root, process.env.CI)
+    if (exemption) skip(`${exemption}; ${reason}`)
     expect(missing, reason).toEqual([])
   })
 })
