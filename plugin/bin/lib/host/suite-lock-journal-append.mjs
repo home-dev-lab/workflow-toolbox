@@ -1,7 +1,6 @@
 import { closeSync, openSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs'
 import path from 'node:path'
 import { claimJournalRotation } from './suite-lock-journal-rotation.mjs'
-import { claimTerminal, completeTerminal } from './suite-lock-terminal.mjs'
 
 export const SUITE_JOURNAL_ROTATE_BYTES = 4 * 1024 * 1024
 let warned = false
@@ -22,9 +21,7 @@ function rotate(root, file) {
   const release = claimJournalRotation(root)
   if (!release) throw Object.assign(new Error('journal rotation busy; event unknown'), { code: 'ROTATION_BUSY' })
   try {
-    if (statSync(file, { throwIfNoEntry: false })?.size > SUITE_JOURNAL_ROTATE_BYTES) {
-      renameSync(file, path.join(root, 'journal.1.jsonl'))
-    }
+    if (statSync(file, { throwIfNoEntry: false })?.size > SUITE_JOURNAL_ROTATE_BYTES) renameSync(file, path.join(root, 'journal.1.jsonl'))
   } finally { release() }
 }
 
@@ -43,34 +40,13 @@ export function appendSuiteLockJournal(root, event) {
   try {
     const line = Buffer.from(`${JSON.stringify(event)}\n`)
     if (line.length >= 4096) throw new Error('journal line too large')
-    const claim = claimTerminal(root, event, line, warn)
-    if (!claim.append) return
     const file = path.join(root, 'journal.jsonl')
     rotateBeforeAppend(root, file)
     const fd = openSync(file, APPEND_OPTIONS.flag, APPEND_OPTIONS.mode)
     try {
       if (writeSync(fd, line) !== line.length) throw Object.assign(new Error('short journal write; event unknown'), { code: 'SHORT_WRITE' })
     } finally { closeSync(fd) }
-    completeTerminal(claim.file)
   } catch (error) { warn(error) }
-}
-
-/** Called only under an exclusive per-lease repair claim after creator death. */
-export function repairSuiteLockJournal(root, storedLine) {
-  const release = claimJournalRotation(root)
-  if (!release) return false
-  try {
-    // Freeze generation names across the read and append, including suspended rotators.
-    if (suiteJournalLines(root).includes(storedLine.slice(0, -1))) return true
-    const file = path.join(root, 'journal.jsonl')
-    if (statSync(file, { throwIfNoEntry: false })?.size > SUITE_JOURNAL_ROTATE_BYTES) renameSync(file, path.join(root, 'journal.1.jsonl'))
-    const line = Buffer.from(storedLine)
-    const fd = openSync(file, APPEND_OPTIONS.flag, APPEND_OPTIONS.mode)
-    try {
-      if (writeSync(fd, line) !== line.length) throw Object.assign(new Error('short journal repair; event unknown'), { code: 'SHORT_WRITE' })
-    } finally { closeSync(fd) }
-    return true
-  } finally { release() }
 }
 
 export function suiteJournalLines(root) {

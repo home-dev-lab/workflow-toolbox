@@ -20,7 +20,7 @@ import { suiteJournalEvent } from './suite-lock-journal.mjs'
 import { acquireJournalLease, finishBrokerLease, handBackJournalLease, journalHolder, journalWaiterRecord, notePublishedLease } from './suite-lock-journal-lifecycle.mjs'
 import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, parkQueueMetadata, parkStatusEntries, suiteLeaseWithPark, takeParkTicket } from './suite-lock-park.mjs'
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
-import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTerminals, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
+import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
 import { claimSuiteSection, RECLAIM_BUSY, RECLAIM_DIR_STALE_MS, retrySuiteSection } from './host/suite-lock-section.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
@@ -173,7 +173,6 @@ const progressPlace = ({ ahead, aheadExcludingRelease, total }) => ({ ahead, ahe
 function queuePlace(queueDir, mine, mineRecord, counter, options) {
   const now = suiteLockNow(options)
   cleanSuiteRecoveryFiles(queueDir, '.reaped-')
-  reapSuiteTerminals(path.dirname(queueDir), options)
   readSuiteLockParked(queueDir, options, now)
   const live = [{ number: mine, record: mineRecord }]
   for (const ticket of readQueueSnapshot(queueDir, now)) {
