@@ -2941,15 +2941,93 @@ ${request.renderClaim(request.claim)}`;
     required: ["verdict", "summary"],
     additionalProperties: false
   };
-  function summarizeCoverageGap(missing) {
-    return `Review coverage incomplete: ${missing.join(", ")} did not return. Rerun the named missing lens or resume the run before trusting an approval verdict.`;
+  function verificationState(claim) {
+    if (claim.verdict === "refuted") return "refuted";
+    const substantive = claim.votes.filter((vote) => vote !== null && vote.verdict !== "unverifiable").length;
+    if (substantive === 0) return "unchecked";
+    return substantive === claim.votes.length ? "checked" : "partial";
+  }
+  function uncheckedFindings(findings) {
+    return findings.map((claim) => ({ claim, verdict: "unverifiable", votes: [] }));
+  }
+  function severityFirst(findings) {
+    const rank = { high: 0, medium: 1, low: 2 };
+    return [...findings].sort((a, b) => rank[a.severity] - rank[b.severity]);
+  }
+  function reconcileReviews(items, slots, records, failures) {
+    const missing = [], returned = [], verifyFailed = [];
+    const findings = [];
+    items.forEach((item, index) => {
+      const review = records.get(item);
+      if (review === void 0 || review === null) {
+        missing.push(item);
+        return;
+      }
+      returned.push(item);
+      const slot = slots[index];
+      if (slot === null || slot === void 0 || failures.has(item)) verifyFailed.push(item);
+      findings.push(...slot === null || slot === void 0 ? uncheckedFindings(review.findings) : slot);
+    });
+    return { findings, launched: [...items], returned, missing, verifyFailed, dropped: missing.length + verifyFailed.length };
+  }
+  function findingStats(findings) {
+    const counts = { refuted: 0, checked: 0, partial: 0, unchecked: 0 };
+    for (const claim of findings) counts[verificationState(claim)]++;
+    return {
+      findingsRaw: findings.length,
+      findingsVerified: counts.checked + counts.partial,
+      findingsRefuted: counts.refuted,
+      findingsUnverified: counts.unchecked,
+      findingsPartiallyVerified: counts.partial
+    };
+  }
+  function reviewCoverage(reconciled, stats) {
+    if (reconciled.missing.length + reconciled.verifyFailed.length + stats.findingsUnverified + stats.findingsPartiallyVerified === 0) return void 0;
+    return {
+      launched: reconciled.launched,
+      returned: reconciled.returned,
+      missing: reconciled.missing,
+      verifyFailed: reconciled.verifyFailed,
+      unverifiedFindings: stats.findingsUnverified,
+      partiallyVerifiedFindings: stats.findingsPartiallyVerified
+    };
+  }
+  function reviewItemName(item, lenses) {
+    return item === CONSOLIDATED_LENS ? `consolidated (lenses: ${lenses.join(", ")})` : `lens ${item}`;
+  }
+  function findingCount(count) {
+    return `${count} finding${count === 1 ? "" : "s"}`;
+  }
+  function summarizeCoverageGap(coverage, records, lenses, verdict) {
+    const prefix = verdict === "request-changes" ? "Coverage gap:" : "Review incomplete:";
+    const parts = [`${prefix} ${coverage.unverifiedFindings} finding(s) unchecked, ${coverage.partiallyVerifiedFindings} partially verified`];
+    for (const item of coverage.verifyFailed) parts.push(`verification failed for ${reviewItemName(item, lenses)} (${findingCount(records.get(item)?.findings.length ?? 0)})`);
+    for (const item of coverage.missing) parts.push(`review missing for ${reviewItemName(item, lenses)} (findings unknown)`);
+    return parts.join("; ") + ".";
+  }
+  function reviewDecision(synthesis, coverage, records, lenses) {
+    if (coverage === void 0) return synthesis;
+    const gapLine = summarizeCoverageGap(coverage, records, lenses, synthesis.verdict);
+    return { verdict: synthesis.verdict === "approve" ? "incomplete" : synthesis.verdict, summary: `${gapLine}
+${synthesis.summary}`, gapLine };
+  }
+  function baseReviewLenses(category, changeSummary, warnings) {
+    const base = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
+    if (category !== "docs") return base;
+    const changedFiles = changeSummary.changedFiles;
+    const nonProse = changedFiles.filter((path) => !/\.(?:md|markdown|rst|txt|adoc)$/i.test(path)).length;
+    if (changedFiles.length > 0 && nonProse === 0) return base;
+    const reason = changedFiles.length === 0 ? "file list was empty (inventory unknown)" : `${nonProse} non-prose file(s)`;
+    warnings.push(`route: category docs but ${reason}; added lenses correctness, security`);
+    return [...base, "correctness", "security"];
   }
   var READ_ONLY_GIT = "Inspect via READ-ONLY git only \u2014 `git show <sha>:<path>`, `git diff <range>`, `git log` \u2014 NEVER `git checkout` / `git reset` / `git restore` / `git clean` (they mutate the shared working tree and will be denied).";
   function actPrompt(category, summaryAsk, extraTaskLine) {
     return (target) => `You are reviewing a ${category} change.
 
 ## Task
-- Inspect the actual change: ${target}.${extraTaskLine !== void 0 ? ` ${extraTaskLine}` : ""}
+- Inspect the actual change:${extraTaskLine !== void 0 ? ` ${extraTaskLine}` : ""}
+${targetBlock(target)}
 - ${READ_ONLY_GIT}
 
 ## What to report
@@ -2960,7 +3038,7 @@ ${request.renderClaim(request.claim)}`;
 Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/route/env var/CLI flag>", ...], "riskAreas": ["<risk1>", ...], "summary": "<...>" }. ${CHANGE_SUMMARY_RULES}`;
   }
   function targetBlock(target) {
-    return "```\n" + target + "\n```";
+    return untrusted("target", target);
   }
   var REVIEWER_LENSES = {
     bugfix: ["root-cause", "regression-risk", "test-coverage", "maintainability"],
@@ -3124,6 +3202,95 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       provenance
     };
   }
+  function provenanceBlock(docs) {
+    return untrusted("provenance-docs", docs.length > 0 ? docs.map((d) => `- \`${d}\``).join("\n") : "- (none mapped \u2014 name the natural home)");
+  }
+  function docsCoverageInstructions(context) {
+    const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 200);
+    return `The routing stage reports this change ADDS the following public surface, while touching NO documentation file:
+` + untrusted("added-public-surface", context.coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join("\n")) + `
+
+Mapped doc homes for the changed modules (docs-provenance manifest):
+` + provenanceBlock(context.provenanceDocs) + `
+
+Read the ACTUAL change first (${READ_ONLY_GIT}). For EACH added surface, judge: is it USER-FACING (an author, operator, or consumer must know it to use the product) or internal plumbing?
+- User-facing and undocumented = one finding: set \`file\` to the SOURCE path that grew the surface, and in \`detail\` name the doc surface where it should be described (a mapped home above when the module is mapped; otherwise the natural home, plus suggest adding the docs-provenance pair). Severity by consumer impact: a surface a consumer cannot discover without reading source = high; a niche or advanced knob = medium; marginal = low.
+- Internal-only additions are NOT findings \u2014 at most note them as candidates for the repo's reasoned exemption allowlists.
+Do NOT re-review the code quality itself (other lenses do), and do NOT report surfaces this change does not add.`;
+  }
+  function lensInstructionsFor(lens, context) {
+    if (lens === "lock-enumeration") return LOCK_ENUMERATION_INSTRUCTIONS;
+    if (lens === "docs-coverage") return docsCoverageInstructions(context);
+    if (lens === "docs-alignment") return `These committed doc surfaces (repo-relative) document the modules this change touches:
+` + provenanceBlock(context.provenanceDocs) + `
+
+Read the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check every claim it makes about the changed behavior is still true after this change \u2014 names, defaults, option lists, counts, quoted values, described semantics, worked examples.
+A finding = one claim that is now false or misleading; set \`file\` to the DOC path and quote the stale sentence in \`detail\` with what it should say instead. Severity by consumer impact: an author following the doc builds the wrong thing = high; imprecise but harmless = low.
+Do NOT review the code itself (other lenses do), and do NOT report doc prose the change does not affect.`;
+    return `Read the ACTUAL change (you have repo access). Do NOT trust the summary above \u2014 re-derive findings from first principles.
+${READ_ONLY_GIT}
+Focus ONLY on the "${lens}" lens.`;
+  }
+  function routedContextBlock(summary) {
+    return `### Summary (from the routing stage)
+${untrusted("route-summary", summary.summary)}
+
+### Risk areas
+${untrusted("risk-areas", summary.riskAreas.map((r) => `- ${r}`).join("\n"))}
+
+`;
+  }
+  function reviewerPrompt(lens, context) {
+    const consolidated = lens === CONSOLIDATED_LENS;
+    const instructions = consolidated ? context.lenses.map((l) => `### Lens: ${l}
+${lensInstructionsFor(l, context)}`).join("\n\n") : lensInstructionsFor(lens, context);
+    const role = consolidated ? `You are reviewing this change in single-verifier mode: ONE consolidated pass covering every lens that would normally get its own reviewer (${context.lenses.join(", ")}).` : `You are a specialized code reviewer examining the **${lens}** aspect of this change.`;
+    return `## Role
+${role}
+
+## Change
+**Target:**
+${targetBlock(context.input.target)}
+
+` + routedContextBlock(context.changeSummary) + (consolidated ? `## Instructions \u2014 cover EVERY lens below, in full
+` : `## Instructions
+`) + `${instructions}
+
+## Output
+` + (consolidated ? `Return your findings across ALL lenses combined.` : `Return your findings.`) + ` Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``;
+  }
+  function verifierClaim(finding, lens, input) {
+    return `## Claim to verify (lens: ${lens})
+### Title
+${untrusted("claim-title", finding.title)}
+### File
+${untrusted("claim-file", finding.file)}
+Severity: ${finding.severity}
+
+${untrusted("claim-detail", finding.detail)}
+
+## Instructions
+IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at the target below and re-derive whether this finding is genuine from first principles.
+
+**Target:**
+${targetBlock(input.target)}
+
+${READ_ONLY_GIT}`;
+  }
+  function verifyFindings(rt, findings, lens, context) {
+    return adversarialVerification(rt, {
+      ...context.model !== void 0 ? { model: context.model } : {},
+      ...context.verifierType !== null ? { verifierType: context.verifierType } : {},
+      stageKey: lens,
+      claims: severityFirst(findings),
+      renderClaim: (finding) => context.directives + verifierClaim(finding, lens, context.input),
+      lenses: ["correctness", "security", "does-it-reproduce"],
+      votes: 3,
+      maxVerifyClaims: 5,
+      effort: context.effort,
+      phase: "Verify"
+    });
+  }
   async function run(rt00, input) {
     rt00.phase("Fence");
     const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
@@ -3143,8 +3310,8 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const leanRt = input.perAgent !== null ? withAgentDefaults(leanBase, input.perAgent) : leanBase;
     const warnings = [];
     let reviewersSpawned = 0;
-    let dropped = 0;
-    const returnedLenses = [];
+    const reviewRecords = /* @__PURE__ */ new Map();
+    const verifyFailures = /* @__PURE__ */ new Set();
     const lensTrails = [];
     const classifyEffort = resolveEffort(input.effort?.["classify"], CLASSIFY_EFFORT);
     const routeActEffort = resolveEffort(input.effort?.["route"], ROUTE_ACT_EFFORT);
@@ -3196,7 +3363,8 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       items: [input.target],
       categories: ["feature", "bugfix", "refactor", "config", "docs"],
       classifyPrompt: (target) => `Inspect this change and classify it into exactly one category: feature, bugfix, refactor, config, or docs.
-Change target: ${target}
+Change target:
+${targetBlock(target)}
 ${READ_ONLY_GIT}
 Return { "category": "<one of the five categories>" }`,
       classifyEffort,
@@ -3289,7 +3457,7 @@ Return { "category": "<one of the five categories>" }`,
         `docs-coverage lens silent: ${changeSummary.addedPublicSurface.length} added public surface(s) but doc files are part of this change \u2014 the docs-alignment lens and the mechanical gates cover that path`
       );
     }
-    const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
+    const baseLenses = baseReviewLenses(category, changeSummary, warnings);
     const hasTestFiles = changeSummary.changedFiles.some(isTestFile);
     if (hasTestFiles) {
       rt.log("lock-enumeration lens armed: routing reported at least one test file");
@@ -3302,97 +3470,19 @@ Return { "category": "<one of the five categories>" }`,
     ];
     const isConsolidated = input.mode === "single-verifier";
     const reviewItems = isConsolidated ? [CONSOLIDATED_LENS] : lenses;
-    const lensInstructionsFor = (lens) => {
-      if (lens === "lock-enumeration") {
-        return LOCK_ENUMERATION_INSTRUCTIONS;
-      }
-      if (lens === "docs-coverage") {
-        const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 200);
-        return `The routing stage reports this change ADDS the following public surface, while touching NO documentation file:
-` + coverageSurfaces.map((s) => `- ${sanitizedSurface(s)}`).join("\n") + `
-
-Mapped doc homes for the changed modules (docs-provenance manifest):
-` + (provenanceDocs.length > 0 ? provenanceDocs.map((d) => `- \`${d}\``).join("\n") : `- (none mapped \u2014 name the natural home)`) + `
-
-Read the ACTUAL change first (${READ_ONLY_GIT}). For EACH added surface, judge: is it USER-FACING (an author, operator, or consumer must know it to use the product) or internal plumbing?
-- User-facing and undocumented = one finding: set \`file\` to the SOURCE path that grew the surface, and in \`detail\` name the doc surface where it should be described (a mapped home above when the module is mapped; otherwise the natural home, plus suggest adding the docs-provenance pair). Severity by consumer impact: a surface a consumer cannot discover without reading source = high; a niche or advanced knob = medium; marginal = low.
-- Internal-only additions are NOT findings \u2014 at most note them as candidates for the repo's reasoned exemption allowlists.
-Do NOT re-review the code quality itself (other lenses do), and do NOT report surfaces this change does not add.`;
-      }
-      if (lens === "docs-alignment") {
-        return `These committed doc surfaces (repo-relative) document the modules this change touches:
-` + provenanceDocs.map((d) => `- \`${d}\``).join("\n") + `
-
-Read the ACTUAL change first (${READ_ONLY_GIT}), then read EACH mapped surface and check every claim it makes about the changed behavior is still true after this change \u2014 names, defaults, option lists, counts, quoted values, described semantics, worked examples.
-A finding = one claim that is now false or misleading; set \`file\` to the DOC path and quote the stale sentence in \`detail\` with what it should say instead. Severity by consumer impact: an author following the doc builds the wrong thing = high; imprecise but harmless = low.
-Do NOT review the code itself (other lenses do), and do NOT report doc prose the change does not affect.`;
-      }
-      return `Read the ACTUAL change (you have repo access). Do NOT trust the summary above \u2014 re-derive findings from first principles.
-${READ_ONLY_GIT}
-Focus ONLY on the "${lens}" lens.`;
+    const reviewContext = { input, changeSummary, lenses, provenanceDocs, coverageSurfaces };
+    const verificationContext = {
+      input,
+      model: verifierModel,
+      verifierType: resolvedVerifierType,
+      directives: verifyOpencodeDirectives,
+      effort: verifyEffort
     };
     const reviewStage = async (_prev, originalItem) => {
       const lens = originalItem;
       reviewersSpawned++;
-      if (lens === CONSOLIDATED_LENS) {
-        const consolidatedInstructions = lenses.map((l) => `### Lens: ${l}
-${lensInstructionsFor(l)}`).join("\n\n");
-        const result2 = await rt.agent(
-          reviewOpencodeDirectives + `## Role
-You are reviewing this change in single-verifier mode: ONE consolidated pass covering every lens that would normally get its own reviewer (${lenses.join(", ")}).
-
-## Change
-**Target:**
-${targetBlock(input.target)}
-
-### Summary (from the routing stage)
-${changeSummary.summary}
-
-### Risk areas
-${changeSummary.riskAreas.map((r) => `- ${r}`).join("\n")}
-
-## Instructions \u2014 cover EVERY lens below, in full
-${consolidatedInstructions}
-
-## Output
-Return your findings across ALL lenses combined. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
-          {
-            schema: FINDINGS_SCHEMA,
-            label: "pr-review:reviewer:consolidated",
-            phase: "Review",
-            effort: reviewEffort,
-            // Same agentTypes.review routing as the per-lens path — this is
-            // precisely the shape a cross-family/quota-degraded verifier wants.
-            ...resolvedReviewerType !== null ? { agentType: resolvedReviewerType } : {},
-            // Wrapper-model gate: haiku by default
-            // when bridge-routed, models.review override, or the Claude tier
-            // unchanged when not bridge-routed (undefined → omitted).
-            ...reviewModel !== void 0 ? { model: reviewModel } : {}
-          }
-        );
-        if (result2 !== null) returnedLenses.push(lens);
-        return result2;
-      }
-      const lensInstructions = lensInstructionsFor(lens);
       const result = await rt.agent(
-        reviewOpencodeDirectives + `## Role
-You are a specialized code reviewer examining the **${lens}** aspect of this change.
-
-## Change
-**Target:**
-${targetBlock(input.target)}
-
-### Summary (from the routing stage)
-${changeSummary.summary}
-
-### Risk areas
-${changeSummary.riskAreas.map((r) => `- ${r}`).join("\n")}
-
-## Instructions
-${lensInstructions}
-
-## Output
-Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'low'), detail }\``,
+        reviewOpencodeDirectives + reviewerPrompt(lens, reviewContext),
         {
           schema: FINDINGS_SCHEMA,
           label: `pr-review:reviewer:${lens}`,
@@ -3409,91 +3499,39 @@ Return your findings. Each finding: \`{ title, file, severity ('high'|'medium'|'
           ...reviewModel !== void 0 ? { model: reviewModel } : {}
         }
       );
-      if (result !== null) returnedLenses.push(lens);
-      return result;
+      const usable = result !== null && Array.isArray(result.findings) ? result : null;
+      if (result !== null && usable === null) warnings.push(`review output for ${reviewItemName(lens, lenses)} had no findings list; counted as missing`);
+      reviewRecords.set(lens, usable);
+      return usable;
     };
     const verifyStage = async (prev, originalItem) => {
       const lens = originalItem;
       const reviewOutput = prev;
-      if (reviewOutput === null) {
-        dropped++;
-        return null;
-      }
+      if (reviewOutput === null) return null;
       const findings = reviewOutput.findings;
       if (findings.length === 0) {
         return [];
       }
-      const verifyResult = await adversarialVerification(rt, {
-        // Verify-fan model: launch-time override via `args.verifierModel`, default opus (BEST_MODEL).
-        // This verification is TARGETED + diff-grounded, so passing 'sonnet' at launch is a sound,
-        // cheaper choice — but the committed DEFAULT stays opus (no implicit downgrade).
-        ...verifierModel !== void 0 ? { model: verifierModel } : {},
-        // Verify-fan agentType: launch-time override via `args.agentTypes.verify`,
-        // probe-resolved above. Omitted when null → the standard subagent (default,
-        // also the graceful-fallback path when the requested type could not answer).
-        ...resolvedVerifierType !== null ? { verifierType: resolvedVerifierType } : {},
-        // Per-lens stage/label discriminator (amendment A2 —
-        // the flagship remediation of the original finding, run
-        // wf_7b5bb844-368): this verifyStage runs once per lens via
-        // rt.pipeline's no-barrier per-item stages, all on the SAME `rt` — the
-        // auto salt counter would assign completion-order numbers (concurrent
-        // invocations), non-deterministic across resumeFromRunId replays. The
-        // lens name is a stable, author-meaningful key instead: every real lens
-        // (base categories, 'docs-alignment', 'docs-coverage', 'consolidated')
-        // matches the stageKey charset/shape rule claimStageInstance canonically
-        // enforces (letters, digits, underscore, dot, hyphen, 1-32 chars, not
-        // purely numeric — see stage-instance.ts's STAGE_KEY_PATTERN, the ONE
-        // source of truth for this rule) — none of these lens names is purely
-        // numeric, so none collides with the auto counter's own ' #<n>' format.
-        stageKey: lens,
-        claims: findings,
-        renderClaim: (finding) => verifyOpencodeDirectives + `## Claim to verify (lens: ${lens})
-**${finding.title}** \u2014 \`${finding.file}\` \xB7 severity: ${finding.severity}
-
-${finding.detail}
-
-## Instructions
-IMPORTANT: Do NOT trust the reviewer summary above. Open the actual diff at the target below and re-derive whether this finding is genuine from first principles.
-
-**Target:**
-${targetBlock(input.target)}
-
-${READ_ONLY_GIT}`,
-        lenses: ["correctness", "security", "does-it-reproduce"],
-        votes: 3,
-        maxVerifyClaims: 5,
-        effort: verifyEffort,
-        phase: "Verify"
-      });
-      for (const w of verifyResult.warnings) warnings.push(w);
-      lensTrails.push(verifyResult);
-      return verifyResult.value;
+      try {
+        const verifyResult = await verifyFindings(rt, findings, lens, verificationContext);
+        for (const w of verifyResult.warnings) warnings.push(w);
+        lensTrails.push(verifyResult);
+        return verifyResult.value;
+      } catch (error) {
+        verifyFailures.add(lens);
+        warnings.push(`verification failed for ${reviewItemName(lens, lenses)} (${findingCount(findings.length)}): ${error instanceof Error ? error.message : String(error)}`);
+        return uncheckedFindings(findings);
+      }
     };
     const pipelineResults = await rt.pipeline(
       reviewItems,
       reviewStage,
       verifyStage
     );
-    const launchedLenses = [...reviewItems];
-    const missingLenses = launchedLenses.filter((lens) => !returnedLenses.includes(lens));
-    const coverage = missingLenses.length > 0 ? {
-      launched: launchedLenses,
-      returned: [...returnedLenses],
-      missing: missingLenses
-    } : void 0;
-    const allVerifiedFindings = [];
-    for (const item of pipelineResults) {
-      if (item === null) {
-        continue;
-      }
-      const verifiedArray = item;
-      for (const vc of verifiedArray) {
-        allVerifiedFindings.push(vc);
-      }
-    }
-    const findingsRaw = allVerifiedFindings.length;
-    const findingsRefuted = allVerifiedFindings.filter((vc) => vc.verdict === "refuted").length;
-    const findingsVerified = findingsRaw - findingsRefuted;
+    const reconciled = reconcileReviews(reviewItems, pipelineResults, reviewRecords, verifyFailures);
+    const allVerifiedFindings = reconciled.findings;
+    const stats = findingStats(allVerifiedFindings);
+    const coverage = reviewCoverage(reconciled, stats);
     const outputFindings = allVerifiedFindings.map((vc) => ({
       title: vc.claim.title,
       file: vc.claim.file,
@@ -3515,16 +3553,12 @@ You are synthesizing a code review for the change below (category: ${category}).
 **Target:**
 ${targetBlock(input.target)}
 
-### Change summary
-${changeSummary.summary}
-
-## Verified findings (non-refuted)
-\`\`\`json
-` + JSON.stringify(synthesisFindings, null, 2) + `
-\`\`\`
+` + routedContextBlock(changeSummary) + `## Verified findings (non-refuted)
+` + untrusted("synthesis-findings", JSON.stringify(synthesisFindings, null, 2)) + `
 
 ## Output
 Produce an overall verdict: "approve" if no high-severity confirmed findings remain, "request-changes" otherwise. Include a concise summary.
+A finding marked unverifiable or unverified-by-cap was not checked and may be real.
 Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`;
     const synthesisAgent = await leanRt.agent(synthesisPrompt, {
       schema: SYNTHESIS_SCHEMA,
@@ -3537,8 +3571,11 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
         "pr-review: synthesis agent failed \u2014 unable to produce a verdict. Use resumeFromRunId to retry from the Synthesize phase (reviewed findings are cached)."
       );
     }
-    const verdict = coverage === void 0 ? synthesisAgent.verdict : "incomplete";
-    const summary = coverage === void 0 ? synthesisAgent.summary : summarizeCoverageGap(coverage.missing);
+    const { verdict, summary, gapLine } = reviewDecision(synthesisAgent, coverage, reviewRecords, lenses);
+    if (gapLine !== void 0) {
+      warnings.push(gapLine);
+      rt.log(gapLine);
+    }
     return {
       category,
       verdict,
@@ -3559,10 +3596,8 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       ...coverage !== void 0 ? { coverage } : {},
       stats: {
         reviewersSpawned,
-        findingsRaw,
-        findingsVerified,
-        findingsRefuted,
-        dropped
+        ...stats,
+        dropped: reconciled.dropped
       },
       envelope: { trail: collectTrail(routeResult, ...lensTrails) },
       warnings
