@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -143,17 +144,51 @@ function lines(file: string) {
   return readFileSync(file, 'utf8').trimEnd().split(/\r?\n/)
 }
 
+// Settles on the first true observation, on a monotonic clock. Re-evaluating the check after the
+// loop let one later false reading overturn a condition already observed as met.
 function waitFor(check: () => boolean, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs
-  while (!check() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
-  return check()
+  const deadline = performance.now() + timeoutMs
+  for (;;) {
+    if (check()) return true
+    if (performance.now() >= deadline) return false
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  }
 }
 
-function processExists(pid: number) {
-  try {
-    process.kill(pid, 0)
-    return !existsSync(`/proc/${pid}/stat`) || !/^\d+ \(.+\) Z /.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
-  } catch { return false }
+type LivenessProbe = { signal: (pid: number) => void, procfs: boolean, readStat: (pid: number) => string }
+const hostLiveness: LivenessProbe = {
+  signal: (pid) => { process.kill(pid, 0) },
+  procfs: existsSync('/proc/self/stat'),
+  readStat: (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8'),
+}
+
+const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code
+
+// Only a probe error that names a missing process reads as gone; any other error is rethrown, so a
+// failing probe can never pass for a stopped process.
+function processExists(pid: number, probe: LivenessProbe = hostLiveness) {
+  try { probe.signal(pid) } catch (error) {
+    if (errorCode(error) === 'EPERM') return true
+    if (errorCode(error) === 'ESRCH') return false
+    throw error
+  }
+  // Without procfs (macOS) signal zero is the only probe. With procfs, an exited process passes
+  // through zombie (Z) and then exit-dead (X, x on old kernels) while it is reaped, and its stat
+  // entry can vanish between the two reads: each of these means the process is gone.
+  if (!probe.procfs) return true
+  let stat: string
+  try { stat = probe.readStat(pid) } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes(errorCode(error) ?? '')) return false
+    throw error
+  }
+  return !/^\d+ \(.+\) [ZXx] /.test(stat)
+}
+
+// Model a descheduled launcher without burning host CPU or sleeping. Resume is unconditional on
+// the next test-worker turn: a synchronous liveness poll starves it, whereas awaiting exit yields.
+function pauseLauncher(pid: number) {
+  process.kill(pid, 'SIGSTOP')
+  return setImmediate(() => { try { process.kill(pid, 'SIGCONT') } catch { /* The launcher may already have exited. */ } })
 }
 
 function dependencies(overrides: Record<string, unknown> = {}) {
@@ -937,17 +972,41 @@ function dependencies(overrides: Record<string, unknown> = {}) {
     expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'query aborted', 'EXIT=1'])
   })
 
-  it.skipIf(process.platform === 'win32').each([['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const)(
-    'stops the Codex app-server behind the detached broker on %s without stopping another session (Windows skipped: Node terminates before JS signal cleanup)',
-    (signal, expectedExit) => {
+  const probeError = (code: string) => () => { throw Object.assign(new Error(code), { code }) }
+  const reapedStat = probeError('ENOENT')
+  it.each([
+    ['a zombie reaped between the signal and the procfs read', { procfs: true, readStat: reapedStat }, false],
+    ['a zombie still waiting for its reaper', { procfs: true, readStat: () => '42 (node) Z 1 42' }, false],
+    ['a process in the exit-dead state of its reaping', { procfs: true, readStat: () => '42 (node) X 1 42' }, false],
+    ['a running process', { procfs: true, readStat: () => '42 (node) S 1 42' }, true],
+    ['a signalled process on a host without procfs', { procfs: false, readStat: reapedStat }, true],
+    ['a process another user owns', { signal: probeError('EPERM'), procfs: true, readStat: reapedStat }, true],
+  ] as const)('reads the liveness of %s as %s', (_case, probe, alive) => {
+    expect(processExists(42, { signal: () => {}, ...probe })).toBe(alive)
+  })
+
+  it('refuses to read a failing procfs probe as a stopped process', () => {
+    expect(() => processExists(42, { signal: () => {}, procfs: true, readStat: probeError('EACCES') })).toThrow('EACCES')
+  })
+
+  it('keeps a condition met once observed even when a later probe reads it unmet', () => {
+    const readings = [false, true, false]
+    expect(waitFor(() => readings.shift() ?? false, 1_000)).toBe(true)
+  })
+
+  it.skipIf(process.platform === 'win32').each([['SIGTERM', 143, false], ['SIGINT', 130, false], ['SIGHUP', 129, false], ['SIGHUP', 129, true]] as const)(
+    'stops the Codex app-server behind the detached broker on %s without stopping another session (exit %i, descheduled launcher: %s; Windows skipped: Node terminates before JS signal cleanup)',
+    async (signal, expectedExit, descheduled) => {
     const f = detachedBrokerFixture()
     const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
       env: { ...process.env, ...f.env, HOME: f.home },
       stdio: 'ignore',
     })
+    const exited = once(wrapper, 'exit', { signal: AbortSignal.timeout(15_000) })
     let appPid = 0
     let brokerPid = 0
     let otherBroker: ReturnType<typeof spawn> | null = null
+    let resumer: ReturnType<typeof pauseLauncher> | null = null
     try {
       expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
       appPid = Number(readFileSync(f.appPidFile, 'utf8'))
@@ -960,11 +1019,16 @@ function dependencies(overrides: Record<string, unknown> = {}) {
       })
       otherBroker.unref()
       expect(processExists(otherBroker.pid!)).toBe(true)
+      if (descheduled) resumer = pauseLauncher(wrapper.pid!)
       process.kill(wrapper.pid!, signal)
+      // Signal delivery is asynchronous. A live app-server is not a cleanup failure while the
+      // launcher has not run its handler yet; its own exit marks completion of that handler.
+      expect(await exited).toEqual([expectedExit, null])
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(processExists(otherBroker.pid!)).toBe(true)
-      expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${expectedExit}`)).toBe(true)
+      expect(lines(f.out).at(-1)).toBe(`EXIT=${expectedExit}`)
     } finally {
+      if (resumer) clearImmediate(resumer)
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
       stopBrokerPid(brokerPid)
       if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
