@@ -103,12 +103,15 @@ export function abandonedElapsed(holder, options, unknownElapsed = 600_001) {
   return wallClockElapsed(holder, options, unknownElapsed)
 }
 
-/** Reclaim never serves a turn; unknown elapsed conservatively retains the S penalty. */
+/** Reclaim never serves a turn; return the raw elapsed sample so the journal shares it, including unknown. */
 export function recordAbandonedSuiteLock(root, holder, options = {}) {
   try {
-    const heldMs = abandonedElapsed(holder, options)
+    const elapsedMs = abandonedElapsed(holder, options, NaN)
+    const heldMs = Number.isFinite(elapsedMs) ? elapsedMs : 600_001
     if (heldMs > 600_000) recordSuiteLockService({ root, holder, staticDomain: options.staticDomain || path.basename(root) === 'static-lane' }, { heldMs, served: false })
+    return elapsedMs
   } catch (error) { warn(error) }
+  return NaN
 }
 
 export function setSuiteLockPrecedence(root, entry) {

@@ -67,16 +67,16 @@ export function reapSuiteTicket(queueDir, ticket, options = {}) {
   })
 }
 
-function reclaimedHeldSeconds(holder, options) {
+function reclaimedHeldSeconds(holder, options, elapsedMs) {
   try {
-    const elapsed = abandonedElapsed(holder, options, NaN)
+    const elapsed = elapsedMs === undefined ? abandonedElapsed(holder, options, NaN) : elapsedMs
     return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed / 1000 : null
   } catch { return null }
 }
 
-export function journalReclaimedHolder(holder, options) {
+export function journalReclaimedHolder(holder, options, elapsedMs) {
   if (!recoveryJournal(holder)) return
-  const fields = { cause: 'force-release', exit: null, served: false, reclaimedBy: process.pid, heldS: reclaimedHeldSeconds(holder, options), result: 'unknown' }
+  const fields = { cause: 'force-release', exit: null, served: false, reclaimedBy: process.pid, heldS: reclaimedHeldSeconds(holder, options, elapsedMs), result: 'unknown' }
   if (!options.force) Object.assign(fields, { cause: 'reclaimed', proof: pidProvesGone(holder, options) || foreignNamespaceStale({ holder }, options) === true ? 'pid-gone' : 'age' })
   suiteJournalEvent(recoveryJournal(holder), 'release', fields)
 }

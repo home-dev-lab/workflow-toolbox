@@ -92,6 +92,25 @@ it('records one force-release and does not duplicate the client release', async 
 })
 
 for (const force of [false, true]) {
+  it(`samples one elapsed duration for the journal and size history on ${force ? 'force release' : 'waiter reclaim'}`, async () => {
+    const root = scratch()
+    const env = { WT_SUITE_LOCK_STATIC_LANE: '0' }
+    const lease = await acquireSuiteLock({ root, env, size: 'S', project: 'elapsed-sample' })
+    writeFileSync(join(lease.lockDir, 'holder.json'), JSON.stringify({ ...lease.holder, pid: 2147483647, bootId: 'duration-test', startedUptimeMs: 1000.125 }))
+    let reads = 0
+    const options = { root, env, bootClock: () => ({ bootId: 'duration-test', uptimeMs: 602234.6923828125 + reads++ * 2 }) }
+    if (force) expect(operatorReleaseSuiteLock({ ...options, force }).released).toBe(true)
+    else releaseSuiteLock(await acquireSuiteLock(options))
+    releaseSuiteLock(lease)
+    const history = readdirSync(join(root, 'size-history')).map((name) => JSON.parse(readFileSync(join(root, 'size-history', name), 'utf8')))
+    const terminal = ends(root, lease.holder.leaseId)
+    expect(terminal).toHaveLength(1)
+    expect(history).toHaveLength(1)
+    expect(history[0].heldMs).toBe(601234.5673828125)
+    expect(Number(terminal[0]?.heldS) * 1000).toBe(history[0].heldMs)
+    expect(reads).toBe(1)
+  })
+
   it(`records precise boot-clock duration and unknown result on ${force ? 'force release' : 'waiter reclaim'}`, async () => {
     const root = scratch()
     const lease = await acquireSuiteLock({ root })

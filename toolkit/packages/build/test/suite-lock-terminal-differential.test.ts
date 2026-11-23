@@ -56,7 +56,7 @@ it('preserves ticket allocation returns errors effects property reads and callba
 
 function reaperObservation(text: string, scenario: number) {
   const trace: unknown[] = []
-  const dead = { pid: 999, leaseId: 'lease', journal: { root: '/journal' } }
+  const dead = { pid: 999, leaseId: 'lease', journal: { root: '/journal', leaseId: 'lease' } }
   const record = { ...dead, ...([4, 7].includes(scenario) ? { pid: 1 } : {}), ...(scenario === 5 ? { leaseId: 'replacement' } : {}) }
   const deps = { path: path.posix, process: { pid: 123 }, randomUUID: () => 'unique',
     provenDead: (holder: { pid: number }) => holder.pid === 999,
@@ -70,6 +70,7 @@ function reaperObservation(text: string, scenario: number) {
     writeFileSync(...args: unknown[]) { trace.push(['restore', ...args]); if (scenario === 7) throw Object.assign(new Error('occupied'), { code: 'EEXIST' }) },
     rmSync: (...args: unknown[]) => { trace.push(['remove-claim', ...args]) },
     suiteJournalEvent: (...args: unknown[]) => { trace.push(['journal', ...args]) },
+    claimSuiteSection: (root: string, critical: () => unknown) => { trace.push(['claim-section', root]); return critical() },
   }
   const options = { beforeTicketClaim() { trace.push(['before-claim', this === options]) } }
   return observeFunction(text, 'reapSuiteTicket', deps, ['/queue', { number: 1, holder: scenario === 1 ? { ...dead, pid: 1 } : dead }, options], trace)
@@ -78,14 +79,22 @@ function reaperObservation(text: string, scenario: number) {
 it('preserves reaper returns errors effects and outgoing call order in 8 cases', () => {
   const text = source('suite-lock-recovery')
   const body = declaration(text, 'reapSuiteTicket')
-  const common = declaration(text, 'restoreClaim')
+  const journal = text.match(/^const recoveryJournal = .+$/m)?.[0]
+  if (!journal) throw new Error('missing differential subject recoveryJournal')
+  const common = declaration(text, 'restoreClaim') + '\n' + journal
   const current = body + '\n' + common + '\n' + declaration(text, 'renameClaim')
-  const reference = body.replace('  if (!renameClaim(file, claim)) return', `  try { renameSync(file, claim) } catch (error) {
-    if (error?.code === 'ENOENT') return
-    throw error
-  }`) + '\n' + common
+  const referenceBody = body.replace('    if (!renameClaim(file, claim)) return', `    try { renameSync(file, claim) } catch (error) {
+      if (error?.code === 'ENOENT') return
+      throw error
+    }`)
+  expect(referenceBody, 'reference must inline the rename claim').not.toBe(body)
+  const reference = referenceBody + '\n' + common
   const candidate = process.env.WT_SUITE_DIFFERENTIAL_MUTATE ? current.replace("cause: 'client-gone'", "cause: 'wrong-cause'") : current
   for (let scenario = 0; scenario < 8; scenario++) {
-    expect(reaperObservation(candidate, scenario), `reaper differential case ${scenario}`).toEqual(reaperObservation(reference, scenario))
+    const observed = reaperObservation(candidate, scenario)
+    const baseline = reaperObservation(reference, scenario)
+    expect(observed.error?.name ?? '', `candidate reaper case ${scenario} must execute its real body`).not.toMatch(/^(ReferenceError|TypeError)$/)
+    expect(baseline.error?.name ?? '', `reference reaper case ${scenario} must execute its real body`).not.toMatch(/^(ReferenceError|TypeError)$/)
+    expect(observed, `reaper differential case ${scenario}`).toEqual(baseline)
   }
 })

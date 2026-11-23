@@ -247,8 +247,8 @@ function removeJudgedInstance(lockDir, judged, options, removed) {
     }
     if (removed) removed()
     else {
-      recordAbandonedSuiteLock(path.dirname(lockDir), judged, options)
-      journalReclaimedHolder(holder, options)
+      const elapsedMs = recordAbandonedSuiteLock(path.dirname(lockDir), judged, options)
+      journalReclaimedHolder(holder, options, elapsedMs)
     }
     discardDirectory(aside)
     return true
