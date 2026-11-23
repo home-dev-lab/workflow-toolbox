@@ -215,6 +215,7 @@ export const spawningTestFiles = [
   'packages/build/test/suite-lock-home.test.ts',
   'packages/build/test/suite-lock-journal.test.ts',
   'packages/build/test/suite-lock-levels.test.ts',
+  'packages/build/test/suite-lock-direct-run.test.ts',
   'packages/build/test/suite-lock-light-scope.test.ts',
   'packages/build/test/suite-lock-offload.test.ts',
   'packages/build/test/suite-lock-park.test.ts',
