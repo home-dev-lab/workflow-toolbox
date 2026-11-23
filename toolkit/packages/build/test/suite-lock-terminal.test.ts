@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
+// @ts-expect-error executable JavaScript fixtures
+import { terminalEvents } from './suite-lock-terminal-review-cases.mjs'
 // @ts-expect-error plugin runtime module
 import { acquireSuiteLock, operatorReleaseSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
@@ -10,7 +12,7 @@ const roots: string[] = []
 const children: ChildProcess[] = []
 const cli = new URL('../../../../plugin/bin/wt-suite-lock.mjs', import.meta.url).pathname
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), 'wt-terminal-')); roots.push(root); return root }
-const events = (root: string): Record<string, unknown>[] => existsSync(join(root, 'journal.jsonl')) ? readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []
+const events = (root: string): Record<string, unknown>[] => terminalEvents(root)
 const ends = (root: string, id: string) => events(root).filter((event) => event.leaseId === id && ['abort', 'release', 'timeout'].includes(String(event.event)))
 const ticketFile = (root: string, n: number) => join(root, 'queue.d', `${String(n).padStart(16, '0')}.json`)
 const runtime = (name: string) => import(new URL(`../../../../plugin/bin/lib/${name}.mjs`, import.meta.url).href)
@@ -221,6 +223,11 @@ it('cleans old recovery claims and asides without appending another ending', asy
   mkdirSync(aside)
   const old = new Date(Date.now() - 601_000)
   utimesSync(claim, old, old); utimesSync(aside, old, old)
+  const { cleanSuiteRecoveryFiles } = await runtime('host/suite-lock-recovery')
+  const before = ['journal.1.jsonl', 'journal.jsonl'].map((name) => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8') : null)
+  cleanSuiteRecoveryFiles(join(root, 'queue.d'), '.reaped-')
+  cleanSuiteRecoveryFiles(root, 'lock.d.reclaimed-')
+  expect(['journal.1.jsonl', 'journal.jsonl'].map((name) => existsSync(join(root, name)) ? readFileSync(join(root, name), 'utf8') : null)).toEqual(before)
   const lease = await acquireSuiteLock({ root })
   // A reclaimer, including an operator, performs aside collection.
   operatorReleaseSuiteLock({ root, force: true })

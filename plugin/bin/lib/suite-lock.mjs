@@ -17,10 +17,11 @@ import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
 import { requestBrokerLease } from './suite-lock-broker-client.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
 import { suiteJournalEvent } from './suite-lock-journal.mjs'
-import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord } from './suite-lock-journal-lifecycle.mjs'
+import { acquireJournalLease, finishBrokerLease, handBackJournalLease, journalHolder, journalWaiterRecord, notePublishedLease } from './suite-lock-journal-lifecycle.mjs'
 import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, parkQueueMetadata, parkStatusEntries, suiteLeaseWithPark, takeParkTicket } from './suite-lock-park.mjs'
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
-import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket } from './host/suite-lock-recovery.mjs'
+import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
+import { claimSuiteSection, RECLAIM_BUSY, RECLAIM_DIR_STALE_MS, retrySuiteSection } from './host/suite-lock-section.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
@@ -28,6 +29,7 @@ export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
 const { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTickets } = suiteLockOrder
 const suiteLockNow = (options) => options.now?.() ?? Date.now()
 const SUITE_LOCK_MODULE_URL = import.meta.url
+const publishedFailures = new WeakSet()
 
 export function suiteLockWaitSeconds(env = process.env) {
   return env.WT_SUITE_LOCK_WAIT_S === undefined
@@ -103,10 +105,6 @@ export function readSuiteLockParked(queueDir, options = {}, now = suiteLockNow(o
 // A lock.d with no valid holder.json was left by an acquirer that died between `mkdir` and publishing
 // its holder (a live one publishes within milliseconds): reclaimable once this old.
 const HALF_CREATED_LOCK_MS = 60_000
-// Windows refuses for a moment to remove an entry another process holds open (EPERM/EBUSY); `maxRetries`
-// retries exactly those codes, and applies only with `recursive: true` (Node fs docs).
-const REMOVE_WITH_RETRY = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }
-
 // Stale = positive proof the holder is gone, or, where its PID proves nothing (a host holder seen from
 // inside a sandbox, a signalable PID on Windows), the hard bound --stale-s (3 h by default). Never the
 // waiter's own --wait-s: a short-wait waiter reclaiming a live holder ran two suites at once.
@@ -224,10 +222,6 @@ function tryTakeLock(lockDir, holder, beforePublish) {
   return true
 }
 
-// A reclaimer holds reclaim.d for a few milliseconds; one older than this was abandoned by a reclaimer
-// that died inside the critical section, and is itself removed so the stale holder stays reclaimable.
-const RECLAIM_DIR_STALE_MS = 60_000
-
 // Returns true only when it removed the stale holder, so the caller retries at once; otherwise the
 // caller's timeout check and sleep run (no spin behind another reclaimer's, or an abandoned, reclaim.d).
 // leaseId identifies ONE acquisition; pid + startedAt is the rule for holders written by older copies.
@@ -237,18 +231,25 @@ const sameInstance = (left, right) => {
   return left?.pid === right?.pid && left?.startedAt === right?.startedAt
 }
 
-// Removes the lock instance judged stale and nothing newer: lock.d is renamed aside, and deleted only
+// Removes the judged lock instance and nothing newer: lock.d is renamed aside, and deleted only
 // if the holder that moved is the one judged; a newer instance (a holder that acquired in between) is
 // put back. `options.beforeReclaimRemoval` is a test seam that runs between judgment and removal.
-function removeJudgedInstance(lockDir, judged, options) {
+function removeJudgedInstance(lockDir, judged, options, removed) {
   options.beforeReclaimRemoval?.()
   const aside = setLockAside(lockDir)
   options.afterLockAside?.()
   if (aside === null) return true
   const holder = readHolderIn(aside)
   if (sameInstance(holder, judged)) {
-    recordAbandonedSuiteLock(path.dirname(lockDir), judged, options)
-    journalReclaimedHolder(holder, options)
+    try { removeLeaseTickets(path.dirname(lockDir), holder?.leaseId) } catch (error) {
+      putLockBack(aside, lockDir)
+      throw error
+    }
+    if (removed) removed()
+    else {
+      recordAbandonedSuiteLock(path.dirname(lockDir), judged, options)
+      journalReclaimedHolder(holder, options)
+    }
     discardDirectory(aside)
     return true
   }
@@ -256,26 +257,13 @@ function removeJudgedInstance(lockDir, judged, options) {
   return false
 }
 
-// The one critical section of every path that renames lock.d aside (a waiter's reclaim and an operator's
-// `release`): reclaim.d is held for its whole duration and acquisition withdraws while it exists. Returns
-// RECLAIM_BUSY when someone else holds it (a holder gone for more than a minute is cleared for the next try).
-const RECLAIM_BUSY = Symbol('reclaim busy')
-
+// All holder removals and ticket endings share reclaim.d. Residual cleanup
+// needs both age and a dead claimant; it never writes another terminal.
 function withReclaimSection(root, critical) {
-  const reclaimDir = path.join(root, 'reclaim.d')
-  try {
-    mkdirSync(reclaimDir)
-  } catch (error) {
-    if (error?.code !== 'EEXIST') throw error
-    removeDirectoryOlderThan(reclaimDir, RECLAIM_DIR_STALE_MS)
-    return RECLAIM_BUSY
-  }
-  try {
+  return claimSuiteSection(root, () => {
     cleanSuiteRecoveryFiles(root, 'lock.d.reclaimed-')
     return critical()
-  } finally {
-    rmSync(reclaimDir, REMOVE_WITH_RETRY)
-  }
+  })
 }
 
 function reclaimStaleHolder(root, lockDir, options) {
@@ -330,6 +318,7 @@ function describeWait(place, current, record) {
 // EACCES or EBUSY instead of ENOENT/EEXIST, and the lock's hot path meets exactly that when a holder
 // releases while waiters poll: an attempt that meets one is retried. One that persists for
 // TRANSIENT_FS_WINDOW_MS is a real permission problem and is thrown.
+// After publication, errors instead end the lease through its release context.
 const TRANSIENT_FS_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
 const TRANSIENT_FS_WINDOW_MS = 5000
 
@@ -341,39 +330,34 @@ async function retryTransient(operation, pauseMs, readSignal) {
     try {
       return operation()
     } catch (error) {
-      if (!TRANSIENT_FS_CODES.has(error?.code) || Date.now() - since >= TRANSIENT_FS_WINDOW_MS) throw error
+      if (publishedFailures.has(error) || !TRANSIENT_FS_CODES.has(error?.code) || Date.now() - since >= TRANSIENT_FS_WINDOW_MS) throw error
       await sleep(pauseMs, signal)
     }
   }
 }
 
 // Revalidate after winning the atomic mutex, before counting any grant or returning a lease.
-// Ordering/light-counter failures give back the provisional lease before the outer transient retry.
+// Post-publication errors are released by the journal context, without retrying
+// admission under the already-published holder.
 function confirmAdmission(state, holder, place, options) {
   const { root, queueDir, ticket, record } = state
   const lease = { ...suiteLeaseWithPark(state, holder, options.park), staticDomain: options.staticDomain, startedMonotonic: performance.now() }
-  try {
-    assertParkClaim(state)
-    const lightCounterBeforeGrant = readLightCounter(root)
-    const confirmed = queuePlace(queueDir, ticket, record, lightCounterBeforeGrant, options)
-    if (confirmed.ahead > 0) {
-      releaseSuiteLock(lease, { served: false })
-      options.afterHandBack?.()
-      return { again: true, place }
-    }
-    if (record.light === true) { lease.lightCounterBeforeGrant = lightCounterBeforeGrant; recordLightGrant(root) }
-    throwIfAborted(options.signal)
-    // A count that cannot be written resets the P0 counter; only a failed reset fails the admission (lease handed back).
-    if (record.level === 0 && record.priority !== 'release') recordP0Grant(root, options.p0GrantSeams)
-    recordAdmissionGrant(root)
-    lease.rankLevel = confirmed.rankLevel
-    lease.reason = confirmed.reason
-    closeQueuedReplacement(state, options.replacementSeams, options.onWait)
-    return { lease: record.replaceToken ? { ...lease, replacementArgv: record.argv } : lease }
-  } catch (error) {
-    releaseSuiteLock(lease, { served: false })
-    throw error
+  assertParkClaim(state)
+  const lightCounterBeforeGrant = readLightCounter(root)
+  const confirmed = queuePlace(queueDir, ticket, record, lightCounterBeforeGrant, options)
+  if (confirmed.ahead > 0) {
+    handBackJournalLease(lease, state, options, releaseSuiteLock)
+    return { again: true, place }
   }
+  if (record.light === true) { lease.lightCounterBeforeGrant = lightCounterBeforeGrant; recordLightGrant(root) }
+  throwIfAborted(options.signal)
+  // A failed counter reset ends this published lease through the error-release path.
+  if (record.level === 0 && record.priority !== 'release') recordP0Grant(root, options.p0GrantSeams)
+  recordAdmissionGrant(root)
+  lease.rankLevel = confirmed.rankLevel
+  lease.reason = confirmed.reason
+  closeQueuedReplacement(state, options.replacementSeams, options.onWait)
+  return { lease: record.replaceToken ? { ...lease, replacementArgv: record.argv } : lease }
 }
 
 // One poll of the queue: `{ lease }` when acquired, `{ again: true, place }` to poll again at once, or
@@ -392,7 +376,7 @@ function pollQueue(state, options) {
     delete holder.levelOrderVersion // queue-only: the order reads it from waiting tickets, never from the holder
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
-    if (taken === true) { options.afterPublish?.(); return confirmAdmission(state, holder, place, options) }
+    if (taken === true) return admitPublishedLease(state, holder, place, options)
     if (taken === 'reclaim') {
       removeDirectoryOlderThan(path.join(root, 'reclaim.d'), RECLAIM_DIR_STALE_MS)
       return { place, current: readSuiteLock({ root }) }
@@ -404,6 +388,17 @@ function pollQueue(state, options) {
   // Only the head of the queue reclaims (acquisition also withdraws while reclaim.d exists, see tryTakeLock).
   if (headReclaimed(place, current, root, lockDir, options)) return { again: true, place }
   return { place, current }
+}
+
+function admitPublishedLease(state, holder, place, options) {
+  notePublishedLease(suiteLeaseWithPark(state, holder, options.park), options, releaseSuiteLock)
+  try {
+    options.afterPublish?.()
+    return confirmAdmission(state, holder, place, options)
+  } catch (error) {
+    if (error && typeof error === 'object') publishedFailures.add(error)
+    throw error
+  }
 }
 
 function headReclaimed(place, current, root, lockDir, options) {
@@ -592,10 +587,16 @@ export function releaseSuiteLock(lease, outcome = {}) {
   if (!current.held) return true
   if (!sameInstance(current.holder, lease.holder)) return false
   outcome = suiteLockReleaseOutcome(lease, outcome)
-  recordSuiteLockService(lease, outcome)
-  rmSync(lease.lockDir, REMOVE_WITH_RETRY)
-  suiteJournalEvent(lease.journal, 'release', outcome)
-  return true
+  return retrySuiteSection(lease.root, () => {
+    const confirmed = readSuiteLock({ root: lease.root })
+    if (!confirmed.held) return true
+    if (!sameInstance(confirmed.holder, lease.holder)) return false
+    cleanSuiteRecoveryFiles(lease.root, 'lock.d.reclaimed-')
+    return removeJudgedInstance(lease.lockDir, confirmed.holder, {}, () => {
+      recordSuiteLockService(lease, outcome)
+      suiteJournalEvent(lease.journal, 'release', outcome)
+    })
+  })
 }
 
 function queryBroker(socketPath, request) {

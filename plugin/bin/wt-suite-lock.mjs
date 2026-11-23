@@ -164,6 +164,8 @@ export async function runLeasedCommand(command, lease, requested) {
   let yielded = false
   const timing = requested.timing ?? {}
   try {
+    const interrupted = recordedWaitSignal(requested, timing)
+    if (interrupted) { exit = interrupted; return exit }
     yielded = shouldYieldParkLease(lease, requested.park, readSuiteLockParked)
     if (yielded) { exit = 75; return exit }
     exit = await spawnLeasedCommand(command, lease, requested, timing)
@@ -193,10 +195,16 @@ function grantedStaticLane(lease) {
   return lease.staticDomain === true || String(lease.holder?.leaseId ?? '').startsWith('static:')
 }
 
-function spawnLeasedCommand(command, lease, requested, timing) {
+function recordedWaitSignal(requested, timing) {
   const reason = requested.waiting?.signal.reason
   const exit = suiteSignalExit(reason)
-  if (exit) { timing.signalOutcome = { cause: 'signal', signal: reason.signal }; return exit }
+  if (exit) timing.signalOutcome = { cause: 'signal', signal: reason.signal }
+  return exit
+}
+
+function spawnLeasedCommand(command, lease, requested, timing) {
+  const exit = recordedWaitSignal(requested, timing)
+  if (exit) return exit
   timing.waiting = requested.waiting
   return spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park), timing)
 }
@@ -239,7 +247,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
       // The lease is released (the broker socket closed, by the caller's finally) only once this resolves.
       treeStopped = stopCoveredCommandTree(child, { group })
     })
-    child.once('error', reject)
+    child.once('error', (error) => { stopSignals(); reject(error) })
     child.once('exit', (code, signal) => {
       timing.heldMs = performance.now() - started
       stopSignals()
