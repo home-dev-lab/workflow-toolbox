@@ -91,6 +91,44 @@ it('records one force-release and does not duplicate the client release', async 
   expect(ends(root, lease.holder.leaseId)).toEqual([expect.objectContaining({ event: 'release', cause: 'force-release', exit: null, served: false })])
 })
 
+for (const force of [false, true]) {
+  it(`records precise boot-clock duration and unknown result on ${force ? 'force release' : 'waiter reclaim'}`, async () => {
+    const root = scratch()
+    const lease = await acquireSuiteLock({ root })
+    writeFileSync(join(lease.lockDir, 'holder.json'), JSON.stringify({ ...lease.holder, pid: 2147483647, bootId: 'duration-test', startedUptimeMs: 1000.125 }))
+    const options = { root, bootClock: () => ({ bootId: 'duration-test', uptimeMs: 2234.6923828125 }) }
+    if (force) expect(operatorReleaseSuiteLock({ ...options, force }).released).toBe(true)
+    else releaseSuiteLock(await acquireSuiteLock(options))
+    releaseSuiteLock(lease)
+    expect(ends(root, lease.holder.leaseId)).toEqual([expect.objectContaining({ event: 'release', cause: force ? 'force-release' : 'reclaimed', heldS: 1.2345673828125, result: 'unknown', exit: null, served: false })])
+  })
+
+  it(`uses full-precision wall-clock fallback on ${force ? 'force release' : 'waiter reclaim'}`, async () => {
+    const root = scratch()
+    const lease = await acquireSuiteLock({ root })
+    const startedAt = '2026-01-01T00:00:00.000Z'
+    writeFileSync(join(lease.lockDir, 'holder.json'), JSON.stringify({ ...lease.holder, pid: 2147483647, startedAt, bootId: 'previous-boot' }))
+    const options = { root, bootClock: () => ({ bootId: 'current-boot', uptimeMs: 1 }), now: () => Date.parse(startedAt) + 1234.5 }
+    if (force) expect(operatorReleaseSuiteLock({ ...options, force }).released).toBe(true)
+    else releaseSuiteLock(await acquireSuiteLock(options))
+    releaseSuiteLock(lease)
+    expect(ends(root, lease.holder.leaseId)).toEqual([expect.objectContaining({ heldS: 1.2345, result: 'unknown' })])
+  })
+
+  it.each([
+    ['missing', undefined, 0], ['invalid', 'invalid', 0], ['negative', '2026-01-01T00:00:00.000Z', 0],
+    ['nonfinite', '2026-01-01T00:00:00.000Z', Infinity], ['throwing', undefined, 0],
+  ] as const)(`keeps the ${force ? 'force release' : 'reclaim'} line when elapsed is %s`, async (kind, startedAt, now) => {
+    const root = scratch()
+    const lease = await acquireSuiteLock({ root })
+    const { journalReclaimedHolder } = await runtime('host/suite-lock-recovery')
+    const holder = { ...lease.holder, pid: 2147483647, bootId: null, startedUptimeMs: null, startedAt }
+    const options = { force, bootClock() { if (kind === 'throwing') throw new Error('injected clock failure'); return { bootId: null, uptimeMs: NaN } }, now: () => now }
+    journalReclaimedHolder(holder, options)
+    expect(ends(root, lease.holder.leaseId)).toEqual([expect.objectContaining({ event: 'release', cause: force ? 'force-release' : 'reclaimed', heldS: null, result: 'unknown' })])
+  })
+}
+
 it('force release preserves a newer holder swapped at the removal boundary', async () => {
   const root = scratch()
   const lease = await acquireSuiteLock({ root })

@@ -89,17 +89,18 @@ function validBootStart(holder) {
   return Number.isFinite(holder?.startedUptimeMs) && holder.startedUptimeMs >= 0
 }
 
-function wallClockElapsed(holder, options) {
+function wallClockElapsed(holder, options, unknownElapsed = 600_001) {
   const wall = typeof holder?.startedAt === 'string' ? (options.now?.() ?? Date.now()) - Date.parse(holder.startedAt) : NaN
-  return Number.isFinite(wall) && wall >= 0 ? wall : 600_001
+  return Number.isFinite(wall) && wall >= 0 ? wall : unknownElapsed
 }
 
-function abandonedElapsed(holder, options) {
+// Accounting retains its conservative penalty; journal callers can request NaN for unknown elapsed.
+export function abandonedElapsed(holder, options, unknownElapsed = 600_001) {
   const clock = (options.bootClock ?? suiteLockBootClock)()
   const elapsed = clock.uptimeMs - holder?.startedUptimeMs
   const sameBoot = sameBootIdentity(clock, holder)
   if (sameBoot && validBootStart(holder) && Number.isFinite(elapsed) && elapsed >= 0) return elapsed
-  return wallClockElapsed(holder, options)
+  return wallClockElapsed(holder, options, unknownElapsed)
 }
 
 /** Reclaim never serves a turn; unknown elapsed conservatively retains the S penalty. */

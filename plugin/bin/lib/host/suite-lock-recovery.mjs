@@ -5,6 +5,7 @@ import { foreignNamespaceStale, pidProvesGone } from './suite-lock-liveness.mjs'
 import { readHolderIn, removeTicket } from './suite-lock-queue.mjs'
 import { suiteJournalEvent } from '../suite-lock-journal.mjs'
 import { claimSuiteSection } from './suite-lock-section.mjs'
+import { abandonedElapsed } from './suite-lock-rank-state.mjs'
 
 const RESIDUAL_AGE_MS = 600_000
 
@@ -66,9 +67,16 @@ export function reapSuiteTicket(queueDir, ticket, options = {}) {
   })
 }
 
+function reclaimedHeldSeconds(holder, options) {
+  try {
+    const elapsed = abandonedElapsed(holder, options, NaN)
+    return Number.isFinite(elapsed) && elapsed >= 0 ? elapsed / 1000 : null
+  } catch { return null }
+}
+
 export function journalReclaimedHolder(holder, options) {
   if (!recoveryJournal(holder)) return
-  const fields = { cause: 'force-release', exit: null, served: false, reclaimedBy: process.pid }
+  const fields = { cause: 'force-release', exit: null, served: false, reclaimedBy: process.pid, heldS: reclaimedHeldSeconds(holder, options), result: 'unknown' }
   if (!options.force) Object.assign(fields, { cause: 'reclaimed', proof: pidProvesGone(holder, options) || foreignNamespaceStale({ holder }, options) === true ? 'pid-gone' : 'age' })
   suiteJournalEvent(recoveryJournal(holder), 'release', fields)
 }
