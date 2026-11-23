@@ -155,33 +155,58 @@ function waitFor(check: () => boolean, timeoutMs = 5_000) {
   }
 }
 
-type LivenessProbe = { signal: (pid: number) => void, procfs: boolean, readStat: (pid: number) => string }
-const hostLiveness: LivenessProbe = {
-  signal: (pid) => { process.kill(pid, 0) },
-  procfs: existsSync('/proc/self/stat'),
-  readStat: (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8'),
-}
+// A liveness probe signals the process, then reads its scheduler state when the host can: from
+// procfs on Linux, from ps on other POSIX hosts. Without a state reader (Windows) signal zero decides.
+type LivenessProbe = { signal: (pid: number) => void, readState?: (pid: number) => string }
 
 const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code
+const missingProcess = (pid: number) => Object.assign(new Error(`no process ${pid}`), { code: 'ESRCH' })
+
+// The state is the field after the command name, which may itself hold spaces or parentheses.
+function procfsState(stat: string) {
+  const state = /^\d+ \(.*\) (\S) /s.exec(stat)?.[1]
+  if (!state) throw new Error(`unreadable procfs stat line: ${stat}`)
+  return state
+}
+
+function psState(pid: number) {
+  const result = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' })
+  if (result.error) throw result.error
+  const state = result.stdout.trim()
+  if (state) return state
+  if (result.status === 1) throw missingProcess(pid)
+  throw new Error(`ps -o stat= -p ${pid} exited ${result.status} without a state`)
+}
+
+const procfsReader = (pid: number) => procfsState(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+
+function hostStateReader(platform: NodeJS.Platform, procfs: boolean) {
+  if (procfs) return procfsReader
+  return platform === 'win32' ? undefined : psState
+}
+
+const hostLiveness: LivenessProbe = {
+  signal: (pid) => { process.kill(pid, 0) },
+  readState: hostStateReader(process.platform, existsSync('/proc/self/stat')),
+}
 
 // Only a probe error that names a missing process reads as gone; any other error is rethrown, so a
-// failing probe can never pass for a stopped process.
+// failing probe can never pass for a stopped process. An exited process passes through zombie (Z)
+// and then exit-dead (X, x on old kernels) while it is reaped, and can vanish between the signal and
+// the state read: each of these means the process is gone. Signal zero alone cannot see a zombie.
 function processExists(pid: number, probe: LivenessProbe = hostLiveness) {
   try { probe.signal(pid) } catch (error) {
     if (errorCode(error) === 'EPERM') return true
     if (errorCode(error) === 'ESRCH') return false
     throw error
   }
-  // Without procfs (macOS) signal zero is the only probe. With procfs, an exited process passes
-  // through zombie (Z) and then exit-dead (X, x on old kernels) while it is reaped, and its stat
-  // entry can vanish between the two reads: each of these means the process is gone.
-  if (!probe.procfs) return true
-  let stat: string
-  try { stat = probe.readStat(pid) } catch (error) {
+  if (!probe.readState) return true
+  let state: string
+  try { state = probe.readState(pid) } catch (error) {
     if (['ENOENT', 'ESRCH'].includes(errorCode(error) ?? '')) return false
     throw error
   }
-  return !/^\d+ \(.+\) [ZXx] /.test(stat)
+  return !/^[ZXx]/.test(state)
 }
 
 // Model a descheduled launcher without burning host CPU or sleeping. Resume is unconditional on
@@ -973,20 +998,38 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   })
 
   const probeError = (code: string) => () => { throw Object.assign(new Error(code), { code }) }
-  const reapedStat = probeError('ENOENT')
+  const procfs = (stat: string) => () => procfsState(stat)
   it.each([
-    ['a zombie reaped between the signal and the procfs read', { procfs: true, readStat: reapedStat }, false],
-    ['a zombie still waiting for its reaper', { procfs: true, readStat: () => '42 (node) Z 1 42' }, false],
-    ['a process in the exit-dead state of its reaping', { procfs: true, readStat: () => '42 (node) X 1 42' }, false],
-    ['a running process', { procfs: true, readStat: () => '42 (node) S 1 42' }, true],
-    ['a signalled process on a host without procfs', { procfs: false, readStat: reapedStat }, true],
-    ['a process another user owns', { signal: probeError('EPERM'), procfs: true, readStat: reapedStat }, true],
+    ['a zombie reaped between the signal and the state read', { readState: probeError('ENOENT') }, false],
+    ['a zombie still waiting for its reaper', { readState: procfs('42 (node) Z 1 42') }, false],
+    ['a process in the exit-dead state of its reaping', { readState: procfs('42 (node) X 1 42') }, false],
+    ['a running process', { readState: procfs('42 (my (odd) node) S 1 42') }, true],
+    ['a zombie as ps reports it on a host without procfs', { readState: () => 'Z' }, false],
+    ['a running process as ps reports it on a host without procfs', { readState: () => 'Ss' }, true],
+    ['a signalled process on a host without a state reader', {}, true],
+    ['a process another user owns', { signal: probeError('EPERM'), readState: probeError('ENOENT') }, true],
   ] as const)('reads the liveness of %s as %s', (_case, probe, alive) => {
     expect(processExists(42, { signal: () => {}, ...probe })).toBe(alive)
   })
 
-  it('refuses to read a failing procfs probe as a stopped process', () => {
-    expect(() => processExists(42, { signal: () => {}, procfs: true, readStat: probeError('EACCES') })).toThrow('EACCES')
+  it('refuses to read a failing state probe as a stopped process', () => {
+    expect(() => processExists(42, { signal: () => {}, readState: probeError('EACCES') })).toThrow('EACCES')
+  })
+
+  it.each([
+    ['linux', true, procfsReader],
+    ['darwin', false, psState],
+    ['win32', false, undefined],
+  ] as const)('reads process state on %s (procfs %s) through the host reader', (platform, procfs, reader) => {
+    expect(hostStateReader(platform, procfs)).toBe(reader)
+  })
+
+  it.skipIf(process.platform === 'win32')('reads a live process and a reaped one through ps', async () => {
+    expect(psState(process.pid)).toMatch(/^[A-Za-z]/)
+    expect(psState(process.pid)).not.toMatch(/^[ZXx]/)
+    const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+    await once(child, 'exit')
+    expect(() => psState(child.pid!)).toThrow(`no process ${child.pid}`)
   })
 
   it('keeps a condition met once observed even when a later probe reads it unmet', () => {
