@@ -1000,15 +1000,15 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   const probeError = (code: string) => () => { throw Object.assign(new Error(code), { code }) }
   const procfs = (stat: string) => () => procfsState(stat)
   it.each([
-    ['a zombie reaped between the signal and the state read', { readState: probeError('ENOENT') }, false],
-    ['a zombie still waiting for its reaper', { readState: procfs('42 (node) Z 1 42') }, false],
-    ['a process in the exit-dead state of its reaping', { readState: procfs('42 (node) X 1 42') }, false],
-    ['a running process', { readState: procfs('42 (my (odd) node) S 1 42') }, true],
-    ['a zombie as ps reports it on a host without procfs', { readState: () => 'Z' }, false],
-    ['a running process as ps reports it on a host without procfs', { readState: () => 'Ss' }, true],
-    ['a signalled process on a host without a state reader', {}, true],
-    ['a process another user owns', { signal: probeError('EPERM'), readState: probeError('ENOENT') }, true],
-  ] as const)('reads the liveness of %s as %s', (_case, probe, alive) => {
+    ['a zombie reaped between the signal and the state read', false, { readState: probeError('ENOENT') }],
+    ['a zombie still waiting for its reaper', false, { readState: procfs('42 (node) Z 1 42') }],
+    ['a process in the exit-dead state of its reaping', false, { readState: procfs('42 (node) X 1 42') }],
+    ['a running process', true, { readState: procfs('42 (my (odd) node) S 1 42') }],
+    ['a zombie as ps reports it on a host without procfs', false, { readState: () => 'Z' }],
+    ['a running process as ps reports it on a host without procfs', true, { readState: () => 'Ss' }],
+    ['a signalled process on a host without a state reader', true, {}],
+    ['a process another user owns', true, { signal: probeError('EPERM'), readState: probeError('ENOENT') }],
+  ] as const)('reads %s as alive: %s', (_case, alive, probe) => {
     expect(processExists(42, { signal: () => {}, ...probe })).toBe(alive)
   })
 
