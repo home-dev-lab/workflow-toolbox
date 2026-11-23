@@ -381,7 +381,7 @@ function registerReleaseOrdering() {
     }
     releaseSuiteLock(holder); await Promise.all(all)
     expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
-    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; ordinary tickets record counters and completed exclusive project turns').toEqual(['admissions', 'journal.jsonl', 'light-grants', 'p0-grants', 'project-turns', 'queue.d', 'turn-seq'])
+    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; ordinary tickets record counters, completed exclusive project turns and terminal journal claims').toEqual(['admissions', 'journal.jsonl', 'light-grants', 'p0-grants', 'project-turns', 'queue.d', 'terminal.d', 'turn-seq'])
     expect(readLightCounter(root).grants).toBe(1)
   }, 20_000)
 

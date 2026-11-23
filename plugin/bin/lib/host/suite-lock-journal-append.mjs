@@ -1,4 +1,4 @@
-import { closeSync, openSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import path from 'node:path'
 import { claimJournalRotation } from './suite-lock-journal-rotation.mjs'
 
@@ -6,6 +6,9 @@ export const SUITE_JOURNAL_ROTATE_BYTES = 4 * 1024 * 1024
 let warned = false
 const APPEND_OPTIONS = { flag: 'a', mode: 0o600 }
 const ROTATION_SLACK_BYTES = 64 * 1024
+const TERMINAL_EVENTS = new Set(['release', 'timeout', 'abort'])
+const LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000
 
 function warn(error) {
   if (warned) return
@@ -14,6 +17,35 @@ function warn(error) {
 }
 export { warn as warnSuiteLockJournal }
 
+function claimTerminal(root, event) {
+  if (!TERMINAL_EVENTS.has(event.event) || typeof event.leaseId !== 'string' || !LEASE_ID.test(event.leaseId)) return true
+  const directory = path.join(root, 'terminal.d')
+  try { mkdirSync(directory, { recursive: true }) } catch (error) { warn(error); return true }
+  try {
+    // Exclusive create serialises all terminal writers, including separate processes.
+    writeFileSync(path.join(directory, event.leaseId), '', { flag: 'wx', mode: 0o600 })
+    return true
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false
+    warn(error)
+    return true
+  }
+}
+
+function pruneTerminalMarker(file, now) {
+  try {
+    if (now - statSync(file).mtimeMs > TERMINAL_RETENTION_MS) unlinkSync(file)
+  } catch (error) { if (error?.code !== 'ENOENT') warn(error) }
+}
+
+function pruneTerminalMarkers(root) {
+  const directory = path.join(root, 'terminal.d')
+  try {
+    const now = Date.now()
+    for (const name of readdirSync(directory).filter((entry) => LEASE_ID.test(entry))) pruneTerminalMarker(path.join(directory, name), now)
+  } catch (error) { if (error?.code !== 'ENOENT') warn(error) }
+}
+
 function rotate(root, file) {
   const size = statSync(file, { throwIfNoEntry: false })?.size ?? 0
   const exceedsBound = size > SUITE_JOURNAL_ROTATE_BYTES
@@ -21,7 +53,10 @@ function rotate(root, file) {
   const release = claimJournalRotation(root)
   if (!release) throw Object.assign(new Error('journal rotation busy; event unknown'), { code: 'ROTATION_BUSY' })
   try {
-    if (statSync(file, { throwIfNoEntry: false })?.size > SUITE_JOURNAL_ROTATE_BYTES) renameSync(file, path.join(root, 'journal.1.jsonl'))
+    if (statSync(file, { throwIfNoEntry: false })?.size > SUITE_JOURNAL_ROTATE_BYTES) {
+      renameSync(file, path.join(root, 'journal.1.jsonl'))
+      pruneTerminalMarkers(root)
+    }
   } finally { release() }
 }
 
@@ -40,6 +75,7 @@ export function appendSuiteLockJournal(root, event) {
   try {
     const line = Buffer.from(`${JSON.stringify(event)}\n`)
     if (line.length >= 4096) throw new Error('journal line too large')
+    if (!claimTerminal(root, event)) return
     const file = path.join(root, 'journal.jsonl')
     rotateBeforeAppend(root, file)
     const fd = openSync(file, APPEND_OPTIONS.flag, APPEND_OPTIONS.mode)

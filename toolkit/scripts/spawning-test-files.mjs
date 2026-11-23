@@ -226,6 +226,7 @@ export const spawningTestFiles = [
   'packages/build/test/suite-lock-static-nesting.test.ts',
   'packages/build/test/suite-lock-static.test.ts',
   'packages/build/test/suite-lock-terminal-review.test.ts',
+  'packages/build/test/suite-lock-terminal-once.test.ts',
   'packages/build/test/suite-lock-terminal.test.ts',
   'packages/build/test/suite-lock.test.ts',
   'packages/build/test/test-orphan-reaper.test.ts',
