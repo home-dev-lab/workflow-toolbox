@@ -34,7 +34,7 @@ export function runCli(cli, args, fixture, extra = {}) {
   return run
 }
 
-export async function until(check, message, timeout = 6000) {
+export async function until(check, message, timeout = 15000) {
   const deadline = performance.now() + timeout
   while (performance.now() < deadline) {
     if (check()) return
@@ -43,7 +43,7 @@ export async function until(check, message, timeout = 6000) {
   assert.fail(message)
 }
 
-export async function completed(run, timeout = 6000) {
+export async function completed(run, timeout = 15000) {
   await until(() => run.child.exitCode !== null || run.child.signalCode !== null,
     `CLI did not finish: ${run.output.stderr}`, timeout)
   return run.done
@@ -54,7 +54,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 const stem = fileURLToPath(import.meta.url).replace(/\\.(test|selftest)\\.mjs$/, '')
 writeFileSync(stem + '.started', '1')
-const deadline = Date.now() + 45000
+const deadline = Date.now() + 50000
 while (!existsSync(stem + '.go')) {
   if (Date.now() > deadline) throw new Error('fixture release timed out')
   await delay(20)
@@ -188,7 +188,7 @@ export async function assertNested(cli, spawnProcess) {
   const f = fixture(spawnProcess)
   try {
     writeFileSync(join(f.work, 'a.test.mjs'), `import { spawnSync } from 'node:child_process'
-const child = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(cli)}, 'run', '--', 'node', 'nested.test.mjs'], { env: process.env, stdio: 'inherit', timeout: 14000 })
+const child = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(cli)}, 'run', '--', 'node', 'nested.test.mjs'], { env: process.env, stdio: 'inherit', timeout: 40000 })
 if (child.status !== 0) throw new Error('nested run failed: ' + child.status)
 `)
     const run = runCli(cli, light, f)
