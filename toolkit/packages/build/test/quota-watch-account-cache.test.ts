@@ -12,7 +12,21 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 type Seed = { key: string, fileKey: string, uuid?: string }
-type Session = { configSet?: boolean, sessionFlag?: string | undefined, switchDuringProbe?: boolean, differentOsHome?: boolean }
+type Session = { configSet?: boolean, sessionFlag?: string | undefined, switchDuringProbe?: boolean, differentOsHome?: boolean, osHomeOnly?: boolean }
+
+function competingHome(home: string) {
+  const root = join(home, '.claude')
+  mkdirSync(root, { recursive: true })
+  const account = JSON.stringify({ oauthAccount: { accountUuid: 'competing-account' } })
+  writeFileSync(join(home, '.claude.json'), account)
+  writeFileSync(join(root, '.claude.json'), account)
+  writeFileSync(join(root, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: {
+    configDir: root, accountKey: 'login',
+    accountFingerprint: createHash('sha256').update('competing-account').digest('hex').slice(0, 8),
+    five_hour: { pct: 77 }, seven_day: { pct: 77 },
+  } }))
+  return home
+}
 
 function fixture(session: Session) {
   const home = mkdtempSync(join(tmpdir(), 'wt-quota-account-'))
@@ -24,12 +38,13 @@ function fixture(session: Session) {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home }
   const nodeArgs: string[] = []
   if (session.differentOsHome) {
-    env.USERPROFILE = join(home, 'os-home')
-    mkdirSync(env.USERPROFILE)
+    env.HOME = competingHome(join(home, 'competing-home'))
+    // osHomeOnly: the OS home differs from both variables, so only os.homedir() reaches the session tree.
+    if (session.osHomeOnly) [env.WT_FIXTURE_OS_HOME, env.USERPROFILE] = [home, competingHome(join(home, 'competing-profile'))]
     const preload = join(root, 'os-home.mjs')
     writeFileSync(preload, `import os from 'node:os';
 import { syncBuiltinESMExports } from 'node:module';
-os.homedir = () => process.env.USERPROFILE;
+os.homedir = () => process.env.WT_FIXTURE_OS_HOME ?? process.env.USERPROFILE;
 syncBuiltinESMExports();`)
     nodeArgs.push('--import', pathToFileURL(preload).href)
   }
@@ -42,6 +57,7 @@ syncBuiltinESMExports();`)
 
 async function run(keys: Array<string | null>, seed?: Seed, tokenEnv = '', session: Session = {}) {
   const { root, env, nodeArgs } = fixture(session)
+  const competingCache = session.differentOsHome ? readFileSync(join(env.HOME!, '.claude', '.quota-cache.json'), 'utf8') : undefined
   const probe = join(root, 'probe.mjs')
   const counter = join(root, 'counter')
   const sleep = join(root, 'sleep')
@@ -51,6 +67,7 @@ const file = ${JSON.stringify(counter)};
 let n = 0; try { n = Number(readFileSync(file, 'utf8')) } catch {}
 writeFileSync(file, String(n + 1));
 writeFileSync(${JSON.stringify(join(root, 'child-session-flag'))}, process.env.WT_SESSION_CONFIG_DIR_SET ?? 'missing');
+writeFileSync(${JSON.stringify(join(root, 'child-config-dir'))}, process.env.CLAUDE_CONFIG_DIR);
 if (${Boolean(session.switchDuringProbe)} && n === 0) writeFileSync(${JSON.stringify(join(root, '.claude.json'))}, JSON.stringify({ oauthAccount: { accountUuid: 'changed-account' } }));
 const key = ${JSON.stringify(keys)}[Math.min(n, ${keys.length - 1})];
 console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...(key === null ? {} : { accountKey: key }), five_hour: { pct: n ? 10 : 40 }, seven_day: { pct: n ? 10 : 40 } }));`)
@@ -70,11 +87,12 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...(key =
   try {
     await Promise.race([ready, done.then(() => { throw new Error('watcher exited before its sleep barrier') })])
     const initialCaches = readdirSync(root).filter((name) => /^\.quota-cache.*\.json$/.test(name))
+    const initialLogin = initialCaches.includes('.quota-cache.json') ? JSON.parse(readFileSync(join(root, '.quota-cache.json'), 'utf8')).data : undefined
     if (seed) writeFileSync(join(root, seed.fileKey === 'login' ? '.quota-cache.json' : `.quota-cache.${seed.fileKey}.json`), JSON.stringify({ at: Date.now(), data: { configDir: root, accountKey: seed.key, accountFingerprint: createHash('sha256').update(seed.uuid ?? 'quota-fixture-account').digest('hex').slice(0, 8), five_hour: { pct: 99 }, seven_day: { pct: 99 } } }))
     else for (const name of readdirSync(root).filter((name) => /^\.quota-cache.*\.json$/.test(name))) rmSync(join(root, name))
     writeFileSync(barrier, '')
     expect(await done).toBe(0)
-    return { stdout, initialCaches, childFlag: readFileSync(join(root, 'child-session-flag'), 'utf8'), count: Number(readFileSync(counter, 'utf8')), caches: readdirSync(root).filter((name) => /^\.quota-cache.*\.json$/.test(name)) }
+    return { stdout, initialCaches, initialLogin, root, childConfigDir: readFileSync(join(root, 'child-config-dir'), 'utf8'), competingCacheUntouched: competingCache === (session.differentOsHome ? readFileSync(join(env.HOME!, '.claude', '.quota-cache.json'), 'utf8') : undefined), childFlag: readFileSync(join(root, 'child-session-flag'), 'utf8'), count: Number(readFileSync(counter, 'utf8')), caches: readdirSync(root).filter((name) => /^\.quota-cache.*\.json$/.test(name)) }
   } finally { sleepWatcher!.close(); child.kill('SIGKILL') }
 }
 
@@ -169,5 +187,32 @@ describe('quota watcher session cache identity', () => {
     expect(result.stdout).toContain('reading discarded, probing again next poll')
     expect(result.initialCaches).toEqual([])
     expect(result.count).toBe(2)
+  })
+})
+
+describe('quota watcher home resolution under injected win32 semantics', () => {
+  it.each([
+    { sessionFlag: '0', configSet: true, uuid: 'home-account', childFlag: '0' },
+    { sessionFlag: '1', configSet: false, uuid: 'quota-fixture-account', childFlag: '1' },
+    { sessionFlag: undefined, configSet: false, uuid: 'home-account', childFlag: '0' },
+  ])('uses USERPROFILE over a competing HOME under injected win32 semantics: flag=$sessionFlag configSet=$configSet', async ({ sessionFlag, configSet, uuid, childFlag }) => {
+    const result = await run(['login'], { key: 'login', fileKey: 'login', uuid }, '', { sessionFlag, configSet, differentOsHome: true })
+    expect(result.count).toBe(1)
+    expect(result.stdout).toContain('99%')
+    expect(result.stdout).not.toContain('77%')
+    expect(result.initialLogin.accountFingerprint).toBe(createHash('sha256').update(uuid).digest('hex').slice(0, 8))
+    expect(result.initialLogin.configDir).toBe(result.root)
+    expect(result.childConfigDir).toBe(result.root)
+    expect(result.initialCaches).toEqual(['.quota-cache.json'])
+    expect(result.competingCacheUntouched).toBe(true)
+    expect(result.childFlag).toBe(childFlag)
+  })
+  it('follows os.homedir() when it differs from both HOME and USERPROFILE', async () => {
+    const result = await run(['login'], { key: 'login', fileKey: 'login', uuid: 'home-account' }, '', { configSet: false, differentOsHome: true, osHomeOnly: true })
+    expect(result.count).toBe(1)
+    expect(result.stdout).toContain('99%')
+    expect(result.stdout).not.toContain('77%')
+    expect(result.initialLogin.accountFingerprint).toBe(createHash('sha256').update('home-account').digest('hex').slice(0, 8))
+    expect(result.childConfigDir).toBe(result.root)
   })
 })
