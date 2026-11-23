@@ -260,7 +260,7 @@ function markerRetention(root) {
   assert.equal(fs.existsSync(old), true, 'ordinary appends must not prune markers')
   fs.writeFileSync(join(root, 'journal.jsonl'), 'x'.repeat(journal.SUITE_JOURNAL_ROTATE_BYTES + 1))
   journal.appendSuiteLockJournal(root, { event: 'request' })
-  assert.equal(fs.existsSync(old), false, 'rotation must prune markers older than 24 hours')
+  assert.equal(fs.existsSync(old), true, 'rotation must never prune pending markers by age')
   assert.equal(fs.existsSync(recent), true, 'rotation must retain recent markers')
 }
 
@@ -274,5 +274,5 @@ export const terminalOnceCases = {
   'marker creation failure preserves best-effort appends': claimFailure,
   'exclusive-create failure warns once and still appends': markerWriteFailure,
   'marker precedes the line and survives append failure': markerOrder,
-  'marker retention runs only at rotation': markerRetention,
+  'rotation never prunes pending terminal markers': markerRetention,
 }

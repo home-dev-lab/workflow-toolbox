@@ -6,6 +6,7 @@ import { readHolderIn, removeTicket } from './suite-lock-queue.mjs'
 import { suiteJournalEvent } from '../suite-lock-journal.mjs'
 import { claimSuiteSection } from './suite-lock-section.mjs'
 import { abandonedElapsed } from './suite-lock-rank-state.mjs'
+export { reapSuiteTerminals } from './suite-lock-terminal-repair.mjs'
 
 const RESIDUAL_AGE_MS = 600_000
 
