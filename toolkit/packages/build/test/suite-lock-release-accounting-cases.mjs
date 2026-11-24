@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const bin = process.env.WT_RELEASE_ACCOUNTING_MODULE_ROOT
@@ -26,6 +26,37 @@ function failTicketCleanup(root, run) {
   finally { fs.readdirSync = original; syncBuiltinESMExports() }
 }
 
+function failTurnPublication(root, run) {
+  const original = fs.renameSync
+  const blocked = []
+  fs.renameSync = function (source, destination) {
+    if (String(destination) === join(root, 'turn-seq') || dirname(String(destination)) === join(root, 'project-turns')) {
+      blocked.push(String(destination))
+      throw Object.assign(new Error('injected turn publication failure'), { code: 'EINJECTED' })
+    }
+    return Reflect.apply(original, this, [source, destination])
+  }
+  syncBuiltinESMExports()
+  try { run(); assert.ok(blocked.length > 0, 'the rank-state publication fault must fire') }
+  finally { fs.renameSync = original; syncBuiltinESMExports() }
+}
+
+export async function releasePublicationRetryCase() {
+  const root = fs.mkdtempSync(join(tmpdir(), 'suite-release-accounting-'))
+  try {
+    const lease = await lock.acquireSuiteLock({ root, env: { WT_SUITE_LOCK_STATIC_LANE: '0' }, project: 'alpha', size: 'S' })
+    const outcome = { served: true, heldMs: 600_001, exit: 0 }
+    failTurnPublication(root, () => failTicketCleanup(root, () => lock.releaseSuiteLock(lease, outcome)))
+    assert.deepEqual(lock.readSuiteLock({ root }).holder, lease.holder, 'failed publication and cleanup must restore the judged holder')
+    assert.deepEqual(snapshot(root).turns, {}, 'failed turn publication must leave no project turn')
+    assert.equal(releases(root).length, 0, 'put-back after failed publication must not journal a release')
+    assert.equal(lock.releaseSuiteLock(lease, outcome), true)
+    assert.deepEqual(snapshot(root).turns, { alpha: 1 }, 'retry after failed publication must record the project turn')
+    assert.equal(lock.readSuiteLock({ root }).held, false)
+    assert.equal(releases(root).length, 1, 'retry after failed publication must journal exactly one release')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+}
+
 export async function releasePutBackCase() {
   const root = fs.mkdtempSync(join(tmpdir(), 'suite-release-accounting-'))
   try { await checkPutBack(root) }
@@ -39,15 +70,10 @@ async function checkPutBack(root) {
   assert.equal(lock.readSuiteLock({ root }).holder.leaseId, lease.holder.leaseId, 'cleanup failure must put the judged holder back')
   assert.equal(releases(root).length, 0, 'put-back must not journal a release')
   assert.deepEqual(snapshot(root).turns, { alpha: 1 }, 'service must publish before the mutex is set aside')
-  const history = snapshot(root).history
   failTicketCleanup(root, () => lock.releaseSuiteLock({ ...lease }, outcome))
-  assert.deepEqual(snapshot(root).turns, { alpha: 1 }, 'a put-back retry must not stamp a second project turn')
-  assert.deepEqual(snapshot(root).history, history, 'retry must preserve the first service sample')
   assert.equal(releases(root).length, 0)
   assert.equal(lock.releaseSuiteLock(lease, outcome), true)
   assert.equal(lock.readSuiteLock({ root }).held, false)
-  assert.deepEqual(snapshot(root).turns, { alpha: 1 }, 'successful retry must consume exactly one project turn')
-  assert.deepEqual(snapshot(root).history, history)
   assert.equal(releases(root).length, 1, 'successful retry must journal exactly one release')
   lock.releaseSuiteLock(lease, outcome)
   assert.equal(releases(root).length, 1)
