@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test, after } from 'node:test'
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -24,7 +24,8 @@ if (process.env.WT_ADMISSION_RECOVERY_MUTATION === '1') {
   writeFileSync(file, before.replace(reaper, ''))
 }
 const lib = pathToFileURL(path.join(scratch, 'bin/lib/suite-lock.mjs')).href
-const { acquireSuiteLock, releaseSuiteLock, suiteLeaseMarker, readSuiteLock } = await import(lib)
+const { acquireSuiteLock, releaseSuiteLock, suiteLeaseMarker, readSuiteLock, readSuiteLockStatus } = await import(lib)
+const { formatSuiteLockStatus, suiteLockStatusJson } = await import(pathToFileURL(path.join(scratch, 'bin/lib/suite-lock-status.mjs')))
 const { replaceQueuedCommand } = await import(pathToFileURL(path.join(scratch, 'bin/lib/host/suite-lock-replace.mjs')))
 const { readQueueSnapshot } = await import(pathToFileURL(path.join(scratch, 'bin/lib/host/suite-lock-queue.mjs')))
 const { currentPidNamespace } = await import(pathToFileURL(path.join(scratch, 'bin/lib/host/pid-namespace.mjs')))
@@ -34,7 +35,11 @@ const reservations = await import(pathToFileURL(path.join(scratch, 'bin/lib/host
 const machine = { cores: 4, memMiB: 4096, load: 0, loadLimit: 4, availableMiB: 8192, floorMiB: 1024 }
 // Real children and groups, deterministic host readings in this OS-temp copy.
 writeFileSync(path.join(scratch, 'bin/lib/host/suite-lock-machine.mjs'),
-  `export function readSuiteMachine() { return ${JSON.stringify(machine)} }\nexport const reservationHostSupported = (platform = process.platform) => ['linux', 'darwin'].includes(platform)\n`)
+  `import fs from 'node:fs';
+export function readSuiteMachine() {
+  try { return JSON.parse(fs.readFileSync(process.env.WT_SUITE_LOCK_DIR + '/machine.json', 'utf8')) } catch { return ${JSON.stringify(machine)} }
+}
+export const reservationHostSupported = (platform = process.platform) => ['linux', 'darwin'].includes(platform)\n`)
 const children = new Set()
 after(() => { for (const child of children) child.kill('SIGKILL'); rmSync(scratch, { recursive: true, force: true }) })
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20))
@@ -46,10 +51,10 @@ async function until(check, message, timeout = 5000) {
   assert.fail(message)
 }
 
-function history(root) {
+function history(root, cores = 1, memMiB = 100) {
   mkdirSync(root, { recursive: true })
   const rows = [0, 1, 2].map((number) => ({ leaseId: `history-${number}`, kind: 'exclusive', cmd: 'other', event: 'release',
-    ts: new Date().toISOString(), exit: 0, overlaps: [], resources: { peakCores: 1, peakMemMiB: 100,
+    ts: new Date().toISOString(), exit: 0, overlaps: [], resources: { peakCores: cores, peakMemMiB: memMiB,
       wallMs: 1000, unknownReasons: [] } }))
   writeFileSync(path.join(root, 'journal.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n')
 }
@@ -358,12 +363,23 @@ reservationTest('watchdog stop is serialized and requeue preserves original tick
     const state = reservations.readReservationState(root)
     assert.equal(state.holders.filter((holder) => holder.stop).length, 1, 'one outstanding stop')
     assert.equal(state.holders.find((holder) => holder.stop).leaseId, two.holder.leaseId)
-    releaseSuiteLock(two, { exit: 75, served: false })
+    releaseSuiteLock(two, { exit: 75, served: false, requeue: true })
+    const [retry] = readQueueSnapshot(path.join(root, 'queue.d'))
+    assert.equal(retry?.number, two.ticket, 'retry ticket must exist before freed capacity is observable')
+    assert.equal(retry.holder.level, two.record.level)
+    assert.equal(retry.holder.startedAt, two.record.startedAt)
+    assert.equal(retry.holder.lightGrantsAtQueue, two.record.lightGrantsAtQueue)
+    assert.equal(retry.holder.p0GrantsAtQueue, two.record.p0GrantsAtQueue)
+    assert.equal(retry.holder.memoryRetries, 1)
+    assert.notEqual(retry.holder.leaseId, two.holder.leaseId)
     releaseSuiteLock(one, { exit: 0 })
-    const again = await acquireSuiteLock({ ...options, priority: 'P0', requeue: two })
+    const again = await acquireSuiteLock({ ...options, priority: 'P0', light: true, project: 'different', size: 'S', requeue: two })
     try {
       assert.equal(again.ticket, two.ticket, 'requeue keeps original ticket')
       assert.equal(again.holder.level, 2, 'requeue keeps original priority')
+      assert.equal(again.record.light, two.record.light, 'requeue must not inherit a newly requested light class')
+      assert.equal(again.record.project, two.record.project)
+      assert.equal(again.record.size, two.record.size)
       assert.notEqual(again.holder.leaseId, two.holder.leaseId, 'new attempt has its own terminal identity')
     } finally { releaseSuiteLock(again, { exit: 0 }) }
     const rows = readFileSync(path.join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
@@ -371,6 +387,187 @@ reservationTest('watchdog stop is serialized and requeue preserves original tick
     assert.equal(stopped.length, 1)
     assert.equal(stopped[0].cause, 'memory-pressure')
   } finally { releaseSuiteLock(one); releaseSuiteLock(two) }
+})
+
+reservationTest('a released memory victim keeps its place ahead of an already polling peer', async () => {
+  const root = path.join(scratch, 'retry-place')
+  history(root)
+  const options = { root, reservation: true, readMachine: () => ({ ...machine, cores: 2.5 }),
+    waitS: 5, pollMs: 10, argv: ['fixture'], priority: 'P2', project: 'same', env: {} }
+  const keeper = await acquireSuiteLock(options)
+  const victim = await acquireSuiteLock(options)
+  let peer
+  let polls = 0
+  const pending = acquireSuiteLock({ ...options, onQueuePlace: () => { polls++ } }).then((lease) => { peer = lease })
+  let retry
+  try {
+    await until(() => polls > 0, 'peer must already be polling')
+    reservations.watchReservationMemory(root, { ...machine, availableMiB: 0 })
+    releaseSuiteLock(victim, { exit: 75, served: false, requeue: true })
+    const before = polls
+    await until(() => peer || polls > before + 2, 'peer must observe the released capacity')
+    assert.equal(peer, undefined, 'a polling peer must not steal the memory retry position')
+    retry = await acquireSuiteLock({ ...options, requeue: victim })
+    assert.equal(retry.ticket, victim.ticket)
+    releaseSuiteLock(retry, { exit: 0 })
+    await pending
+    assert.ok(peer.ticket > retry.ticket)
+  } finally { releaseSuiteLock(keeper); releaseSuiteLock(victim); if (retry) releaseSuiteLock(retry); await pending; if (peer) releaseSuiteLock(peer) }
+})
+
+reservationTest('thirty-three measured heavy leases fit without a holder-count cap', async () => {
+  const root = path.join(scratch, 'many-holders')
+  history(root)
+  const count = 33
+  const held = []
+  try {
+    for (let i = 0; i < count; i++) held.push(await acquireSuiteLock({ root, reservation: true,
+      readMachine: () => ({ ...machine, cores: count * 1.25, memMiB: count * 125 }),
+      waitS: 5, pollMs: 10, argv: ['fixture'], env: {} }))
+    assert.equal(reservations.readReservationState(root).holders.length, count,
+      'resource fit, not a fixed number of jobs, must determine concurrent holders')
+  } finally { for (const lease of held) releaseSuiteLock(lease, { exit: 0 }) }
+})
+
+for (const sensitive of [false, true]) reservationTest(`same-name light jobs use history, not their name: sensitive=${sensitive}`, async () => {
+  const root = path.join(scratch, `sensitivity-${sensitive}`)
+  if (sensitive) {
+    history(root)
+    const rows = readFileSync(path.join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    rows[1].exit = 1
+    rows[1].overlaps = [{ leaseId: 'concurrent', durationMs: 1 }]
+    writeFileSync(path.join(root, 'journal.jsonl'), rows.map(JSON.stringify).join('\n') + '\n')
+  }
+  const options = { root, reservation: true, light: true, readMachine: () => machine,
+    waitS: 5, pollMs: 10, argv: ['fixture'], env: {} }
+  const first = await acquireSuiteLock(options)
+  let second
+  let polls = 0
+  const pending = acquireSuiteLock({ ...options, onQueuePlace: () => { polls++ } }).then((lease) => { second = lease })
+  try {
+    await until(() => second || polls > 2, 'second same-name ticket must be inspected')
+    assert.equal(first.holder.reservation.mode, sensitive ? 'exclusive' : 'reservation')
+    assert.equal(first.holder.reservation.basis, sensitive ? 'timing-history' : 'declared')
+    assert.equal(Boolean(second), !sensitive, 'only history-derived sensitivity must prevent sharing')
+    releaseSuiteLock(first, { exit: 0 })
+    await pending
+  } finally { releaseSuiteLock(first); await pending; if (second) releaseSuiteLock(second) }
+})
+
+reservationTest('queue status exposes the same full-precision reservation used by admission', async () => {
+  const root = path.join(scratch, 'queue-reservations')
+  history(root, 1.00000001, 100.00000001)
+  const budget = { ...machine, load: 99 }
+  const controller = new AbortController()
+  let polls = 0
+  const pending = acquireSuiteLock({ root, reservation: true, readMachine: () => budget, light: false,
+    signal: controller.signal, pollMs: 10, argv: ['fixture'], env: {}, onQueuePlace: () => { polls++ } })
+    .catch((error) => assert.equal(error.code, 'ABORT_ERR'))
+  try {
+    await until(() => polls > 1, 'resource waiter must queue')
+    const state = readSuiteLockStatus({ root })
+    assert.deepEqual(state.queue[0].reservation, { mode: 'reservation', cores: 1.00000001 * 1.25, memMiB: 100.00000001 * 1.25, basis: 'measured' },
+      'every queued managed job must show its admission reservation')
+    assert.deepEqual(suiteLockStatusJson(state).queue[0].reservation, state.queue[0].reservation)
+    const text = formatSuiteLockStatus(state, 'fixture')
+    assert.match(text, /reservation 1\.25 cores, 125\.00 MiB \(measured\)/)
+    assert.match(text, /P[012] reserved,/, 'a shareable heavy waiter must not be labelled exclusive')
+  } finally { controller.abort(); await pending }
+})
+
+function managedChild(root, script) {
+  const child = spawn(process.execPath, [path.join(scratch, 'bin/wt-suite-lock.mjs'), 'run', '--', process.execPath, '-e', script], {
+    env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LEASE: '', WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK: '1' },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
+  children.add(child)
+  let stderr = ''
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  return { child, stderr: () => stderr, ended: new Promise((resolve) => child.once('exit', resolve)) }
+}
+
+async function finishManaged(run) {
+  if (run.child.exitCode === null) run.child.kill('SIGTERM')
+  await run.ended
+  children.delete(run.child)
+}
+
+reservationTest('a job that repeatedly exceeds memory alone ends after three requeues', async () => {
+  const root = path.join(scratch, 'bounded-retry')
+  history(root)
+  const marker = path.join(root, 'attempts')
+  const script = `const fs=require('fs'),p=${JSON.stringify(marker)};fs.writeFileSync(p,String(Number(fs.existsSync(p)?fs.readFileSync(p,'utf8'):0)+1));setInterval(()=>{},1000)`
+  const run = managedChild(root, script)
+  try {
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await until(() => { try { return readFileSync(marker, 'utf8') === String(attempt) } catch { return false } }, 'bounded attempt must start')
+      assert.equal(reservations.readReservationState(root).holders.length, 1)
+      reservations.watchReservationMemory(root, { ...machine, availableMiB: 0 })
+    }
+    await until(() => run.child.exitCode !== null, 'memory retries must stop after three requeues (four attempts)')
+    assert.equal(await run.ended, 75)
+    assert.equal(readFileSync(marker, 'utf8'), '4')
+    assert.match(run.stderr(), /memory retry limit reached \(3 requeues\)/)
+    const grants = readSuiteLockJournal(root).tickets.filter((entry) => entry.grant)
+    assert.equal(grants.length, 4)
+    assert.equal(new Set(grants.map((entry) => entry.ticket)).size, 1)
+    assert.equal(reservations.readReservationState(root).holders.length, 0)
+    assert.equal(readQueueSnapshot(path.join(root, 'queue.d')).length, 0)
+  } finally { await finishManaged(run) }
+})
+
+reservationTest('CPU overload leaves real running jobs unsignalled and only pauses new admission', async () => {
+  const root = path.join(scratch, 'cpu-no-signals')
+  history(root)
+  const started = path.join(root, 'started')
+  const signalled = path.join(root, 'signalled')
+  const script = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'started');for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>{fs.writeFileSync(${JSON.stringify(signalled)},s);process.exit(0)});setInterval(()=>{},1000)`
+  const run = managedChild(root, script)
+  let waiter
+  try {
+    await until(() => { try { return readFileSync(started, 'utf8') === 'started' } catch { return false } }, 'real child must start')
+    writeFileSync(path.join(root, 'machine.json'), JSON.stringify({ ...machine, load: 99 }))
+    const since = Date.now()
+    const next = path.join(root, 'next')
+    waiter = managedChild(root, `require('fs').writeFileSync(${JSON.stringify(next)},'admitted')`)
+    await until(() => readQueueSnapshot(path.join(root, 'queue.d')).length === 1, 'CPU waiter must queue')
+    await until(() => reservations.readReservationState(root).watchdog.heartbeat > since + 1000, 'watchdog must sample CPU overload twice')
+    assert.equal(run.child.exitCode, null, 'CPU overload must not kill the running job')
+    assert.throws(() => readFileSync(signalled), { code: 'ENOENT' }, 'CPU overload must signal no running job')
+    assert.throws(() => readFileSync(next), { code: 'ENOENT' }, 'CPU overload must stop new admissions')
+    writeFileSync(path.join(root, 'machine.json'), JSON.stringify(machine))
+    assert.equal(await waiter.ended, 0)
+    assert.equal(readFileSync(next, 'utf8'), 'admitted')
+  } finally { await finishManaged(run); if (waiter) await finishManaged(waiter) }
+})
+
+const nestedSandboxAvailable = process.platform === 'linux' && spawnSync('bwrap',
+  ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', 'true'], { stdio: 'ignore' }).status === 0
+test('a foreign PID namespace cannot replace a live watchdog (Linux bwrap required)', { skip: !nestedSandboxAvailable }, async () => {
+  const root = path.join(scratch, 'watchdog-namespace')
+  mkdirSync(root)
+  const watchdog = path.join(scratch, 'bin/lib/host/suite-lock-watchdog.mjs')
+  const before = readFileSync(watchdog, 'utf8')
+  // Make the erroneous zero-heartbeat replacement deterministic, rather than
+  // depending on a new watchdog's import latency crossing the owner's poll.
+  writeFileSync(watchdog, 'await new Promise(resolve => setTimeout(resolve, 300));\n' + before)
+  const marker = path.join(root, 'started')
+  const run = managedChild(root, `require('fs').writeFileSync(${JSON.stringify(marker)},'started');setInterval(()=>{},1000)`)
+  try {
+    await until(() => { try { return readFileSync(marker, 'utf8') === 'started' } catch { return false } }, 'outer holder must start')
+    const identity = reservations.readReservationState(root).watchdog
+    const result = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc',
+      process.execPath, path.join(scratch, 'bin/wt-suite-lock.mjs'), 'run', '--wait-s', '0.7', '--stale-s', '0.7', '--',
+      process.execPath, '-e', 'process.exit(0)'], {
+      env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1' },
+      encoding: 'utf8', timeout: 10_000,
+    })
+    assert.equal(result.status, 75, 'a foreign waiter must not replace the live supervisor and stop its holder')
+    assert.equal(run.child.exitCode, null, 'the outer command must remain running')
+    const after = reservations.readReservationState(root).watchdog
+    assert.equal(after.pid, identity.pid, 'watchdog ownership must remain with the original namespace')
+    assert.equal(after.pidNamespace, identity.pidNamespace)
+  } finally { writeFileSync(watchdog, before); await finishManaged(run) }
 })
 
 test('real CLI children overlap and see their reservation environment', { skip: process.platform === 'win32' }, async () => {

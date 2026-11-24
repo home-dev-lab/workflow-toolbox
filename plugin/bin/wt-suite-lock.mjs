@@ -36,6 +36,7 @@ import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mj
 import { suiteSignalExit, watchSuiteWaitSignals } from './lib/host/suite-lock-signals.mjs'
 import { reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
 import { reservationHostSupported } from './lib/host/suite-lock-machine.mjs'
+import { reservationRetryOutcome } from './lib/host/suite-lock-memory-retry.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
@@ -203,7 +204,7 @@ export async function runLeasedCommand(command, lease, requested) {
       completed = requested.attempt.outcome === 'not-parked\n' && !yielded && timing.started === true && !timing.lost
     } finally {
       if (timing.stopUnconfirmed && lease.reservationLease) process.stderr.write('wt-suite-lock: command group stop unconfirmed; reservation retained, inspect status --json\n')
-      else if (!releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs, ...timing.signalOutcome })) {
+      else if (!releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs, ...timing.signalOutcome, ...reservationRetryOutcome(lease, timing) })) {
         timing.releaseFailed = true
         process.stderr.write('wt-suite-lock: release unconfirmed; reservation retained, inspect wt-suite-lock status --json\n')
       }

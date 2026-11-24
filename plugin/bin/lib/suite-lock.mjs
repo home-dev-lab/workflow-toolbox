@@ -23,7 +23,8 @@ import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, pa
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
 import { claimSuiteSection, RECLAIM_BUSY, RECLAIM_DIR_STALE_MS, retrySuiteSection } from './host/suite-lock-section.mjs'
-import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
+import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, reservationQueueStatus, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
+import { publishReservationRetry } from './host/suite-lock-memory-retry.mjs'
 import { prepareJournalTicket, takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
@@ -89,7 +90,7 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
+  const snapshot = suiteLockStatusSnapshot(current, reservationQueueStatus(current.root, tickets), readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
   snapshot.resourceClasses = readSuiteResourceClasses(current.root)
   snapshot.reservations = readReservationState(current.root)
   snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
@@ -487,12 +488,13 @@ async function acquireSuiteLock(options = {}) {
 
 function takeAcquisitionTicket(queueDir, record, options) {
   if (!options.requeue) return takeParkTicket(queueDir, record, options, parkOwnerJudge(options))
-  const { leaseId } = record
-  Object.assign(record, options.requeue.record, { leaseId })
+  const leaseId = options.requeue.retryRecord?.leaseId ?? record.leaseId
+  for (const key of Object.keys(record)) delete record[key]
+  Object.assign(record, options.requeue.retryRecord ?? options.requeue.record, { leaseId })
   delete record.journal
   const ticket = options.requeue.ticket
   prepareJournalTicket(queueDir, record, ticket, ticket)
-  heartbeatTicket(queueDir, ticket, record)
+  publishReservationRetry(queueDir, ticket, record)
   return takeJournalTicket(queueDir, record, ticket)
 }
 

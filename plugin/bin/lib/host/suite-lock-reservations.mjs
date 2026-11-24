@@ -12,14 +12,18 @@ import { readSuiteLockRankState, recordSuiteLockService } from './suite-lock-ran
 import { claimSuiteSection, RECLAIM_BUSY, retrySuiteSection } from './suite-lock-section.mjs'
 import { abandonEmptyLockDir, reclaimInFlight, readHolderIn, readLightCounter, readP0Counter, readQueueSnapshot, recordAdmissionGrant, recordLightGrant, recordP0Grant } from './suite-lock-queue.mjs'
 import { staticSemaphoreRoot } from './suite-lock-static-semaphore.mjs'
-import { ticketIsStale, pidProvesGone } from './suite-lock-liveness.mjs'
+import { ticketIsStale } from './suite-lock-liveness.mjs'
 import { readSuiteMachine } from './suite-lock-machine.mjs'
+import { stageReservationRetry } from './suite-lock-memory-retry.mjs'
 
 export const RESERVATION_PROTOCOL = 1
 const WATCHDOG_STALE_MS = 5000
 const stateFile = (root) => path.join(root, 'reservations.json')
 const fenceFile = (root) => path.join(root, 'lock.d', 'holder.json')
 const isFence = (holder) => holder?.reservationProtocol === RESERVATION_PROTOCOL
+// A foreign PID is not a local liveness probe. With zero silence age this uses
+// only the queue's existing namespace/PID/start-identity evidence, never time.
+const watchdogProvesGone = (watchdog) => ticketIsStale({ holder: watchdog, ageMs: 0 })
 
 export function readReservationState(root) {
   try {
@@ -75,7 +79,7 @@ function createFence(root, state, withdrawDuringReclaim = false) {
 }
 
 function startWatchdog(root, state) {
-  if (state.watchdog && !pidProvesGone(state.watchdog, {})) return
+  if (state.watchdog && !watchdogProvesGone(state.watchdog)) return
   const log = openSync(path.join(root, 'watchdog.log'), 'a', 0o600)
   let child
   try {
@@ -84,7 +88,7 @@ function startWatchdog(root, state) {
   } finally { closeSync(log) }
   child.on('error', (error) => process.stderr.write(`wt-suite-lock: watchdog unavailable (${error.code}); reservation admission closed\n`))
   child.unref()
-  state.watchdog = { pid: child.pid, startTime: processStartTime(child.pid), heartbeat: 0 }
+  state.watchdog = { pid: child.pid, startTime: processStartTime(child.pid), pidNamespace: currentPidNamespace(), heartbeat: 0 }
 }
 
 function prepareState(root) {
@@ -103,7 +107,7 @@ function prepareState(root) {
 function needsReservationEpoch(state, holders) {
   if (!state) return true
   if (state.holders.length || holders.main || holders.static) return false
-  return state.used === true || (state.watchdog && pidProvesGone(state.watchdog, {}))
+  return state.used === true || (state.watchdog && watchdogProvesGone(state.watchdog))
 }
 
 function compatibilityHolders(root) {
@@ -139,6 +143,20 @@ function reservedQueue(root, options, machine, waiting) {
     const declared = record.light === true ? 'light' : 'heavy'
     const reservation = record.reservationProtocol === RESERVATION_PROTOCOL
       ? reservationForJob(runs, declared, machine) : { mode: 'exclusive', cores: machine.cores, memMiB: machine.memMiB, basis: 'legacy' }
+    return { ...ticket, reservation }
+  })
+}
+
+export function reservationQueueStatus(root, tickets) {
+  if (!tickets.some((ticket) => ticket.record?.reservationProtocol === RESERVATION_PROTOCOL)) return tickets
+  const machine = readSuiteMachine()
+  const history = readSuiteResourceRuns(root)
+  return tickets.map((ticket) => {
+    const record = ticket.record
+    if (record?.reservationProtocol !== RESERVATION_PROTOCOL) return ticket
+    const runs = history.filter((run) => (run.release?.cmd ?? run.cmd) === record.journal?.cmd)
+    const reservation = machine.unknown ? { unknown: machine.unknown }
+      : reservationForJob(runs, record.light === true ? 'light' : 'heavy', machine)
     return { ...ticket, reservation }
   })
 }
@@ -244,6 +262,7 @@ function finishReservationRelease(lease, outcome) {
     const now = performance.timeOrigin + performance.now()
     const fields = { ...outcome, ...(holder.stop ? { cause: holder.stop.cause, served: false } : {}),
       reservation: holder.reservation, overlaps: releaseOverlaps(holder, now) }
+    if (outcome.requeue && holder.stop?.cause === 'memory-pressure') stageReservationRetry(lease)
     if (!terminalRecorded(lease.root, holder.leaseId)) {
       recordSuiteLockService(lease, fields)
       suiteJournalEvent(lease.journal, 'release', fields)

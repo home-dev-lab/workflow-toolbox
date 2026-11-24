@@ -26,6 +26,14 @@ test('two reservations fit concurrently and a third waits', () => {
   assert.deepEqual(api.admissionPlan?.(queue, [], capacity, {}).admit, [1, 2], 'admit exactly the fitting prefix')
 })
 
+test('admission has no count ceiling for a large fitting family', () => {
+  const count = 1024 // Larger than every admission-policy count constant, including the history window.
+  const queue = Array.from({ length: count }, (_, i) => ticket(i + 1, 1 / count))
+  const budget = { ...capacity, memMiB: count * 500 }
+  assert.deepEqual(api.admissionPlan(queue, [], budget, {}).admit, queue.map(({ number }) => number),
+    'every fitting reservation must be admitted, regardless of job count')
+})
+
 test('unknown heavy stays whole-machine exclusive; incomplete history falls back', () => {
   const unknown = api.reservationForJob?.([], 'heavy', capacity)
   assert.equal(unknown?.mode, 'exclusive', 'unmeasured heavy must be exclusive')
@@ -84,6 +92,13 @@ test('memory stop chooses lowest priority then youngest once and protects releas
   assert.equal(api.watchdogDecision(holders, memory), null, 'one outstanding stop prevents double stop')
   assert.equal(api.watchdogDecision([holders[0]], memory).leaseId, 'release')
   assert.equal(api.watchdogDecision([holders[0], holders[3]], memory).leaseId, 'urgent')
+})
+
+test('memory pressure still selects a victim when every holder has release priority', () => {
+  const holders = [{ leaseId: 'older-release', priority: 'release', admittedSequence: 1 },
+    { leaseId: 'younger-release', priority: 'release', admittedSequence: 2 }]
+  assert.equal(api.watchdogDecision(holders, { availableMiB: 0, floorMiB: 512 })?.leaseId,
+    'younger-release', 'all-release holders must not disable the memory safety net')
 })
 
 test('watchdog respects the admitted precedence tier and effective size priority', () => {

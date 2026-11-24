@@ -55,7 +55,8 @@ export function admissionPlan(queue, holders, capacity, bypasses) {
 
 export function watchdogDecision(holders, memory) {
   if (!finite(memory?.availableMiB) || memory.availableMiB >= memory.floorMiB || holders.some((holder) => holder.stop)) return null
-  const candidates = holders.filter((holder) => holders.length === 1 || holder.priority !== 'release')
+  const ordinary = holders.filter((holder) => holder.priority !== 'release')
+  const candidates = ordinary.length ? ordinary : [...holders]
   return candidates.sort((left, right) => watchdogPriority(right, 0) - watchdogPriority(left, 0)
     || watchdogPriority(right, 1) - watchdogPriority(left, 1)
     || youngestFirst(left, right))[0] ?? null
