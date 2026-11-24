@@ -100,7 +100,7 @@ function orderLines(current) {
   return current.order === 'levels' && current.levelOrder === 'legacy' ? [LEGACY_LEVEL_ORDER] : []
 }
 
-export function formatSuiteLockStatus(current, holderText) {
+export function formatSuiteLockStatus(current, holderText, { resources = false } = {}) {
   const queue = Array.isArray(current.queue) ? current.queue : []
   const waiting = queue.filter((entry) => !entry.stale).length
   const free = waiting ? `suite lock free; ${waiting} wait` : 'suite lock free'
@@ -111,7 +111,7 @@ export function formatSuiteLockStatus(current, holderText) {
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
   lines.push(...parkedStatusRows(current).map(parkedLine))
-  lines.push(...resourceClassLines(current.resourceClasses))
+  if (resources) lines.push(...resourceClassLines(current.resourceClasses))
   return lines.map(displayText).join('\n') + '\n'
 }
 

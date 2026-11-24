@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const lockUrl = process.env.SUITE_RESOURCE_LOCK_MODULE ?? new URL('../../plugin/bin/lib/suite-lock.mjs', import.meta.url).href
 const resourceUrl = new URL('../../plugin/bin/lib/suite-lock-resources.mjs', import.meta.url).href
@@ -98,7 +98,8 @@ async function oldRowsAndStatus() {
     assert.ok(status.resourceClasses, 'status must expose measured job classes')
     assert.deepEqual(status.resourceClasses.test, { class: 'light', cores: 0.75, memMiB: 200, basis: 'measured' })
     assert.deepEqual(suiteLockStatusJson(status).resourceClasses, status.resourceClasses)
-    assert.match(formatSuiteLockStatus(status, ''), /resources test: light.*measured/)
+    assert.doesNotMatch(formatSuiteLockStatus(status, ''), /resources /, 'default text status must not add resource lines')
+    assert.match(formatSuiteLockStatus(status, '', { resources: true }), /resources test: light.*measured/)
     assert.equal(readFileSync(join(root, 'journal.jsonl'), 'utf8'), before, 'status is read-only')
   } finally { rmSync(root, { recursive: true, force: true }) }
 }
@@ -140,7 +141,11 @@ function runChild(source, timeout = 3000) {
     child.stderr.on('data', (chunk) => { output += chunk })
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('sampler kept event loop alive after job exit')) }, timeout)
     child.once('error', reject)
-    child.once('exit', (code) => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error(`child exit ${code}: ${output}`)) })
+    child.once('exit', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve()
+      else reject(new Error(`child exit ${code}: ${output}`))
+    })
   })
 }
 
@@ -281,6 +286,57 @@ async function legacyBrokerTerminal() {
     } catch { /* incomplete frame */ }
   }
   assert.deepEqual(result, { exit: 7, served: true }, 'legacy broker must retain exit and service outcome with fragmented resource telemetry')
+}
+
+function developHostOutcome(chunks) {
+  // Develop's host reads only the first line and stops buffering after 128 characters.
+  let text = ''
+  let result
+  for (const chunk of chunks) {
+    if (text.length > 128) continue
+    text += String(chunk)
+    if (!text.includes('\n')) continue
+    try {
+      const message = JSON.parse(text.slice(0, text.indexOf('\n')))
+      if (Number.isInteger(message.exit)) result = { exit: message.exit, served: message.served }
+    } catch { /* The old host ignores invalid or incomplete JSON. */ }
+  }
+  return result
+}
+
+async function legacyBrokerSignalFrames() {
+  const { finishBrokerLease } = await import(new URL('../../plugin/bin/lib/suite-lock-journal-lifecycle.mjs', import.meta.url))
+  let wire
+  const telemetry = resources(3.123456789123456, 456.1234567891234)
+  finishBrokerLease({ socket: { end: (line) => { wire = line } } }, { exit: 129, served: false, resources: telemetry })
+  for (let size = 1; size <= wire.length; size++) {
+    const chunks = Array.from({ length: Math.ceil(wire.length / size) }, (_, index) => wire.slice(index * size, (index + 1) * size))
+    assert.deepEqual(developHostOutcome(chunks), { exit: 129, served: false }, 'develop host must retain the signal outcome at every fragmentation size')
+  }
+  const frames = wire.trim().split('\n').map(JSON.parse)
+  assert.equal(frames.length, 2, 'terminal and telemetry stay separate for old hosts with bounded buffering')
+  assert.deepEqual(frames[0], { exit: 129, served: false })
+  assert.deepEqual(frames[1], { resources: telemetry }, 'advisory telemetry retains full precision')
+}
+
+async function statusResourcesFlag() {
+  const root = scratch()
+  const cli = fileURLToPath(new URL('../../plugin/bin/wt-suite-lock.mjs', import.meta.url))
+  const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK_STATIC_LANE: '0' }
+  const run = (...flags) => spawnSync(process.execPath, [cli, 'status', ...flags], { env, encoding: 'utf8', timeout: 5000 })
+  try {
+    const event = { leaseId: 'flag-fixture', event: 'release', cmd: 'test', kind: 'exclusive', ts: '2026-01-01T00:00:00Z' }
+    writeFileSync(join(root, 'journal.jsonl'), JSON.stringify(event) + '\n')
+    const plain = run()
+    assert.equal(plain.status, 0, plain.stderr)
+    assert.equal(plain.stdout, 'suite lock free\n', 'default status CLI must keep its original bytes')
+    const detailed = run('--resources')
+    assert.equal(detailed.status, 0, 'status --resources must be accepted')
+    assert.equal(detailed.stdout, plain.stdout + 'resources test: heavy, unknown cores, unknown MiB (declared)\n')
+    const json = run('--json')
+    assert.equal(json.status, 0, json.stderr)
+    assert.deepEqual(JSON.parse(json.stdout).resourceClasses.test, { class: 'heavy', cores: 'unknown', memMiB: 'unknown', basis: 'declared' })
+  } finally { rmSync(root, { recursive: true, force: true }) }
 }
 
 async function reapedChildCpu() {
@@ -593,6 +649,8 @@ export const resourceCases = [
   ['finished offloads start no local sampler', offloadedSampler],
   ['unreadable advisory history preserves status availability', unreadableJournalStatus],
   ['legacy broker retains exit and service outcome under fragmentation', legacyBrokerTerminal],
+  ['develop broker parser retains the signal outcome at every fragmentation size', legacyBrokerSignalFrames],
+  ['status CLI resource text requires an explicit flag', statusResourcesFlag],
   ['reaped child CPU transfers without double counting', reapedChildCpu],
   ['sampler stop errors cannot block file or broker release', samplerStopFailure],
   ['non-atomic child reap is named census-incoherent', incoherentCensus],
