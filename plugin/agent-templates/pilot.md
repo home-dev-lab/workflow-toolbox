@@ -653,6 +653,9 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   for why). An external lane is context-blind — the brief carries everything (design-doc
   paths, conventions); never ask an external lane, or a spawned executor, for judgment
   verdicts. You stay the arbiter.
+- **Every wait you arm, foreground or background, is bounded at 55 minutes; on its expiry,
+  re-arm it.** The prompt cache lives one hour: a wake after more than an hour rewrites your
+  whole context at double price, while a wake inside the hour re-reads it at a tenth.
 - **Waiting on an EXTERNAL LANE process (an `opencode`/`codex` CLI call) — block IN YOUR
   TURN with a HARD CAP; never arm your own background watcher and yield expecting it to
   wake you.** A lane process is not tracked as your child by the harness — backgrounding it
