@@ -6,7 +6,9 @@ import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { completeLauncherWrite, writeLauncherLine } from './launcher-event-io.mjs'
 import { eventGraceElapsed } from './launcher-event-grace.mjs'
 import { eventNames, eventPaths, eventReason, finishPublication, ignoredLegacy, pruneDone, publishEvent, readEvent, recoverPublications } from './launcher-maildir.mjs'
-import { acknowledgeClaim, claimEvent, claimWasPrinted, recoverClaims, returnClaim } from './launcher-claims.mjs'
+import { acknowledgeClaim, claimEvent, recoverClaims, recoverLegacyClaims } from './launcher-claims.mjs'
+import { closeLauncherJournal, compactLauncherJournal, openLauncherJournal } from './launcher-journal.mjs'
+import { acquireJournalWriter, releaseJournalWriter } from './launcher-reader.mjs'
 
 export const printLauncherEvent = writeLauncherLine
 
@@ -49,32 +51,67 @@ export function appendLauncherEvent(id, event, options = {}) {
   } catch (error) { return eventReason(options, 'launcher-publish-failed', error) }
 }
 
+function closeDelivery(ready, options) {
+  try { closeLauncherJournal(ready.journal) }
+  finally { releaseJournalWriter(ready.writer, options) }
+}
+
+function openDelivery(paths, options) {
+  const writer = acquireJournalWriter(paths, options)
+  if (!writer) return null
+  let journal
+  try {
+    journal = openLauncherJournal(paths, options)
+    if (journal) {
+      recoverLegacyClaims(paths, options)
+      if (recoverClaims(paths, journal, options)) {
+        compactLauncherJournal(journal, options)
+        return { paths, journal, writer }
+      }
+    }
+  } catch (error) { eventReason(options, 'launcher-read-failed', error) }
+  closeDelivery({ journal, writer }, options)
+  return null
+}
+
 function prepareClaim(id, options) {
+  let ready
   try {
     launcherId(id)
     const paths = eventPaths(id, options)
-    recoverPublications(paths, options); recoverClaims(paths, options); pruneDone(paths, options)
+    recoverPublications(paths, options); pruneDone(paths, options)
+    ready = openDelivery(paths, options)
+    if (!ready) return null
     for (const name of eventNames(paths.pending)) {
       if (options.name && name !== options.name) continue
-      const claim = claimEvent(paths, name, options)
-      if (claim) return { paths, claim }
+      const claim = claimEvent(paths, name, ready.journal, options)
+      if (claim) return { ...ready, claim }
     }
   } catch (error) { eventReason(options, 'launcher-read-failed', error) }
+  if (ready) closeDelivery(ready, options)
   return null
 }
 
 export function takeLauncherEvent(id, options = {}) {
   const ready = prepareClaim(id, options)
   if (!ready) return null
-  const { paths, claim } = ready
-  try { if (options.deliver) completeLauncherWrite(options.deliver, claim.event) }
-  catch (error) { returnClaim(paths, claim, options); throw error }
-  if (!acknowledgeClaim(paths, claim, options) && (claim.deliveryUnknown || !claimWasPrinted(claim, options))) {
-    // Keep exit 1 when the marker route failed, even if a directory rename recorded
-    // printed-unknown. If both routes fail, recovery may still replay after death.
-    throw new Error('launcher print acknowledgement unavailable')
-  }
-  return claim.event
+  const { paths, claim, journal } = ready
+  try {
+    const deliver = options.deliver ?? ((event) => printLauncherEvent(event.line))
+    completeLauncherWrite(deliver, claim.event)
+    acknowledgeClaim(paths, claim, journal, options)
+    return claim.event
+  } finally { closeDelivery(ready, options) }
+}
+
+function pendingForLauncher(id, options) {
+  const paths = eventPaths(id, options); recoverPublications(paths, options)
+  const ready = openDelivery(paths, options)
+  if (!ready) return []
+  try {
+    return eventNames(paths.pending).map((name) => ({ ...readEvent(path.join(paths.pending, name)), name }))
+      .filter((event) => event.ownerSessionId === options.sessionId)
+  } finally { closeDelivery(ready, options) }
 }
 
 export function pendingLauncherEvents(options = {}) {
@@ -85,11 +122,7 @@ export function pendingLauncherEvents(options = {}) {
   catch (error) { if (error.code !== 'ENOENT') { eventReason(options, 'launcher-read-failed', error) } return events }
   for (const id of ids) {
     try {
-      const paths = eventPaths(id, options); recoverPublications(paths, options); recoverClaims(paths, options)
-      for (const name of eventNames(paths.pending)) {
-        const event = readEvent(path.join(paths.pending, name))
-        if (event.ownerSessionId === options.sessionId) events.push({ ...event, name })
-      }
+      events.push(...pendingForLauncher(id, options))
     } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-read-failed', error) }
   }
   return events

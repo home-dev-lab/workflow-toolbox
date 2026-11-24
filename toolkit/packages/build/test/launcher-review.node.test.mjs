@@ -57,7 +57,7 @@ test('R4: a transient claimed-event read failure is retried by the same sweep pr
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A', ownerSessionId: 'session' }, f.options)
   fresh(f, String.raw`const read=fs.readFileSync;let deny=true;
-    fs.readFileSync=(file,...args)=>{if(deny&&String(file).includes('claimed-')&&String(file).endsWith('.json')&&!String(file).endsWith('owner.json')){deny=false;throw Object.assign(new Error('transient'),{code:'EACCES'})}return read(file,...args)};
+    fs.readFileSync=(file,...args)=>{if(deny&&String(file).includes(${JSON.stringify(`${path.sep}pending${path.sep}`)})&&String(file).endsWith('.json')){deny=false;throw Object.assign(new Error('transient'),{code:'EACCES'})}return read(file,...args)};
     syncBuiltinESMExports();const m=await import(eventUrl);
     assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:()=>{}}),null);
     assert.equal(m.takeLauncherEvent('delegate',options)?.line,'A','same live sweep must retry the unprinted event after storage recovers');
@@ -137,11 +137,11 @@ test('a reserved publication survives publisher death and two concurrent retry h
   assert.equal(events.takeLauncherEvent('delegate', f.options), null, 'a stale publication helper cannot recreate the consumed source')
 })
 
-test('a print-marker write failure cannot report a normally acknowledged waiter exit', (t) => {
+test('a printed-record write failure cannot report a normally acknowledged waiter exit', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const result = fresh(f, String.raw`const write=fs.writeFileSync;
-    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed'))throw Object.assign(new Error('denied'),{code:'EACCES'});return write(file,...args)};
+  const result = fresh(f, String.raw`const write=fs.writeSync;
+    fs.writeSync=(fd,bytes,...args)=>{if(Buffer.isBuffer(bytes)&&bytes.includes(Buffer.from('"type":"printed"')))throw Object.assign(new Error('denied'),{code:'EACCES'});return write(fd,bytes,...args)};
     syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
     startLauncherWait('delegate',{...options,timeout:0});`, 1)
   assert.equal(result.stdout, 'A\n')
@@ -174,37 +174,42 @@ test('C4 publication: a sweep finishes a reservation after history eligibility e
   assert.equal(events.takeLauncherEvent('delegate', f.options), null)
 })
 
-for (const marker of ['', '{"at":', '{"at":"invalid"}']) {
-  test(`C4 partial marker: recovery acknowledges ${JSON.stringify(marker)} without replay`, (t) => {
+for (const tail of ['', '00000080:', '00000080:invalid:{"type":"printed"}\n']) {
+  test(`journal partial evidence: recovery retains ${JSON.stringify(tail)} before retry`, (t) => {
     const f = fixture(t)
     events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-    fresh(f, String.raw`const {eventPaths}=await import(${JSON.stringify(moduleUrl('lib/host/launcher-maildir.mjs'))});
-      const {claimEvent}=await import(${JSON.stringify(moduleUrl('lib/host/launcher-claims.mjs'))});
-      const paths=eventPaths('delegate',options),claim=claimEvent(paths,fs.readdirSync(paths.pending)[0],options);
-      fs.writeSync(1,claim.event.line+'\n');fs.writeFileSync(claim.file+'.printed',${JSON.stringify(marker)});`)
+    fresh(f, String.raw`const m=await import(eventUrl);
+      try{m.takeLauncherEvent('delegate',{...options,deliver:()=>{throw new Error('before output')}})}catch{}
+      fs.appendFileSync(${JSON.stringify(path.join(f.box, 'delivery.journal'))},${JSON.stringify(tail)});`)
     const reasons = [], lines = []
-    events.takeLauncherEvent('delegate', { ...f.options, reportReason: (line) => { reasons.push(line) },
-      deliver: (event) => { lines.push(event.line) } })
-    assert.equal(readdirSync(path.join(f.box, 'done')).length, 1, 'a partial marker must not strand acknowledgement')
-    assert.deepEqual(lines, [], 'partial printed evidence must not replay')
-    assert.match(reasons.join('\n'), /launcher-printed-marker-unknown/)
+    const options = { ...f.options, reportReason: (line) => { reasons.push(line) }, deliver: (event) => { lines.push(event.line) } }
+    events.takeLauncherEvent('delegate', options)
+    if (tail) {
+      assert.equal(readdirSync(path.join(f.box, 'done')).length, 0, 'partial evidence cannot acknowledge')
+      assert.deepEqual(lines, [])
+      assert.match(reasons.join('\n'), /launcher-journal-torn-tail-retained/)
+      events.takeLauncherEvent('delegate', options)
+    }
+    assert.deepEqual(lines, ['A'], 'an unprinted claim must eventually be delivered')
+    assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
   })
 }
 
-test('C4 marker failure: exit 1 and owner death recover without a second print', (t) => {
+test('journal evidence failure: exit 1 retains the claim and bounds replay to the failed commit', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const result = fresh(f, String.raw`const write=fs.writeFileSync;let attempts=0;
-    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')){attempts++;throw Object.assign(new Error('full'),{code:'ENOSPC'})}return write(file,...args)};
+  const result = fresh(f, String.raw`const write=fs.writeSync;let attempts=0;
+    fs.writeSync=(fd,bytes,...args)=>{if(Buffer.isBuffer(bytes)&&bytes.includes(Buffer.from('"type":"printed"'))){attempts++;throw Object.assign(new Error('full'),{code:'ENOSPC'})}return write(fd,bytes,...args)};
     syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
-    process.on('exit',()=>fs.writeSync(2,'marker-attempts='+attempts+'\n'));
+    process.on('exit',()=>fs.writeSync(2,'record-attempts='+attempts+'\n'));
     startLauncherWait('delegate',{...options,timeout:0});`, 1)
   assert.equal(result.stdout, 'A\n')
   assert.match(result.stderr, /launcher delivery unknown/)
   const lines = []
   events.takeLauncherEvent('delegate', { ...f.options, deliver: (event) => { lines.push(event.line) } })
-  assert.deepEqual(lines, [], 'a non-crash marker failure must not print again after owner death')
-  assert.match(result.stderr, /marker-attempts=3/)
+  assert.deepEqual(lines, ['A'], 'without complete printed evidence recovery must prefer delivery')
+  assert.equal(events.takeLauncherEvent('delegate', f.options), null)
+  assert.match(result.stderr, /record-attempts=3/)
   assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
 })
 
@@ -228,78 +233,87 @@ test('C4 publication: an unreserved complete source stays invisible to readers',
   assert.equal(events.takeLauncherEvent('delegate', f.options), null, 'recovery must not publish a source before key reservation')
 })
 
-test('C4 atomic marker: failure after private creation never exposes truncated final JSON', (t) => {
+test('journal append: partial failures roll back before each bounded retry', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const result = fresh(f, String.raw`const write=fs.writeFileSync;let attempts=0,finalWrites=0;
-    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')){
-      attempts++;if(String(file).endsWith('.json.printed'))finalWrites++;
-      write(file,'{"at":');throw Object.assign(new Error('full after create'),{code:'ENOSPC'})}return write(file,...args)};
+  const result = fresh(f, String.raw`const write=fs.writeSync;let attempts=0;
+    fs.writeSync=(fd,bytes,...args)=>{if(Buffer.isBuffer(bytes)&&bytes.includes(Buffer.from('"type":"printed"'))){
+      attempts++;write(fd,bytes,0,20);throw Object.assign(new Error('full after append'),{code:'ENOSPC'})}return write(fd,bytes,...args)};
     syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
-    process.on('exit',()=>fs.writeSync(2,'marker-attempts='+attempts+' final-writes='+finalWrites+'\n'));
+    process.on('exit',()=>fs.writeSync(2,'record-attempts='+attempts+'\n'));
     startLauncherWait('delegate',{...options,timeout:0});`, 1)
   assert.equal(result.stdout, 'A\n')
-  assert.match(result.stderr, /launcher-printed-unknown-recorded/)
-  assert.match(result.stderr, /marker-attempts=3 final-writes=0/, 'failed marker writes must stay private and bounded')
+  assert.match(result.stderr, /launcher-journal-append-failed/)
+  assert.match(result.stderr, /record-attempts=3/, 'failed appends must have bounded retries')
+  assert.doesNotMatch(readFileSync(path.join(f.box, 'delivery.journal'), 'utf8'), /"type":"printed"/,
+    'an exhausted partial append must restore the known valid claim boundary')
   const lines = []
   events.takeLauncherEvent('delegate', { ...f.options, deliver: (event) => { lines.push(event.line) } })
-  assert.deepEqual(lines, [])
+  assert.deepEqual(lines, ['A'])
   assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
   assert.deepEqual(readdirSync(f.box).filter((name) => name.startsWith('claimed-')), [])
 })
 
-test('C4 atomic marker: a transient write failure retries and exits normally', (t) => {
+test('journal append: a transient partial write retries and exits normally', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const result = fresh(f, String.raw`const write=fs.writeFileSync;let attempts=0;
-    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')&&++attempts===1){write(file,'');throw Object.assign(new Error('transient'),{code:'ENOSPC'})}return write(file,...args)};
+  const result = fresh(f, String.raw`const write=fs.writeSync;let attempts=0;
+    fs.writeSync=(fd,bytes,...args)=>{if(Buffer.isBuffer(bytes)&&bytes.includes(Buffer.from('"type":"printed"'))&&++attempts===1){write(fd,bytes,0,20);throw Object.assign(new Error('transient'),{code:'ENOSPC'})}return write(fd,bytes,...args)};
     syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
     process.on('exit',()=>{assert.equal(attempts,2)});startLauncherWait('delegate',{...options,timeout:0});`)
   assert.equal(result.stdout, 'A\n')
   assert.equal(events.takeLauncherEvent('delegate', f.options), null)
 })
 
-test('C4 atomic marker: death during a private marker write acknowledges without replay', async (t) => {
+test('journal append: death during a printed frame retains the claim and permits one replay', async (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const reader = await held(t, f, String.raw`const write=fs.writeFileSync;
-    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')){write(file,'{"at":');hold()}return write(file,...args)};
+  const reader = await held(t, f, String.raw`const write=fs.writeSync;
+    fs.writeSync=(fd,bytes,...args)=>{if(Buffer.isBuffer(bytes)&&bytes.includes(Buffer.from('"type":"printed"'))){write(fd,bytes,0,20);hold()}return write(fd,bytes,...args)};
     syncBuiltinESMExports();const m=await import(eventUrl);m.takeLauncherEvent('delegate',{...options,deliver:item=>fs.writeSync(1,item.line+'\n')});`)
   reader.child.kill('SIGKILL'); await reader.ended
   assert.equal(reader.output.join(''), 'A\n')
   const lines = []
-  events.takeLauncherEvent('delegate', { ...f.options, reportReason: () => {}, deliver: (event) => { lines.push(event.line) } })
-  assert.deepEqual(lines, [])
+  const options = { ...f.options, reportReason: () => {}, deliver: (event) => { lines.push(event.line) } }
+  assert.equal(events.takeLauncherEvent('delegate', options), null, 'repair must retain the claim for a subsequent invocation')
+  assert.equal(readdirSync(path.join(f.box, 'done')).length, 0)
+  events.takeLauncherEvent('delegate', options)
+  assert.deepEqual(lines, ['A'])
   assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
 })
 
-test('C4 marker boundary: failure of both durable routes is named and may replay', (t) => {
+test('journal rollback boundary: failed rollback retains torn evidence and may replay after repair', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const result = fresh(f, String.raw`const write=fs.writeFileSync,rename=fs.renameSync;
-    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed'))throw Object.assign(new Error('denied'),{code:'EACCES'});return write(file,...args)};
-    fs.renameSync=(from,to)=>{if(String(to).includes('claimed-printed-unknown-'))throw Object.assign(new Error('denied'),{code:'EACCES'});return rename(from,to)};
+  const result = fresh(f, String.raw`const write=fs.writeSync;
+    fs.writeSync=(fd,bytes,...args)=>{if(Buffer.isBuffer(bytes)&&bytes.includes(Buffer.from('"type":"printed"'))){write(fd,bytes,0,20);throw Object.assign(new Error('denied'),{code:'EACCES'})}return write(fd,bytes,...args)};
+    fs.ftruncateSync=()=>{throw Object.assign(new Error('rollback denied'),{code:'EIO'})};
     syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
     startLauncherWait('delegate',{...options,timeout:0});`, 1)
   assert.equal(result.stdout, 'A\n')
-  assert.match(result.stderr, /launcher-printed-unknown-unrecorded/)
+  assert.match(result.stderr, /launcher-journal-append-failed/)
   assert.match(result.stderr, /launcher delivery unknown/)
   const lines = []
-  events.takeLauncherEvent('delegate', { ...f.options, deliver: (event) => { lines.push(event.line) } })
-  assert.deepEqual(lines, ['A'], 'if every post-output record fails, recovery cannot distinguish printed from unprinted')
+  const options = { ...f.options, reportReason: () => {}, deliver: (event) => { lines.push(event.line) } }
+  assert.equal(events.takeLauncherEvent('delegate', options), null)
+  assert.deepEqual(lines, [], 'repair cannot acknowledge or print in the torn-tail invocation')
+  events.takeLauncherEvent('delegate', options)
+  assert.deepEqual(lines, ['A'], 'a retry must deliver when complete evidence never existed')
   assert.equal(events.takeLauncherEvent('delegate', f.options), null)
 })
 
-test('C4 unreadable marker: recovery acknowledges printed-unknown instead of stranding', (t) => {
+test('journal unreadable printed record: retain until evidence can be read, then acknowledge without replay', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
   fresh(f, String.raw`const rename=fs.renameSync;
     fs.renameSync=(from,to)=>{if(String(to).includes(${JSON.stringify(`${path.sep}done${path.sep}`)}))throw Object.assign(new Error('busy'),{code:'EPERM'});return rename(from,to)};
     syncBuiltinESMExports();const m=await import(eventUrl);m.takeLauncherEvent('delegate',{...options,deliver:()=>{}});`)
   fresh(f, String.raw`const read=fs.readFileSync;const reasons=[];
-    fs.readFileSync=(file,...args)=>{if(String(file).endsWith('.printed'))throw Object.assign(new Error('denied'),{code:'EACCES'});return read(file,...args)};
+    fs.readFileSync=(file,...args)=>{if(String(file).endsWith('delivery.journal'))throw Object.assign(new Error('denied'),{code:'EACCES'});return read(file,...args)};
     syncBuiltinESMExports();const m=await import(eventUrl);
     assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:line=>reasons.push(line),deliver:()=>assert.fail('no replay')}),null);
-    assert.match(reasons.join('\n'),/launcher-printed-marker-unknown/);`)
+    assert.match(reasons.join('\n'),/launcher-read-failed.*EACCES/);`)
+  assert.equal(readdirSync(path.join(f.box, 'done')).length, 0, 'unreadable evidence must retain the claim')
+  assert.equal(events.takeLauncherEvent('delegate', { ...f.options, deliver: () => assert.fail('durable print cannot replay') }), null)
   assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
 })

@@ -35,11 +35,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   launcher completes, goes missing or stops consuming. Publication reserves each
   logical key with an exclusive hard link, then consumes a complete staging source
   by rename; interrupted publication can be finished by a later sweep. Incomplete
-  deduplication scans fail closed. Readers claim by rename and retain a printed
-  marker after synchronous output, so failed done-renames do not replay on normal
-  waiter exit. Positively dead readers' unprinted claims are recovered; malformed
-  or incomparable birth identities never prove PID reuse. A crash between output
-  and its printed marker can replay; inability to store that marker reports
+  deduplication scans fail closed. One writer per launcher records claims, completed
+  output and acknowledgements in a length/checksum-framed, fsync'd journal. Unreadable
+  or torn evidence retains the event for retry; only a complete printed record can
+  authorize acknowledgement. Failed done-renames do not replay completed output.
+  Writer takeover requires positive death or comparable birth-identity evidence,
+  never age. Journal compaction is bounded at 64 KiB plus three capped frames.
+  A crash or failed commit between stdout and its durable printed record permits
+  one additional delivery per interruption; exhausted evidence writes report
   delivery unknown (exit 1). Acknowledgement timestamps precede the done-rename
   so retention cannot immediately prune newly acknowledged old events. Gate and queue output,
   supervision notices and recovery WAKEs keep their existing main-owned channels.

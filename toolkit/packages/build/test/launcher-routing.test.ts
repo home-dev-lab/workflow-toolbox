@@ -4,7 +4,7 @@ import { expect, it } from 'vitest'
 
 // Keep the seconds-long, fake-host locks runnable with node --test in external lanes,
 // and also include them in the ordinary toolkit suite and cross-platform certification.
-it.each(['launcher-routing', 'launcher-wait', 'launcher-emitters', 'launcher-delivery', 'launcher-maildir', 'launcher-review'])('%s standalone regression locks', (name) => {
+it.each(['launcher-routing', 'launcher-wait', 'launcher-emitters', 'launcher-delivery', 'launcher-maildir', 'launcher-review', 'launcher-journal'])('%s standalone regression locks', (name) => {
   const file = fileURLToPath(new URL(`./${name}.node.test.mjs`, import.meta.url))
   const result = spawnSync(process.execPath, ['--test', file], { encoding: 'utf8', timeout: 30_000 })
   expect(result.error, result.stderr).toBeUndefined()

@@ -57,22 +57,31 @@ An unreadable liveness file triggers a named routing diagnostic and main fallbac
 A failed publication reports `launcher-publish-failed` and is retried from the lane record;
 readers and sweeps also finish complete reserved sources after that record ages out.
 Publication and cleanup errors do not change the caller's exit status; a waiter reports
-exit 1 when output completed but its printed marker could not be stored. A delegate must keep `complete:false` while
+exit 1 when output completed but its printed journal record could not be stored. A delegate must keep `complete:false` while
 waiting and mark it complete only after handling its final work events.
 Publishers write complete private temporary files with exclusive creation, then publish
 with a hard link that never overwrites an existing name. No publisher waits on a reader.
-Readers rename pending events into their own claimed directory; only the successful
-claimer prints. Both recipients complete synchronous output before renaming into `done/`.
-A printed marker is written privately and renamed atomically, with at most three write
-attempts. If those fail, a separate claim-directory rename records `printed-unknown`;
-the waiter still exits 1 with `delivery unknown`, and recovery acknowledges without replay.
-Unreadable or partial printed markers, including interrupted private marker writes, are
-also acknowledged without replay and report `launcher-printed-marker-unknown`.
-A crash between output and the first durable printed evidence can replay delivery. If
-both marker writes and the directory rename fail, `launcher-printed-unknown-unrecorded`
-names the same remaining boundary: recovery may replay after owner death. A later reader returns
-a claim to pending only with positive process-death or measured PID-reuse evidence,
-never age alone; unknown ownership is reported and retained. Done history is retained
+Readers serialize on one populated writer directory per launcher, with PID and start
+identity ownership. Only positive process-death or comparable PID-reuse evidence permits
+reclaim; unknown ownership is retained. Publishers never take that reader lease. Events
+remain pending while one append-only `delivery.journal` records claim, printed and done.
+Length/checksum-framed records are synchronously appended and fsync'd. Both recipients
+complete synchronous stdout before recording printed; only a complete printed record
+authorizes acknowledgement. Unreadable evidence retains the claim for retry. A torn tail
+is truncated to its validated prefix and reported as `launcher-journal-torn-tail-retained`;
+that invocation does no delivery or acknowledgement, and the next invocation retries.
+Printed-record writes get three attempts (four for Windows sharing errors). Exhaustion
+reports delivery unknown, retains the claim and may replay. The precise duplicate bound
+is one extra output per crash or failed commit between stdout and a durable printed
+record; arbitrarily repeated interruptions in that window have no finite total bound.
+After printed is durable, done-file rename failures never cause another output.
+The journal compacts at 64 KiB via one fsync'd checkpoint and atomic replacement; it is
+bounded by that threshold plus three maximum 1099-byte frames, plus one checkpoint.
+File fsync and process-death recovery apply on Linux, macOS and Windows; directory
+fsync is unavailable through portable Node on Windows, and macOS fsync is not
+F_FULLFSYNC. Unconditional hardware power-loss durability is not claimed.
+Restart old waiters before upgrading: dead legacy private claims return to pending
+without trusting their markers and may replay once. Done history is retained
 for seven days, exceeding the one-day completion lookback. Temporary hard links reserve
 names until done retention; half-written temporary files never enter pending.
 Windows sharing failures retry at most four attempts and report a named exhaustion.

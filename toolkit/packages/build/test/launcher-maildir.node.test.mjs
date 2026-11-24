@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readdirSync, renameSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, renameSync, writeFileSync, writeSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
 import { events, fixture, fresh, held, live, moduleUrl, scanner } from './helpers/launcher-fixtures.mjs'
@@ -39,8 +39,8 @@ test('B: EACCES routing cannot change sweep or waiter caller exit', (t) => {
 test('B: cleanup EACCES cannot change a successful waiter exit', (t) => {
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
-  const result = fresh(f, String.raw`const list=fs.readdirSync;
-    fs.readdirSync=(file,...args)=>{if(String(file).includes('claimed-'))throw Object.assign(new Error('cleanup denied'),{code:'EACCES'});return list(file,...args)};
+  const result = fresh(f, String.raw`const unlink=fs.unlinkSync;
+    fs.unlinkSync=(file,...args)=>{if(String(file).includes('delivery.writer'))throw Object.assign(new Error('cleanup denied'),{code:'EACCES'});return unlink(file,...args)};
     syncBuiltinESMExports();
     const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
     startLauncherWait('delegate',{...options,timeout:0});`)
@@ -66,8 +66,9 @@ test('D: SIGKILL after claim returns the dead reader event to pending', async (t
   const f = fixture(t)
   events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
   const reader = await held(t, f, String.raw`const m=await import(eventUrl);m.takeLauncherEvent('delegate',{...options,deliver:()=>hold()});`)
-  assert.equal(readdirSync(f.box).filter((name) => name.startsWith('claimed-')).length, 1,
-    'delivery must first rename the event into a private reader claim')
+  assert.equal(readdirSync(path.join(f.box, 'pending')).length, 1, 'a journal claim retains its pending payload')
+  assert.match(readFileSync(path.join(f.box, 'delivery.journal'), 'utf8'), /"type":"claim"/,
+    'delivery must first append a durable journal claim')
   reader.child.kill('SIGKILL'); await reader.ended
   assert.equal(events.takeLauncherEvent('delegate', f.options)?.line, 'A', 'a positively dead reader must be recovered')
   assert.equal(events.takeLauncherEvent('delegate', f.options), null, 'recovered event must be acknowledged once')
@@ -162,9 +163,12 @@ for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
         }
         events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
         options.rename = (from, to) => {
-          if ((phase === 'claim' && from.includes(`${path.sep}pending${path.sep}`) && to.includes('claimed-'))
-            || (phase === 'acknowledge' && to.includes(`${path.sep}done${path.sep}`))) failure()
+          if (phase === 'acknowledge' && to.includes(`${path.sep}done${path.sep}`)) failure()
           renameSync(from, to)
+        }
+        options.journalWrite = (fd, bytes, offset, length) => {
+          if (phase === 'claim' && bytes.includes(Buffer.from('"type":"claim"'))) failure()
+          return writeSync(fd, bytes, offset, length)
         }
         const lines = []
         const event = events.takeLauncherEvent('delegate', { ...options, deliver: (item) => { lines.push(item.line) } })
