@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.202.0] - 2026-11-24
+
 ### Added
 
 - Suite-lock journals record sampled process-tree CPU and resident-memory peaks, wall time and exits; status reports history-based job classes without changing admission.
@@ -31,6 +33,34 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Eligible plain single-file Node tests (one existing test file, built-in test options only) requested with `run --light` now run immediately without a queue ticket, with a warning after 60 seconds; exclusive, static and park requests keep admission.
 - The `pilot` and `pilot-orchestrator` agent templates now bound every wait at 55 minutes and re-arm it on expiry, so a wake lands inside the one-hour prompt-cache lifetime instead of rewriting the whole context at a higher price.
 - A general-purpose Agent spawn that pins model and effort now also needs a `general-purpose because:` reason line outside code fences; pinning no longer exempts the call from the right-sized spawn guard.
+
+### Known issues
+
+- macOS (GitHub-hosted runner only): three tests fail on the `macos-latest` runner of the cross-OS workflow: two `lifecycle-owned-lanes` "pending stop permits extend/abandon of the lifecycle own lane" cases and the `liveness` "refreshes the cached local transcript ids" case. The same tests pass on a real Mac for the same commit (full run of 764e26ebb: 0 failures in 19243 tests). Under investigation as a runner condition.
+- Windows: three `quota-watch-account-cache` cases and the `shipped-rules-on-demand` "runs dependency-free Node tests" case fail on native Windows. The quota-watch fixture fix (pin `USERPROFILE` beside `HOME`) ships in a later release; the rules-on-demand failure is not yet diagnosed. Linux is unaffected.
+
+### Quality
+
+Measured on the release tree against the committed baseline (`pnpm quality:delta`). No judge regressed: typecheck, lint, the full test suite, coverage and `pnpm quality` all exited 0.
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 126 -> 112 | -14 | 125 -> - | - |
+| Cognitive complexity | 268 -> 129 | -139 | 194 -> - | - |
+| Biggest file (lines) | 2719 -> 2719 | 0 | 1298 -> 1641 | - |
+| Longest function (lines) | 700 -> 480 | -220 | 700 -> - | - |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 684 -> 642 | -42 | 38 -> 36 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Duplication % | 2.432415513803064 -> 1.8254034735019826 | -0.61 | - -> - | - |
+| Knip issues | 196 -> 186 | -10 | 3 -> 3 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 78.61 -> 84.91 | +6.3 | 11.52 -> - | - |
+| Coverage branches % | 69.76 -> 77.06 | +7.3 | 5.57 -> - | - |
+| Coverage functions % | 80.86 -> 88.42 | +7.56 | 9.09 -> - | - |
+| Coverage statements % | 76.5 -> 83.18 | +6.68 | 10.02 -> - | - |
+
+One touched file grew (biggest touched file 1298 -> 1641 lines); the repository-wide biggest file is unchanged.
 
 ## [0.201.0] - 2026-11-20
 
