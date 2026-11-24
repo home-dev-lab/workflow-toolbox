@@ -2,12 +2,13 @@ import Module, { createRequire, syncBuiltinESMExports } from 'node:module'
 import filesystem, { readFileSync, realpathSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { boundNativeWatches, createPollingDirectoryWatch, observeClosedProgramInputs } from './ts-watch-policy.mjs'
+import { boundTypeScriptWatches, observeClosedProgramInputs } from './ts-watch-policy.mjs'
 
 const DISABLE_ATA = '--disableAutomaticTypingAcquisition'
 
 function patchTargets(ts) {
-  return [[ts.sys, 'watchDirectory'], [ts.server.ProjectService.prototype, 'watchClosedScriptInfo']]
+  return [[filesystem, 'watch'], [filesystem.promises, 'watch'],
+    [ts.sys, 'watchDirectory'], [ts.server.ProjectService.prototype, 'watchClosedScriptInfo']]
 }
 
 function hasFunctions(object, names) {
@@ -19,66 +20,27 @@ function hasPollingKinds(ts) {
     typeof ts.WatchDirectoryKind?.FixedPollingInterval === 'number'
 }
 
-function writableMethod(object, key) {
-  while (object) {
-    const descriptor = Object.getOwnPropertyDescriptor(object, key)
-    if (descriptor) return descriptor.writable === true && typeof descriptor.value === 'function'
-    object = Object.getPrototypeOf(object)
-  }
-  return false
-}
-
-function writableTargets(ts) {
-  return patchTargets(ts).every(([object, key]) => writableMethod(object, key))
-}
-
 function supportedSurface(ts) {
   const prototype = ts.server?.ProjectService?.prototype
   return hasFunctions(ts, ['createSystemWatchFunctions']) &&
-    hasFunctions(ts.sys, ['watchFile']) &&
-    hasFunctions(prototype, ['onSourceFileChanged']) &&
-    writableTargets(ts) && hasPollingKinds(ts) && Array.isArray(ts.sys?.args)
+    hasFunctions(ts.sys, ['watchFile', 'watchDirectory']) &&
+    hasFunctions(prototype, ['watchClosedScriptInfo', 'onSourceFileChanged']) &&
+    hasPollingKinds(ts) && Array.isArray(ts.sys?.args)
 }
 
-function safely(action) {
-  try { action() } catch { /* Cleanup must never replace an entry's result or suppress its warning. */ }
-}
-
-function restoreProperty([object, key, descriptor]) {
-  if (descriptor) Object.defineProperty(object, key, descriptor)
-  else delete object[key]
-}
-
-function insertArgument(args, inserted) {
-  if (args.includes(DISABLE_ATA)) return
-  args.push(DISABLE_ATA)
-  inserted.push(args)
-}
-
-function removeArgument(args) {
-  const index = args.indexOf(DISABLE_ATA)
-  if (index !== -1) args.splice(index, 1)
-}
-
-// Restore future-call surfaces only; startup may already have consumed arguments.
-// Native admission remains bounded, and unrelated startup mutations stay owned by the caller.
+// Failed installation must leave neither a native cap nor half a server patch.
 function applyBound(ts) {
   const saved = patchTargets(ts).map(([object, key]) => [object, key, Object.getOwnPropertyDescriptor(object, key)])
-  const inserted = []
-  const restore = () => {
-    for (const property of saved) safely(() => restoreProperty(property))
-    for (const args of inserted) safely(() => removeArgument(args))
-  }
+  if (saved.some(([, , descriptor]) => !descriptor?.writable)) throw new Error('immutable watch surface')
   try {
-    // Navigation uses installed types; ATA adds a separate, unbounded installer.
-    // argv too: a separately bundled server snapshots it when its entry evaluates.
-    insertArgument(process.argv, inserted)
-    insertArgument(ts.sys.args, inserted)
-    ts.sys.watchDirectory = createPollingDirectoryWatch(ts)
+    boundTypeScriptWatches(ts)
     observeClosedProgramInputs(ts)
-    return restore
+    syncBuiltinESMExports()
   } catch (error) {
-    restore()
+    for (const [object, key, descriptor] of saved.reverse()) {
+      try { Object.defineProperty(object, key, descriptor) } catch { /* Continue restoring the other surfaces. */ }
+    }
+    syncBuiltinESMExports()
     throw error
   }
 }
@@ -92,60 +54,48 @@ function packageVersion(entry) {
   catch { return 'unknown' }
 }
 
-// Observe module identity through any require spelling. Decide only after the
-// actual entry finishes loading, so asynchronous --import preloads cannot race it.
+// Observe the actual CommonJS dependency edge, not merely a neighboring compiler.
+// TS 5 uses tsserver.js -> typescript.js; newer shims add _tsserver.js in between.
 function awaitServerModule(entry, ts, finish) {
   const original = Module.prototype.require
-  const compile = Module.prototype._compile
-  let shared = false, compilingEntry = false
+  const implementation = resolve(entry, '..', '_tsserver.js')
+  const callers = new Set([entry])
   const restore = () => {
-    safely(() => { if (Module.prototype.require === intercepted) Module.prototype.require = original })
-    safely(() => { if (Module.prototype._compile === compiled) Module.prototype._compile = compile })
+    try { if (Module.prototype.require === intercepted) Module.prototype.require = original }
+    catch { /* A later loader must not turn cleanup into a startup failure. */ }
   }
-  const intercepted = function () {
+  const intercepted = function (id) {
+    if (this.filename === entry && id === './_tsserver.js') callers.add(implementation)
     const exported = original.apply(this, arguments)
-    if (compilingEntry && exported === ts) shared = true
+    const server = callers.has(this.filename)
+    if (server && id === './typescript.js') {
+      restore()
+      try {
+        if (exported !== ts) { finish('server-module-not-shared'); return exported }
+        applyBound(ts)
+        finish()
+      } catch { finish('watch-installation-failed') }
+    }
     return exported
   }
-  const compiled = function (_content, filename) {
-    const isEntry = entry.includes(filename)
-    if (isEntry) compilingEntry = true
-    try { return compile.apply(this, arguments) }
-    finally {
-      if (isEntry) {
-        compilingEntry = false
-        restore()
-        finish(shared ? undefined : 'server-module-not-shared')
-      }
-    }
-  }
-  try {
-    Module.prototype.require = intercepted
-    Module.prototype._compile = compiled
-  } catch (error) { restore(); throw error }
-}
-
-function refuse(reason) {
-  try { filesystem.writeSync(2, `wt-tsls: error: TypeScript unknown: refusing server startup (${reason})\n`) }
-  finally { process.exit(1) }
-}
-
-function warn(version, reason) {
-  try { filesystem.writeSync(2, `wt-tsls: warning: TypeScript ${version}: native watch cap applied; directory polling and closed-input polling not applied (${reason})\n`) }
-  catch { /* An unavailable stderr must not kill a bounded server. */ }
+  Module.prototype.require = intercepted
+  setImmediate(() => { restore(); finish('server-module-not-shared') })
 }
 
 function preload(entry) {
-  let version = 'unknown', finished = false, restore = () => {}
-  // The hazard is uncapped native watches; this cap does not depend on the compiler.
-  try { boundNativeWatches(); syncBuiltinESMExports() }
-  catch { return refuse('native-watch-installation-failed') }
+  let version = 'unknown', finished = false
   const finish = (reason) => {
     if (finished) return
     finished = true
-    if (reason) { safely(restore); warn(version, reason) }
+    if (reason) {
+      try { process.stderr.write(`wt-tsls: warning: TypeScript ${version}: native watch budget and closed-input polling not applied (${reason})\n`) }
+      catch { /* Diagnostics must never prevent server startup. */ }
+    }
   }
   try {
+    // Add before loading TypeScript: sys.args snapshots argv at module evaluation.
+    // Navigation uses installed types; ATA adds a separate, unbounded installer.
+    process.argv.push(DISABLE_ATA)
     const realEntry = realpathSync(entry)
     version = packageVersion(realEntry)
     const require = createRequire(pathToFileURL(realEntry))
@@ -153,8 +103,8 @@ function preload(entry) {
     version = versionName(ts.version ?? version)
     if (!/^[56]\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?$/.test(version)) return finish('unsupported-version')
     if (!supportedSurface(ts)) return finish('unsupported-watch-surface')
-    try { restore = applyBound(ts) } catch { return finish('watch-installation-failed') }
-    awaitServerModule([realEntry, resolve(entry)], ts, finish)
+    if (!ts.sys.args.includes(DISABLE_ATA)) ts.sys.args.push(DISABLE_ATA)
+    awaitServerModule(realEntry, ts, finish)
   } catch { finish('preload-initialization-failed') }
 }
 

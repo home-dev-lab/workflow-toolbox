@@ -22,6 +22,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The quota watcher now honors an inherited session config-directory flag before the config-directory environment variable, using that single decision for account fingerprints and its child probe. This prevents wrong-account cache acceptance or rejection when a wrapper pins or removes the config-directory variable.
 - The quota watcher now shares the hook's login cache for pool-named login sessions, resolves the session's global config before pinning its probe environment, and passes that config choice to the probe. Cache fingerprint checks and token-session cache ownership remain enforced.
 - Every suite-lock lease that reached its request now gets a terminal journal line, and the journal reader reports exactly one outcome per lease: when racing writers append more than one terminal line, it keeps the first in append order (rotated generation first) and counts the rest in `ignoredDuplicateTerminals`. The ending paths: a waiting client killed by TERM, INT or HUP records an abort with the signal and exits 128+n, any other failure after the request records an abort with its error code, a waiter proven dead is journaled when the next waiter reaps its ticket, a dead holder is journaled when its lock is reclaimed, and release --force journals and checks the holder's identity before removing it. The reclaimed or force-released line also carries `heldS`, the time held in seconds at full precision (null when it cannot be known), and `result: 'unknown'`.
+- A lifecycle with a pending stop can still extend or abandon its own timed-out lane; other run kinds remain refused, and a completed stop refuses every run kind.
+- Stream-end lifecycle finalization now retains owned worker PIDs and submits best-effort abandon decisions before archiving, recording each submission or failure in the partial summary.
+- A single Workflow run in a session no longer exempts an unrelated delegate from the outbound and cancelled-call guards; the session-level lookup now requires the agent's own transcript, and the harness-delivery classification uses the same Workflow-payload predicate
+
+### Changed
+- The arc watch no longer wakes a session for a WAITING-ON-SPAWNER record that a complete transcript scan proves belongs to another project, nor for STALE or IDLE-MID-MISSION silence of an observer transcript; each skipped line is written with its reason to a per-session journal under the plugin data directory, and an incomplete scan, undecidable ownership or a failed journal write still emits the line.
+- Eligible plain single-file Node tests (one existing test file, built-in test options only) requested with `run --light` now run immediately without a queue ticket, with a warning after 60 seconds; exclusive, static and park requests keep admission.
+- The `pilot` and `pilot-orchestrator` agent templates now bound every wait at 55 minutes and re-arm it on expiry, so a wake lands inside the one-hour prompt-cache lifetime instead of rewriting the whole context at a higher price.
+- A general-purpose Agent spawn that pins model and effort now also needs a `general-purpose because:` reason line outside code fences; pinning no longer exempts the call from the right-sized spawn guard.
+
+## [0.201.0] - 2026-11-20
+
+### Fixed
+
 - A second opinion run against a repository no longer lets the reviewing model read that repository's git history: the review sandbox masks the repository's git directory and common directory, refuses to start when it cannot work out which paths to mask, and names what it held back in its plan line.
 - Cached suite-lock writers now refuse main-queue admission with exit 78 when the
   effective enabled install has a higher queue-order version and passes a bounded
@@ -38,11 +52,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   retain the refusal with restart guidance.
 
 - Run cost on Windows: capture and the reader now match the forward-slash directory spelling OpenCode stores for the worktree realpath, so Windows lanes are priced instead of reported missing
-- A lifecycle with a pending stop can still extend or abandon its own timed-out lane; other run kinds remain refused, and a completed stop refuses every run kind.
-- Stream-end lifecycle finalization now retains owned worker PIDs and submits best-effort abandon decisions before archiving, recording each submission or failure in the partial summary.
-- A single Workflow run in a session no longer exempts an unrelated delegate from the outbound and cancelled-call guards; the session-level lookup now requires the agent's own transcript, and the harness-delivery classification uses the same Workflow-payload predicate
-- wt-tsls always installs its native watch cap, refuses startup only when that cap cannot be installed, and skips nested TypeScript below 5.
-  Its preload now safely rolls back only its own changes and confirms compiler sharing during entry execution, including preserved symlink entries.
 - wt-tsls no longer exits by its own SIGTERM when its forced stop ends a backend that was slow to exit after the client closed its input; it now exits 0, while a crash, a client signal, a SIGTERM that ended the backend before the forced stop, or one received after the forced stop failed to send its own TERM still surfaces (a foreign SIGTERM arriving inside the one-second forced window after its own TERM was delivered is indistinguishable and reads as 0)
 - The session-start duplicate-hook notice now reads settings hook commands word by word: it recognises `node` after a
   separator without a space, after leading blanks or a newline, as an absolute binary or behind `env NAME=value`, and with
@@ -53,11 +62,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   that all match the running version produce no notice.
 
 ### Changed
-- The arc watch no longer wakes a session for a WAITING-ON-SPAWNER record that a complete transcript scan proves belongs to another project, nor for STALE or IDLE-MID-MISSION silence of an observer transcript; each skipped line is written with its reason to a per-session journal under the plugin data directory, and an incomplete scan, undecidable ownership or a failed journal write still emits the line.
-- Eligible plain single-file Node tests (one existing test file, built-in test options only) requested with `run --light` now run immediately without a queue ticket, with a warning after 60 seconds; exclusive, static and park requests keep admission.
-- The `pilot` and `pilot-orchestrator` agent templates now bound every wait at 55 minutes and re-arm it on expiry, so a wake lands inside the one-hour prompt-cache lifetime instead of rewriting the whole context at a higher price.
-- A general-purpose Agent spawn that pins model and effort now also needs a `general-purpose because:` reason line outside code fences; pinning no longer exempts the call from the right-sized spawn guard.
-- Unmarked HTML pages from the artifact server no longer block Orca's annotation tool: they are served with `sandbox allow-scripts` and `script-src 'none'`, so the browser's injected script can run while page scripts, inline handlers and `javascript:` URLs stay blocked and the page keeps its opaque origin. Scripting enabled for the document also lets a meta refresh navigate on its own and hides `<noscript>` content. Rich, annotatable, interactive and non-HTML policies are unchanged.
 - `wt-artifact-server url` now prints the tailnet URL (the Serve HTTPS name or the tailnet address) by default when one exists, and falls back to the local URL only when there is none, with the reason on stderr; `--check` then checks the printed URL, from the Tailscale host when it is the tailnet one. Use the new `--local` for tools on the same host (Playwright, curl, a local fetch); `--remote` still refuses to fall back. The session-start line now tells sessions to run `url <file> --remote` and hand over the tailnet link.
 
 ### Added
