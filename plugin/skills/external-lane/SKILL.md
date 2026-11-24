@@ -55,13 +55,22 @@ An orphan delivered to main is acknowledged separately from the historical notic
 archive, so archive eviction cannot hide a pending event or replay a handled one.
 An unreadable liveness file triggers a named routing diagnostic and main fallback.
 A failed publication reports `launcher-publish-failed` and is retried from the lane record;
-storage errors do not change the sweep's or waiter's exit status. A delegate must keep `complete:false` while
+readers and sweeps also finish complete reserved sources after that record ages out.
+Publication and cleanup errors do not change the caller's exit status; a waiter reports
+exit 1 when output completed but its printed marker could not be stored. A delegate must keep `complete:false` while
 waiting and mark it complete only after handling its final work events.
 Publishers write complete private temporary files with exclusive creation, then publish
 with a hard link that never overwrites an existing name. No publisher waits on a reader.
 Readers rename pending events into their own claimed directory; only the successful
 claimer prints. Both recipients complete synchronous output before renaming into `done/`.
-A crash between output and acknowledgement can replay delivery. A later reader returns
+A printed marker is written privately and renamed atomically, with at most three write
+attempts. If those fail, a separate claim-directory rename records `printed-unknown`;
+the waiter still exits 1 with `delivery unknown`, and recovery acknowledges without replay.
+Unreadable or partial printed markers, including interrupted private marker writes, are
+also acknowledged without replay and report `launcher-printed-marker-unknown`.
+A crash between output and the first durable printed evidence can replay delivery. If
+both marker writes and the directory rename fail, `launcher-printed-unknown-unrecorded`
+names the same remaining boundary: recovery may replay after owner death. A later reader returns
 a claim to pending only with positive process-death or measured PID-reuse evidence,
 never age alone; unknown ownership is reported and retained. Done history is retained
 for seven days, exceeding the one-day completion lookback. Temporary hard links reserve

@@ -162,7 +162,8 @@ for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
         }
         events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
         options.rename = (from, to) => {
-          if ((phase === 'claim' && to.includes('claimed-')) || (phase === 'acknowledge' && to.includes(`${path.sep}done${path.sep}`))) failure()
+          if ((phase === 'claim' && from.includes(`${path.sep}pending${path.sep}`) && to.includes('claimed-'))
+            || (phase === 'acknowledge' && to.includes(`${path.sep}done${path.sep}`))) failure()
           renameSync(from, to)
         }
         const lines = []

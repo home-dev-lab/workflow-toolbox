@@ -51,7 +51,7 @@ export function recoverClaims(paths, options) {
 function recoverClaim(paths, directory, name, options) {
   const file = path.join(directory, name)
   try {
-    if (printedAt(file) !== null) acknowledgeClaim(paths, { file, name }, options)
+    if (printedAt(file, options, true) !== null) acknowledgeClaim(paths, { file, name, printed: true }, options)
     else eventOperation('rename', file, path.join(paths.pending, name), options)
   } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-recovery-failed', error) }
 }
@@ -75,11 +75,7 @@ export function returnClaim(paths, claim, options) {
 export function acknowledgeClaim(paths, claim, options) {
   const file = path.join(paths.done, claim.name)
   try {
-    let at = printedAt(claim.file)
-    if (at === null) {
-      at = options.now ?? Date.now()
-      writeFileSync(`${claim.file}.printed`, JSON.stringify({ at }), { flag: 'wx', mode: 0o600 })
-    }
+    if (!claim.printed && printedAt(claim.file, options) === null && !storePrintedMarker(claim, options)) return false
     const now = new Date(options.now ?? Date.now())
     // Stamp before exposing done to pruning, including after a recovery or interruption.
     utimesSync(claim.file, now, now)
@@ -90,16 +86,53 @@ export function acknowledgeClaim(paths, claim, options) {
   return true
 }
 
-function printedAt(file) {
+function unknownPrint(options, reason, error) {
+  eventReason(options, reason, error)
+  return options.now ?? Date.now()
+}
+
+function printedAt(file, options, includePartial = false) {
+  if (path.basename(path.dirname(file)).startsWith('claimed-printed-unknown-')) {
+    return unknownPrint(options, 'launcher-printed-unknown-directory')
+  }
   try {
     const value = JSON.parse(readFileSync(`${file}.printed`, 'utf8'))
     if (!Number.isFinite(value?.at)) throw new Error('launcher-printed-marker-invalid')
     return value.at
-  } catch (error) { if (error.code === 'ENOENT') { return null } throw error }
+  } catch (error) {
+    if (error.code !== 'ENOENT') return unknownPrint(options, 'launcher-printed-marker-unknown', error)
+  }
+  if (!includePartial) return null
+  // A crash during a private marker write is also post-output evidence. Its bytes
+  // need not be readable or complete for recovery to prefer acknowledgement.
+  const prefix = `${path.basename(file)}.`
+  const partial = readdirSync(path.dirname(file)).some((name) => name.startsWith(prefix) && name.endsWith('.printed'))
+  return partial ? unknownPrint(options, 'launcher-printed-marker-unknown') : null
 }
 
-export function claimWasPrinted(claim) {
-  try { return printedAt(claim.file) !== null } catch { return false }
+function storePrintedMarker(claim, options) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const temporary = `${claim.file}.${eventName()}.printed`
+    try {
+      writeFileSync(temporary, JSON.stringify({ at: options.now ?? Date.now() }), { flag: 'wx', mode: 0o600 })
+      eventOperation('rename', temporary, `${claim.file}.printed`, options)
+      return true
+    } catch (error) { eventReason(options, 'launcher-printed-marker-write-failed', error) }
+    finally { removeEventFile(temporary, options) }
+  }
+  claim.deliveryUnknown = true
+  const directory = path.dirname(claim.file)
+  const unknown = path.join(path.dirname(directory), `claimed-printed-unknown-${eventName()}`)
+  try {
+    eventOperation('rename', directory, unknown, options)
+    claim.file = path.join(unknown, claim.name)
+    eventReason(options, 'launcher-printed-unknown-recorded')
+  } catch (error) { eventReason(options, 'launcher-printed-unknown-unrecorded', error) }
+  return false
+}
+
+export function claimWasPrinted(claim, options = {}) {
+  try { return printedAt(claim.file, options) !== null } catch { return false }
 }
 
 function cleanReader(directory, options) {
@@ -107,7 +140,7 @@ function cleanReader(directory, options) {
   try {
     if (eventNames(directory).length) return
     for (const name of readdirSync(directory)) {
-      if (/^\d+-\d+-[A-Za-z0-9-]+\.json\.printed$/.test(name)) removeEventFile(path.join(directory, name), options)
+      if (/^\d+-\d+-[A-Za-z0-9-]+\.json(?:\.\d+-\d+-[A-Za-z0-9-]+)?\.printed$/.test(name)) removeEventFile(path.join(directory, name), options)
     }
     const names = readdirSync(directory)
     if (names.length !== 1 || names[0] !== 'owner.json') return

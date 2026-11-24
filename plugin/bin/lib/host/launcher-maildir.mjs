@@ -86,6 +86,21 @@ export function finishPublication(paths, entry, options) {
   return entry
 }
 
+export function recoverPublications(paths, options) {
+  for (const name of readdirSync(paths.tmp)) {
+    if (!/^\d+-\d+-[A-Za-z0-9-]+\.ready$/.test(name)) continue
+    try {
+      // A ready file can still be in flight or belong to a losing publisher.
+      // Only the completed source belonging to the durable reservation may move.
+      const base = name.slice(0, -6)
+      if (lstatSync(path.join(paths.tmp, `${base}.tmp`)).nlink < 2) continue
+      const entry = readEvent(path.join(paths.tmp, name))
+      if (entry.name !== `${base}.json` || readEvent(keyFile(paths, entry.key)).name !== entry.name) continue
+      finishPublication(paths, entry, options)
+    } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-publication-recovery-failed', error) }
+  }
+}
+
 function writePublication(fd, ready, entry) {
   const text = JSON.stringify(entry)
   writeFileSync(fd, text)

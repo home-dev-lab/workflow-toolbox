@@ -158,3 +158,148 @@ test('delayed printed-claim recovery starts retention at acknowledgement, not at
   assert.equal(events.takeLauncherEvent('delegate', f.options), null)
   assert.equal(readdirSync(path.join(f.box, 'done')).length, 1, 'late recovery must retain the newly acknowledged event for another seven days')
 })
+
+test('C4 publication: a sweep finishes a reservation after history eligibility expires', (t) => {
+  const f = fixture(t)
+  const result = events.appendLauncherEvent('delegate', { key: 'old', line: 'old', ownerSessionId: 'session' }, {
+    ...f.options, reportReason: () => {}, rename: () => { throw Object.assign(new Error('interrupted'), { code: 'EIO' }) },
+  })
+  assert.equal(result.ok, false)
+  f.options.now += 2 * 24 * 3_600_000
+  const s = scanner(f, { store: { load: () => ({ entries: new Map(), baseline: false }),
+    records: () => [], reportPresent: () => false } })
+  s.sweep()
+  assert.equal(readdirSync(path.join(f.box, 'pending')).length, 1, 'the sweep must promote the source before a reader runs')
+  assert.equal(events.takeLauncherEvent('delegate', f.options)?.line, 'old', 'a reserved source must be delivered without re-appending expired history')
+  assert.equal(events.takeLauncherEvent('delegate', f.options), null)
+})
+
+for (const marker of ['', '{"at":', '{"at":"invalid"}']) {
+  test(`C4 partial marker: recovery acknowledges ${JSON.stringify(marker)} without replay`, (t) => {
+    const f = fixture(t)
+    events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+    fresh(f, String.raw`const {eventPaths}=await import(${JSON.stringify(moduleUrl('lib/host/launcher-maildir.mjs'))});
+      const {claimEvent}=await import(${JSON.stringify(moduleUrl('lib/host/launcher-claims.mjs'))});
+      const paths=eventPaths('delegate',options),claim=claimEvent(paths,fs.readdirSync(paths.pending)[0],options);
+      fs.writeSync(1,claim.event.line+'\n');fs.writeFileSync(claim.file+'.printed',${JSON.stringify(marker)});`)
+    const reasons = [], lines = []
+    events.takeLauncherEvent('delegate', { ...f.options, reportReason: (line) => { reasons.push(line) },
+      deliver: (event) => { lines.push(event.line) } })
+    assert.equal(readdirSync(path.join(f.box, 'done')).length, 1, 'a partial marker must not strand acknowledgement')
+    assert.deepEqual(lines, [], 'partial printed evidence must not replay')
+    assert.match(reasons.join('\n'), /launcher-printed-marker-unknown/)
+  })
+}
+
+test('C4 marker failure: exit 1 and owner death recover without a second print', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  const result = fresh(f, String.raw`const write=fs.writeFileSync;let attempts=0;
+    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')){attempts++;throw Object.assign(new Error('full'),{code:'ENOSPC'})}return write(file,...args)};
+    syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
+    process.on('exit',()=>fs.writeSync(2,'marker-attempts='+attempts+'\n'));
+    startLauncherWait('delegate',{...options,timeout:0});`, 1)
+  assert.equal(result.stdout, 'A\n')
+  assert.match(result.stderr, /launcher delivery unknown/)
+  const lines = []
+  events.takeLauncherEvent('delegate', { ...f.options, deliver: (event) => { lines.push(event.line) } })
+  assert.deepEqual(lines, [], 'a non-crash marker failure must not print again after owner death')
+  assert.match(result.stderr, /marker-attempts=3/)
+  assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
+})
+
+test('C4 publication: a reader independently finishes an expired reservation', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'old', line: 'old' }, { ...f.options,
+    reportReason: () => {}, rename: () => { throw Object.assign(new Error('interrupted'), { code: 'EIO' }) } })
+  f.options.now += 2 * 24 * 3_600_000
+  assert.equal(events.takeLauncherEvent('delegate', f.options)?.line, 'old')
+  assert.equal(events.takeLauncherEvent('delegate', f.options), null)
+})
+
+test('C4 publication: an unreserved complete source stays invisible to readers', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  const base = `${process.pid}-1-unreserved`, directory = path.join(f.box, 'tmp')
+  const text = JSON.stringify({ key: 'B', line: 'B', at: f.options.now, name: `${base}.json` })
+  writeFileSync(path.join(directory, `${base}.tmp`), text)
+  writeFileSync(path.join(directory, `${base}.ready`), text)
+  assert.equal(events.takeLauncherEvent('delegate', f.options)?.line, 'A')
+  assert.equal(events.takeLauncherEvent('delegate', f.options), null, 'recovery must not publish a source before key reservation')
+})
+
+test('C4 atomic marker: failure after private creation never exposes truncated final JSON', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  const result = fresh(f, String.raw`const write=fs.writeFileSync;let attempts=0,finalWrites=0;
+    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')){
+      attempts++;if(String(file).endsWith('.json.printed'))finalWrites++;
+      write(file,'{"at":');throw Object.assign(new Error('full after create'),{code:'ENOSPC'})}return write(file,...args)};
+    syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
+    process.on('exit',()=>fs.writeSync(2,'marker-attempts='+attempts+' final-writes='+finalWrites+'\n'));
+    startLauncherWait('delegate',{...options,timeout:0});`, 1)
+  assert.equal(result.stdout, 'A\n')
+  assert.match(result.stderr, /launcher-printed-unknown-recorded/)
+  assert.match(result.stderr, /marker-attempts=3 final-writes=0/, 'failed marker writes must stay private and bounded')
+  const lines = []
+  events.takeLauncherEvent('delegate', { ...f.options, deliver: (event) => { lines.push(event.line) } })
+  assert.deepEqual(lines, [])
+  assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
+  assert.deepEqual(readdirSync(f.box).filter((name) => name.startsWith('claimed-')), [])
+})
+
+test('C4 atomic marker: a transient write failure retries and exits normally', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  const result = fresh(f, String.raw`const write=fs.writeFileSync;let attempts=0;
+    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')&&++attempts===1){write(file,'');throw Object.assign(new Error('transient'),{code:'ENOSPC'})}return write(file,...args)};
+    syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
+    process.on('exit',()=>{assert.equal(attempts,2)});startLauncherWait('delegate',{...options,timeout:0});`)
+  assert.equal(result.stdout, 'A\n')
+  assert.equal(events.takeLauncherEvent('delegate', f.options), null)
+})
+
+test('C4 atomic marker: death during a private marker write acknowledges without replay', async (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  const reader = await held(t, f, String.raw`const write=fs.writeFileSync;
+    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed')){write(file,'{"at":');hold()}return write(file,...args)};
+    syncBuiltinESMExports();const m=await import(eventUrl);m.takeLauncherEvent('delegate',{...options,deliver:item=>fs.writeSync(1,item.line+'\n')});`)
+  reader.child.kill('SIGKILL'); await reader.ended
+  assert.equal(reader.output.join(''), 'A\n')
+  const lines = []
+  events.takeLauncherEvent('delegate', { ...f.options, reportReason: () => {}, deliver: (event) => { lines.push(event.line) } })
+  assert.deepEqual(lines, [])
+  assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
+})
+
+test('C4 marker boundary: failure of both durable routes is named and may replay', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  const result = fresh(f, String.raw`const write=fs.writeFileSync,rename=fs.renameSync;
+    fs.writeFileSync=(file,...args)=>{if(String(file).endsWith('.printed'))throw Object.assign(new Error('denied'),{code:'EACCES'});return write(file,...args)};
+    fs.renameSync=(from,to)=>{if(String(to).includes('claimed-printed-unknown-'))throw Object.assign(new Error('denied'),{code:'EACCES'});return rename(from,to)};
+    syncBuiltinESMExports();const {startLauncherWait}=await import(${JSON.stringify(moduleUrl('lib/launcher-wait.mjs'))});
+    startLauncherWait('delegate',{...options,timeout:0});`, 1)
+  assert.equal(result.stdout, 'A\n')
+  assert.match(result.stderr, /launcher-printed-unknown-unrecorded/)
+  assert.match(result.stderr, /launcher delivery unknown/)
+  const lines = []
+  events.takeLauncherEvent('delegate', { ...f.options, deliver: (event) => { lines.push(event.line) } })
+  assert.deepEqual(lines, ['A'], 'if every post-output record fails, recovery cannot distinguish printed from unprinted')
+  assert.equal(events.takeLauncherEvent('delegate', f.options), null)
+})
+
+test('C4 unreadable marker: recovery acknowledges printed-unknown instead of stranding', (t) => {
+  const f = fixture(t)
+  events.appendLauncherEvent('delegate', { key: 'A', line: 'A' }, f.options)
+  fresh(f, String.raw`const rename=fs.renameSync;
+    fs.renameSync=(from,to)=>{if(String(to).includes(${JSON.stringify(`${path.sep}done${path.sep}`)}))throw Object.assign(new Error('busy'),{code:'EPERM'});return rename(from,to)};
+    syncBuiltinESMExports();const m=await import(eventUrl);m.takeLauncherEvent('delegate',{...options,deliver:()=>{}});`)
+  fresh(f, String.raw`const read=fs.readFileSync;const reasons=[];
+    fs.readFileSync=(file,...args)=>{if(String(file).endsWith('.printed'))throw Object.assign(new Error('denied'),{code:'EACCES'});return read(file,...args)};
+    syncBuiltinESMExports();const m=await import(eventUrl);
+    assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:line=>reasons.push(line),deliver:()=>assert.fail('no replay')}),null);
+    assert.match(reasons.join('\n'),/launcher-printed-marker-unknown/);`)
+  assert.equal(readdirSync(path.join(f.box, 'done')).length, 1)
+})

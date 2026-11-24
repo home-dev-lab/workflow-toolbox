@@ -5,7 +5,7 @@ import path from 'node:path'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { completeLauncherWrite, writeLauncherLine } from './launcher-event-io.mjs'
 import { eventGraceElapsed } from './launcher-event-grace.mjs'
-import { eventNames, eventPaths, eventReason, finishPublication, ignoredLegacy, pruneDone, publishEvent, readEvent } from './launcher-maildir.mjs'
+import { eventNames, eventPaths, eventReason, finishPublication, ignoredLegacy, pruneDone, publishEvent, readEvent, recoverPublications } from './launcher-maildir.mjs'
 import { acknowledgeClaim, claimEvent, claimWasPrinted, recoverClaims, returnClaim } from './launcher-claims.mjs'
 
 export const printLauncherEvent = writeLauncherLine
@@ -53,7 +53,7 @@ function prepareClaim(id, options) {
   try {
     launcherId(id)
     const paths = eventPaths(id, options)
-    recoverClaims(paths, options); pruneDone(paths, options)
+    recoverPublications(paths, options); recoverClaims(paths, options); pruneDone(paths, options)
     for (const name of eventNames(paths.pending)) {
       if (options.name && name !== options.name) continue
       const claim = claimEvent(paths, name, options)
@@ -69,9 +69,9 @@ export function takeLauncherEvent(id, options = {}) {
   const { paths, claim } = ready
   try { if (options.deliver) completeLauncherWrite(options.deliver, claim.event) }
   catch (error) { returnClaim(paths, claim, options); throw error }
-  if (!acknowledgeClaim(paths, claim, options) && !claimWasPrinted(claim)) {
-    // Output completed, but storage cannot prove it. Do not report a normal waiter
-    // exit: recovery may replay this delivery-unknown claim after the reader dies.
+  if (!acknowledgeClaim(paths, claim, options) && (claim.deliveryUnknown || !claimWasPrinted(claim, options))) {
+    // Keep exit 1 when the marker route failed, even if a directory rename recorded
+    // printed-unknown. If both routes fail, recovery may still replay after death.
     throw new Error('launcher print acknowledgement unavailable')
   }
   return claim.event
@@ -85,7 +85,7 @@ export function pendingLauncherEvents(options = {}) {
   catch (error) { if (error.code !== 'ENOENT') { eventReason(options, 'launcher-read-failed', error) } return events }
   for (const id of ids) {
     try {
-      const paths = eventPaths(id, options); recoverClaims(paths, options)
+      const paths = eventPaths(id, options); recoverPublications(paths, options); recoverClaims(paths, options)
       for (const name of eventNames(paths.pending)) {
         const event = readEvent(path.join(paths.pending, name))
         if (event.ownerSessionId === options.sessionId) events.push({ ...event, name })
