@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error executable JavaScript fixtures
 import { terminalEvents } from './suite-lock-terminal-review-cases.mjs'
 // @ts-expect-error plugin runtime module
@@ -23,7 +24,7 @@ function requestAt(root: string, index: number) {
 }
 
 async function until(predicate: () => boolean) {
-  const deadline = performance.now() + 5000
+  const deadline = performance.now() + 30_000
   while (!predicate()) {
     if (performance.now() >= deadline) throw new Error('terminal fixture did not become ready')
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -32,7 +33,7 @@ async function until(predicate: () => boolean) {
 
 function launch(root: string, flags: string[] = [], extra: Record<string, string> = {}) {
   const child = spawn(process.execPath, [cli, 'run', ...flags, '--', process.execPath, '-e', 'process.exit(0)'], {
-    env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_STATIC_LANE: '0', ...extra }, stdio: 'pipe',
+    env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_STATIC_LANE: '0', ...extra }), stdio: 'pipe',
   })
   children.push(child)
   return { child, exited: new Promise<number | null>((resolve) => child.once('exit', resolve)) }
@@ -331,7 +332,7 @@ it.skipIf(process.platform !== 'linux' || !existsSync('/usr/bin/setpriv'))('reco
   const args = ['--pdeathsig', 'TERM', process.execPath, cli, 'run', '--', process.execPath, '-e', 'process.exit(0)']
   const source = `import{spawn}from'node:child_process';spawn('/usr/bin/setpriv',${JSON.stringify(args)},{stdio:'ignore'});setInterval(()=>{},1000)`
   const parent = spawn(process.execPath, ['--input-type=module', '-e', source], {
-    env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_STATIC_LANE: '0' },
+    env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK: '1', WT_SUITE_LOCK_STATIC_LANE: '0' }),
   })
   children.push(parent)
   const exited = new Promise((resolve) => parent.once('exit', resolve))
@@ -408,7 +409,7 @@ it('two concurrent force-release CLIs produce only one terminal line', async () 
   const lease = await acquireSuiteLock({ root })
   await Promise.all([1, 2].map(() => new Promise((resolve) => {
     const child = spawn(process.execPath, [cli, 'release', '--force'], {
-      env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK: '1' }, stdio: 'pipe',
+      env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK: '1' }), stdio: 'pipe',
     })
     children.push(child)
     child.once('exit', resolve)

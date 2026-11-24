@@ -30,6 +30,7 @@ const { BOUNDED_P0_ORDER_VERSION, SUITE_LOCK_ORDER_VERSION, orderSuiteLockTicket
 const suiteLockNow = (options) => options.now?.() ?? Date.now()
 const SUITE_LOCK_MODULE_URL = import.meta.url
 const publishedFailures = new WeakSet()
+const recordedServiceHolders = new WeakSet()
 
 export function suiteLockWaitSeconds(env = process.env) {
   return env.WT_SUITE_LOCK_WAIT_S === undefined
@@ -592,8 +593,13 @@ export function releaseSuiteLock(lease, outcome = {}) {
     if (!confirmed.held) return true
     if (!sameInstance(confirmed.holder, lease.holder)) return false
     cleanSuiteRecoveryFiles(lease.root, 'lock.d.reclaimed-')
-    return removeJudgedInstance(lease.lockDir, confirmed.holder, {}, () => {
+    // Ticket cleanup can put the holder back. A retry of that lease must not
+    // consume another project turn, including a shallow copy of the lease.
+    if (!recordedServiceHolders.has(lease.holder)) {
       recordSuiteLockService(lease, outcome)
+      recordedServiceHolders.add(lease.holder)
+    }
+    return removeJudgedInstance(lease.lockDir, confirmed.holder, {}, () => {
       suiteJournalEvent(lease.journal, 'release', outcome)
     })
   })

@@ -1,5 +1,7 @@
 // Named exemptions for scripts/fixed-wait-census.mjs, keyed by file, signal, resolved number and enclosing statement.
 export const fixedWaitAllowList = new Map([
+  // packages/build/test/suite-lock-terminal.test.ts
+  ["packages/build/test/suite-lock-terminal.test.ts:fixed-sleep:setTimeout 30 ms:await new Promise((resolve) => setTimeout(resolve, 30))", { class: 'duration-bound', reason: 'Negative observation window past the 10 ms static deadline: the first abort cause must remain unchanged after that deadline could fire.' }],
   // packages/build/test/actionability-bounded-refresh.test.ts
   ["packages/build/test/actionability-bounded-refresh.test.ts:short-deadline:spawnSync timeout: 2000 ms:const result = spawnSync(process.execPath, [GATE], { env: p.env, encoding: 'utf8', timeout: 2000, input: JSON.stringify({ hook_event_name: 'Stop', cwd, session_", {"class":"duration-bound","reason":"The Stop hook must return within two seconds even while its detached refresh child is active; hook duration is the invariant under test."}],
   ["packages/build/test/lane-saturation-hook.test.ts:short-deadline:now() + 10000 ms:const deadline = Date.now() + 10_000", {"class":"duration-bound","reason":"upper bound on polling a real child process until /proc shows the expected wait state; the loop returns as soon as the state is observed and fails if it never is."}],
