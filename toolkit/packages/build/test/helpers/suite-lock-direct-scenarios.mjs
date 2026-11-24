@@ -253,8 +253,8 @@ export const acceptedArguments = [
 
 const rejectedOptions = [
   '--test-reporter=data:text/javascript,0', '--test-reporter=./r.mjs',
-  '--test-global-setup=./s.mjs', '--test-shard=2/2', '--test-unknown=1', '--import=./b.mjs',
-  '--require=./b.cjs', '-r', '--loader=./b.mjs', '--experimental-test-coverage',
+  '--test-global-setup=./s.mjs', '--test-shard=2/2', '--test-unknown=1', '--import=file:///tmp/b.mjs',
+  '--require=./b.cjs', '-r', '--loader=file:///tmp/b.mjs', '--experimental-test-coverage',
   '--test-reporter-destination=out', '--test-timeout=x', '--test-only=1', '--no-warnings=1',
   '--test-timeout=1\n', '--test-reporter=spec\n',
 ]
@@ -270,7 +270,7 @@ export const rejectedArguments = [
   ['node', '--test', '--', 'a.test.mjs'], ['node', '--icu-data-dir', '/x', '--test', 'a.test.mjs'],
   ['node', '--test-reporter', 'spec', '--test', 'a.test.mjs'],
   ['/custom/bin/node', '--test', 'a.test.mjs'], ['env', 'X=1', 'node', '--test', 'a.test.mjs'],
-  ['env', 'NODE_OPTIONS=--import=./b.test.mjs', 'node', '--test', 'a.test.mjs'],
+  ['env', 'NODE_OPTIONS=--import=file:///tmp/b.test.mjs', 'node', '--test', 'a.test.mjs'],
   ['X=1', 'node', '--test', 'a.test.mjs'], ['setsid', '--wait', 'node', '--test', 'a.test.mjs'],
   ['pnpm', 'exec', 'node', '--test', 'a.test.mjs'],
   ['node', 'wt-suite-lock.mjs', 'run', '--', 'node', '--test', 'a.test.mjs'],
@@ -313,7 +313,7 @@ function assertEnvironment(parser, options) {
   for (const NODE_OPTIONS of ['', '   ', '--max-old-space-size=4096', '--no-warnings --enable-source-maps']) {
     assert.equal(parser.runsWithoutTicket(one, { ...options, env: { NODE_OPTIONS } }), true, NODE_OPTIONS)
   }
-  for (const NODE_OPTIONS of ['--import=./b.mjs', '--require ./b.cjs', '--max-old-space-size=x', '"--no-warnings"']) {
+  for (const NODE_OPTIONS of ['--import=file:///tmp/b.mjs', '--require ./b.cjs', '--max-old-space-size=x', '"--no-warnings"']) {
     assert.equal(parser.runsWithoutTicket(one, { ...options, env: { NODE_OPTIONS } }), false, NODE_OPTIONS)
   }
 }
