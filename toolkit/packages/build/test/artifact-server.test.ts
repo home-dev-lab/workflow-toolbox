@@ -3159,15 +3159,21 @@ describe('owner decision 5: Tailscale access', () => {
 })
 
 describe('review decisions: serving security matrix', () => {
+  registerCompleteBrowserDumpTests()
+  registerExitedBrowserTest()
+  registerBrowserSignalTests()
+  registerBrowserExitTests()
+  registerRichHtmlTest()
+  registerServingSecurityTest()
+  registerCanonicalRootTest()
+  registerDeniedRootTests()
+  registerDeadDiscoveryTest()
+})
+
+function registerCompleteBrowserDumpTests() {
   // Headless Chrome can print its complete --dump-dom serialization and then never exit. These fakes stand in for
   // that browser on every platform: the render must end on the dump itself, and a browser that never dumps must
   // fail with a message naming the render stage rather than leave the test to a bare runner timeout.
-  function fakeBrowser(source: string): BrowserCommand {
-    const script = join(temporaryDir('fake-browser'), 'browser.mjs')
-    writeFileSync(script, source)
-    return { command: process.execPath, args: [script] }
-  }
-
   it('ends a render on a complete DOM dump and stops a browser that never exits, helpers included', async () => {
     const helperPidFile = join(temporaryDir('fake-browser-helper'), 'helper.pid')
     // Ignores SIGTERM like a browser hung in its own shutdown, and keeps a helper process alive like a renderer.
@@ -3195,7 +3201,15 @@ describe('review decisions: serving security matrix', () => {
     expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
     await waitFor(() => pidAlive(result.pid!) ? null : true)
   }, 20_000)
+}
 
+function fakeBrowser(source: string): BrowserCommand {
+  const script = join(temporaryDir('fake-browser'), 'browser.mjs')
+  writeFileSync(script, source)
+  return { command: process.execPath, args: [script] }
+}
+
+function registerExitedBrowserTest() {
   it('never signals a browser that already exited, even when its output stays open', async (ctx) => {
     // On Windows the process the fake browser starts does not keep the inherited stdout pipe open after the browser
     // exits (cross-os run 36963718515: the render resolved on exit instead of reaching its bound), so this scenario
@@ -3223,7 +3237,9 @@ describe('review decisions: serving security matrix', () => {
       try { process.kill(holderPid(), 'SIGKILL') } catch { /* already gone */ }
     }
   }, 20_000)
+}
 
+function registerBrowserSignalTests() {
   it('stopBrowser sends no signal to a browser process that has already exited', async () => {
     const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
     await new Promise<void>((resolve) => child.once('exit', () => resolve()))
@@ -3244,7 +3260,9 @@ describe('review decisions: serving security matrix', () => {
       try { child.kill('SIGKILL') } catch { /* already gone */ }
     }
   }, 20_000)
+}
 
+function registerBrowserExitTests() {
   it('keeps the exit code of a browser that exits by itself after its dump', async () => {
     const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"not-run\"></body></html>\\n', () => process.exit(0))\n")
     const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
@@ -3257,7 +3275,9 @@ describe('review decisions: serving security matrix', () => {
     await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 1_500 }))
       .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 1500 ms/)
   }, 20_000)
+}
 
+function registerRichHtmlTest() {
   it.skipIf(!CHROME)('runs only marked rich HTML scripts while Chrome blocks fetch and external images', async () => {
     const project = temporaryDir('rich-project')
     const root = temporaryDir('rich-root')
@@ -3293,18 +3313,7 @@ describe('review decisions: serving security matrix', () => {
       }
       const rich = richRender.value
       const plain = plainRender.value
-      // A browser that exited on its own must have exited cleanly; one stopped after its complete dump has no code.
-      expect(rich.completed, rich.stderr).toBe(true)
-      expect(rich.stoppedAfterDump || rich.code === 0, rich.stderr).toBe(true)
-      expect(rich.stdout).toContain('data-script="ran"')
-      expect(rich.stdout).toContain('data-fetch="blocked"')
-      expect(rich.stdout).toContain('data-image="blocked"')
-      expect(rich.stdout).toContain('data-done="yes"')
-      expect(plain.completed, plain.stderr).toBe(true)
-      expect(plain.stoppedAfterDump || plain.code === 0, plain.stderr).toBe(true)
-      expect(plain.stdout).toContain('data-script="not-run"')
-      expect(plain.stdout).not.toContain('data-script="ran"')
-      expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
+      expectRichHtmlIsolation(rich, plain, sinkPaths)
     } finally {
       // A probing artifact server or a stopped browser can leave a connection open; close() alone would wait on it.
       sink.closeAllConnections()
@@ -3313,42 +3322,29 @@ describe('review decisions: serving security matrix', () => {
   // Real-host test. Ubuntu runs 36056224538 (old 20.299 s limit) and 36869769306 (30 s) timed out with no assertion
   // failing; the bound is now the sum of its named stages, so the next stall names the stage it happened in.
   }, SECURITY_MATRIX_TEST_BOUND_MS)
+}
 
+function expectRichHtmlIsolation(rich: RenderResult, plain: RenderResult, sinkPaths: string[]) {
+  // A browser that exited on its own must have exited cleanly; one stopped after its complete dump has no code.
+  expect(rich.completed, rich.stderr).toBe(true)
+  expect(rich.stoppedAfterDump || rich.code === 0, rich.stderr).toBe(true)
+  expect(rich.stdout).toContain('data-script="ran"')
+  expect(rich.stdout).toContain('data-fetch="blocked"')
+  expect(rich.stdout).toContain('data-image="blocked"')
+  expect(rich.stdout).toContain('data-done="yes"')
+  expect(plain.completed, plain.stderr).toBe(true)
+  expect(plain.stoppedAfterDump || plain.code === 0, plain.stderr).toBe(true)
+  expect(plain.stdout).toContain('data-script="not-run"')
+  expect(plain.stdout).not.toContain('data-script="ran"')
+  expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
+}
+
+function registerServingSecurityTest() {
   it('[B-02][E-02][E-03] serves each type with CSP and rejects aliases, traversal, hosts, and methods', async () => {
     const project = temporaryDir('security-project')
     const root = temporaryDir('security-root')
     const outside = temporaryDir('security-outside')
-    writeFileSync(join(root, 'report.md'), [
-      '# Report',
-      '',
-      '| Method | Signature | Notes |',
-      ':--- | :---: | ---:',
-      '| `notice` | `left|right` | **bold** and [docs](https://example.com?a=1&b=2) |',
-      '| escaped | left \\| right | <b>raw</b> |',
-      '',
-      'prose | remains',
-      'not a separator',
-      '',
-      '<script>alert(1)</script>',
-    ].join('\n'))
-    mkdirSync(join(root, 'index'))
-    writeFileSync(join(root, 'index', '&script;.txt'), 'index')
-    writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
-    writeFileSync(join(root, 'events.log'), 'event')
-    writeFileSync(join(root, 'data.json'), '{"ok":true}')
-    writeFileSync(join(root, 'active.html'), '<script>top.location="https://evil.example"</script>')
-    writeFileSync(join(root, 'active.svg'), '<svg><script>alert(1)</script></svg>')
-    writeFileSync(join(root, 'blob.bin'), 'blob')
-    writeFileSync(join(root, '.env'), 'secret')
-    writeFileSync(join(root, '.ENV.PROD'), 'secret')
-    mkdirSync(join(root, '.git'))
-    writeFileSync(join(root, '.git', 'config'), 'secret')
-    writeFileSync(join(root, 'id_ed25519.pub'), 'secret')
-    symlinkSync(join(root, '.git'), join(root, 'git-alias'))
-    symlinkSync(join(root, '.ENV.PROD'), join(root, 'env-alias'))
-    symlinkSync(join(root, 'id_ed25519.pub'), join(root, 'key-alias'))
-    writeFileSync(join(outside, 'outside.txt'), 'secret')
-    symlinkSync(join(outside, 'outside.txt'), join(root, 'escape.txt'))
+    writeSecurityFixtures(root, outside)
     const stateHome = temporaryDir('security-state')
     const reservation = await reservePort()
     const port = reservation.port
@@ -3358,59 +3354,111 @@ describe('review decisions: serving security matrix', () => {
     }))
     await waitForState(stateHome, (state) => state.roots.some((entry) => entry.name === 'artifacts'))
 
-    const markdown = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`)
-    expect(markdown.status).toBe(200)
-    expect(markdown.body).toContain('&lt;script&gt;')
-    expect(markdown.body).not.toContain('<script>')
-    expect(markdown.body.match(/<t[hd]>/g)).toHaveLength(9)
-    expect(markdown.body).toContain('<div class="table-scroll"><table>')
-    expect(markdown.body).toContain('<code>left|right</code>')
-    expect(markdown.body).toContain('<td>left | right</td>')
-    expect(markdown.body).toContain('<strong>bold</strong> and <a href="https://example.com?a=1&amp;b=2">docs</a>')
-    expect(markdown.body).toContain('&lt;b&gt;raw&lt;/b&gt;')
-    expect(markdown.body).not.toContain('&amp;lt;b&amp;gt;')
-    expect(markdown.body).toContain('<p>prose | remains not a separator</p>')
-    expect(markdown.body).toMatch(/\.table-scroll\{[^}]*overflow-x:auto/)
-    expect(markdown.headers['content-security-policy']).toMatch(/default-src 'none'/)
-    for (const file of ['plain.txt', 'events.log', 'data.json']) {
-      const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
-      expect(response.status, file).toBe(200)
-      expect(response.headers['content-type'], file).toMatch(/^text\/html/)
-      expect(response.headers['content-security-policy'], file).toMatch(/default-src 'none'/)
-    }
-    for (const file of ['active.html', 'active.svg', 'blob.bin']) {
-      const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
-      expect(response.status, file).toBe(200)
-      expect(response.headers['content-security-policy'], file).toBe("sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
-      expect(response.headers['x-content-type-options'], file).toBe('nosniff')
-    }
-    const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
-    expect(index.status).toBe(200)
-    expect(index.body).toContain('&amp;script;.txt')
-    expect(index.body).not.toContain('<script>')
-    expect(index.headers['content-security-policy']).toMatch(/default-src 'none'/)
-    const head = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`, '127.0.0.1', 'HEAD')
-    expect(head.status).toBe(200)
-    expect(head.body).toBe('')
-    expect(Number(head.headers['content-length'])).toBeGreaterThan(0)
-    for (const file of ['.env', '.ENV.PROD', 'id_ed25519.pub', 'git-alias/config', 'env-alias', 'key-alias']) {
-      expect((await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)).status, file).toBe(403)
-    }
-    expect((await rawRequest(port, '/artifacts/escape.txt', `localhost:${port}`)).status).toBe(403)
-    for (const target of [
-      '/artifacts/../outside.txt', '/artifacts/%2e%2e/outside.txt', '/artifacts/%252e%252e/outside.txt',
-      '/artifacts/%2e%2e%2foutside.txt', '/artifacts/..%5coutside.txt', '/artifacts/%00.txt',
-    ]) expect([403, 404]).toContain((await rawRequest(port, target, `localhost:${port}`)).status)
-    expect((await rawRequest(port, '/artifacts/report.md', `localhost.evil.com:${port}`)).status).toBe(421)
-    expect((await rawRequest(port, '/artifacts/report.md', '[::1]')).status).toBe(421)
-    expect([400, 421]).toContain((await rawRequest(port, '/artifacts/report.md')).status)
-    const post = await fetch(`http://127.0.0.1:${port}/artifacts/report.md`, {
-      method: 'POST', headers: { Host: `localhost:${port}` },
-    })
-    expect(post.status).toBe(405)
-    expect(post.headers.get('access-control-allow-origin')).toBeNull()
+    await expectServedMarkdown(port)
+    await expectServedTypes(port)
+    await expectServedIndexAndHead(port)
+    await expectServingRefusals(port)
   })
+}
 
+function writeSecurityFixtures(root: string, outside: string) {
+  writeFileSync(join(root, 'report.md'), [
+    '# Report',
+    '',
+    '| Method | Signature | Notes |',
+    ':--- | :---: | ---:',
+    '| `notice` | `left|right` | **bold** and [docs](https://example.com?a=1&b=2) |',
+    '| escaped | left \\| right | <b>raw</b> |',
+    '',
+    'prose | remains',
+    'not a separator',
+    '',
+    '<script>alert(1)</script>',
+  ].join('\n'))
+  mkdirSync(join(root, 'index'))
+  writeFileSync(join(root, 'index', '&script;.txt'), 'index')
+  writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
+  writeFileSync(join(root, 'events.log'), 'event')
+  writeFileSync(join(root, 'data.json'), '{"ok":true}')
+  writeFileSync(join(root, 'active.html'), '<script>top.location="https://evil.example"</script>')
+  writeFileSync(join(root, 'active.svg'), '<svg><script>alert(1)</script></svg>')
+  writeFileSync(join(root, 'blob.bin'), 'blob')
+  writeFileSync(join(root, '.env'), 'secret')
+  writeFileSync(join(root, '.ENV.PROD'), 'secret')
+  mkdirSync(join(root, '.git'))
+  writeFileSync(join(root, '.git', 'config'), 'secret')
+  writeFileSync(join(root, 'id_ed25519.pub'), 'secret')
+  symlinkSync(join(root, '.git'), join(root, 'git-alias'))
+  symlinkSync(join(root, '.ENV.PROD'), join(root, 'env-alias'))
+  symlinkSync(join(root, 'id_ed25519.pub'), join(root, 'key-alias'))
+  writeFileSync(join(outside, 'outside.txt'), 'secret')
+  symlinkSync(join(outside, 'outside.txt'), join(root, 'escape.txt'))
+}
+
+async function expectServedMarkdown(port: number) {
+  const markdown = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`)
+  expect(markdown.status).toBe(200)
+  expect(markdown.body).toContain('&lt;script&gt;')
+  expect(markdown.body).not.toContain('<script>')
+  expect(markdown.body.match(/<t[hd]>/g)).toHaveLength(9)
+  expect(markdown.body).toContain('<div class="table-scroll"><table>')
+  expect(markdown.body).toContain('<code>left|right</code>')
+  expect(markdown.body).toContain('<td>left | right</td>')
+  expect(markdown.body).toContain('<strong>bold</strong> and <a href="https://example.com?a=1&amp;b=2">docs</a>')
+  expect(markdown.body).toContain('&lt;b&gt;raw&lt;/b&gt;')
+  expect(markdown.body).not.toContain('&amp;lt;b&amp;gt;')
+  expect(markdown.body).toContain('<p>prose | remains not a separator</p>')
+  expect(markdown.body).toMatch(/\.table-scroll\{[^}]*overflow-x:auto/)
+  expect(markdown.headers['content-security-policy']).toMatch(/default-src 'none'/)
+}
+
+async function expectServedTypes(port: number) {
+  for (const file of ['plain.txt', 'events.log', 'data.json']) {
+    const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
+    expect(response.status, file).toBe(200)
+    expect(response.headers['content-type'], file).toMatch(/^text\/html/)
+    expect(response.headers['content-security-policy'], file).toMatch(/default-src 'none'/)
+  }
+  for (const file of ['active.html', 'active.svg', 'blob.bin']) {
+    const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
+    expect(response.status, file).toBe(200)
+    expect(response.headers['content-security-policy'], file).toBe("sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+    expect(response.headers['x-content-type-options'], file).toBe('nosniff')
+  }
+}
+
+async function expectServedIndexAndHead(port: number) {
+  const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
+  expect(index.status).toBe(200)
+  expect(index.body).toContain('&amp;script;.txt')
+  expect(index.body).not.toContain('<script>')
+  expect(index.headers['content-security-policy']).toMatch(/default-src 'none'/)
+  const head = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`, '127.0.0.1', 'HEAD')
+  expect(head.status).toBe(200)
+  expect(head.body).toBe('')
+  expect(Number(head.headers['content-length'])).toBeGreaterThan(0)
+}
+
+async function expectServingRefusals(port: number) {
+  for (const file of ['.env', '.ENV.PROD', 'id_ed25519.pub', 'git-alias/config', 'env-alias', 'key-alias']) {
+    expect((await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)).status, file).toBe(403)
+  }
+  expect((await rawRequest(port, '/artifacts/escape.txt', `localhost:${port}`)).status).toBe(403)
+  for (const target of [
+    '/artifacts/../outside.txt', '/artifacts/%2e%2e/outside.txt', '/artifacts/%252e%252e/outside.txt',
+    '/artifacts/%2e%2e%2foutside.txt', '/artifacts/..%5coutside.txt', '/artifacts/%00.txt',
+  ]) expect([403, 404]).toContain((await rawRequest(port, target, `localhost:${port}`)).status)
+  expect((await rawRequest(port, '/artifacts/report.md', `localhost.evil.com:${port}`)).status).toBe(421)
+  expect((await rawRequest(port, '/artifacts/report.md', '[::1]')).status).toBe(421)
+  expect([400, 421]).toContain((await rawRequest(port, '/artifacts/report.md')).status)
+  const post = await fetch(`http://127.0.0.1:${port}/artifacts/report.md`, {
+    method: 'POST', headers: { Host: `localhost:${port}` },
+  })
+  expect(post.status).toBe(405)
+  expect(post.headers.get('access-control-allow-origin')).toBeNull()
+}
+
+function registerCanonicalRootTest() {
   it('[E-01][E-02] pins canonical roots and applies deny policy per registration', async () => {
     const project = temporaryDir('pin-project')
     const rootA = temporaryDir('policy-a')
@@ -3449,7 +3497,9 @@ describe('review decisions: serving security matrix', () => {
     expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(403)
     // Windows worst 19422 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
   }, 49_000)
+}
 
+function registerDeniedRootTests() {
   it('[E-02] rejects a root whose own canonical basename is denied', async () => {
     const project = temporaryDir('denied-root-project')
     const parent = temporaryDir('denied-root-parent')
@@ -3476,7 +3526,9 @@ describe('review decisions: serving security matrix', () => {
     expect((await rawRequest(port, '//[', `localhost:${port}`)).status).toBe(400)
     expect((await rawRequest(port, '/__wt-artifact-server/health', `localhost:${port}`)).status).toBe(200)
   })
+}
 
+function registerDeadDiscoveryTest() {
   it('[V4] returns null for discovery that differs from a live state only by a dead PID', () => {
     const artifact = join(temporaryDir('discovery-file'), 'report.md')
     writeFileSync(artifact, '# report')
@@ -3498,4 +3550,4 @@ describe('review decisions: serving security matrix', () => {
     const stale = spawnSync(process.execPath, [SERVER, 'url', artifact], { encoding: 'utf8', env })
     expect(stale.status).toBe(3)
   })
-})
+}

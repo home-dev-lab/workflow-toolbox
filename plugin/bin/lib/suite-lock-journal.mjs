@@ -5,6 +5,8 @@ import { orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 import { ticketIsStale } from './host/suite-lock-liveness.mjs'
+import { firstTerminalPerLease } from './suite-lock-terminal-outcome.mjs'
+import { suiteResourceClasses } from './suite-lock-resources.mjs'
 
 export function journalCommand(argv) {
   const args = Array.isArray(argv) ? argv : []
@@ -15,21 +17,21 @@ export function journalCommand(argv) {
   return 'other'
 }
 
-export function suiteJournalRequest(root, ticket, record, priority, options, light) {
-  try { return journalRequest(root, ticket, record, priority, options, light) } catch (error) {
+export function suiteJournalRequest(root, ticket, record, priority, options, light, publish = true) {
+  try { return journalRequest(root, ticket, record, priority, options, light, publish) } catch (error) {
     warnSuiteLockJournal(error)
     return undefined
   }
 }
 
-function journalRequest(root, ticket, record, priority, options, light) {
+function journalRequest(root, ticket, record, priority, options, light, publish) {
   const kind = journalKind(options, priority, light)
   const base = { ticket, leaseId: record.leaseId, root: options.journalRoot ?? root, kind,
     cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: journalLight(options, light),
     pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct',
     project: record.project, size: record.size, ...requestRankFields(root, ticket, record, options) }
   const journal = { base, now: options.now?.bind(options) }
-  suiteJournalEvent(journal, 'request')
+  if (publish) suiteJournalEvent(journal, 'request')
   return journal
 }
 
@@ -114,25 +116,39 @@ function journalSummary(tickets) {
   return summary
 }
 
-/** Read both generations before filtering joined lifecycles by their first retained timestamp. */
-export function readSuiteLockJournal(root, { since, until } = {}) {
-  const window = journalWindow(since, until)
-  const groups = new Map()
-  const precedence = []
+function parsedJournal(root) {
+  const records = []
   let invalidLines = 0
   for (const line of suiteJournalLines(root)) {
-    try {
-      const event = parseJournalEvent(line)
-      if (Date.parse(event.ts) > window.end) continue
-      if (event.event === 'precedence') { if (Date.parse(event.ts) >= window.start) precedence.push(event); continue }
-      if (!groups.has(event.leaseId)) groups.set(event.leaseId, [])
-      groups.get(event.leaseId).push(event)
-    } catch { invalidLines += 1 }
+    try { records.push(parseJournalEvent(line)) } catch { invalidLines += 1 }
+  }
+  return { ...firstTerminalPerLease(records), invalidLines }
+}
+
+/** Choose terminal outcomes across both generations before applying the window. */
+export function readSuiteLockJournal(root, { since, until } = {}) {
+  const window = journalWindow(since, until)
+  const { records, invalidLines, ignoredDuplicateTerminals } = parsedJournal(root)
+  const groups = new Map()
+  const precedence = []
+  for (const event of records) {
+    if (Date.parse(event.ts) > window.end) continue
+    if (event.event === 'precedence') {
+      if (Date.parse(event.ts) >= window.start) precedence.push(event)
+      continue
+    }
+    if (!groups.has(event.leaseId)) groups.set(event.leaseId, [])
+    groups.get(event.leaseId).push(event)
   }
   const tickets = [...groups.values()].map(joinedTicket).filter((ticket) => Date.parse(ticket.ts) >= window.start)
-  return { tickets, precedence, summary: journalSummary(tickets), invalidLines,
+  return { tickets, precedence, summary: journalSummary(tickets), invalidLines, ignoredDuplicateTerminals,
     censored: tickets.filter((ticket) => ticket.censored).length,
     grantsWithoutRequest: tickets.filter((ticket) => ticket.grant && !ticket.request).length }
+}
+
+export function readSuiteResourceClasses(root) {
+  try { return suiteResourceClasses(readSuiteLockJournal(root).tickets) }
+  catch { return {} } // Advisory history must not affect broker status or admission negotiation.
 }
 
 export function suiteLockJournalCli(args, root) {

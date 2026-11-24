@@ -52,6 +52,7 @@ function runWatch(probePath: string) {
       // timeout/cycle cap rather than hanging this suite forever.
       env: {
         ...process.env,
+        WT_SESSION_CONFIG_DIR_SET: '1',
         CLAUDE_CONFIG_DIR: configDir,
         WT_QUOTA_WATCH_TEST_MAX_CYCLES: '3',
         WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(configDir, 'sleeps'),

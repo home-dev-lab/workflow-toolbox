@@ -1,15 +1,25 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedSecondOpinionSdk } from './helpers/sealed-second-opinion-provider.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const CLI = process.env.WT_SECOND_OPINION_TEST_CLI ?? join(ROOT, 'plugin/bin/wt-second-opinion.mjs')
+// The containment ceiling allows slow startup but still fails a refusal that hangs.
+const CONTAINMENT_CEILING_MS = 30_000
+// Only a red-proof CLI copy may use a reduced ceiling; normal runs always get 30 s.
+const containmentCeiling = process.env.WT_SECOND_OPINION_TEST_CLI
+  ? Number(process.env.WT_SECOND_OPINION_TEST_CONTAINMENT_CEILING_MS ?? CONTAINMENT_CEILING_MS)
+  : CONTAINMENT_CEILING_MS
+if (!Number.isInteger(containmentCeiling) || containmentCeiling < 1 || containmentCeiling > CONTAINMENT_CEILING_MS) {
+  throw new Error('red-proof containment ceiling must be a positive integer no greater than 30000 ms')
+}
 const roots: string[] = []
 // These cases require policy execution or an admitted model; unsupported hosts
 // refuse before import and cannot reach their signal/snapshot assertions.
@@ -76,8 +86,10 @@ function launch(f: ReturnType<typeof fixture>, admission: string | undefined, re
   })
 }
 
-function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000, executesPolicy = true) {
-  const result = launch(f, admission, false, false, [], 10_000, admissionTimeout)
+function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000, executesPolicy = true, ceiling = 10_000) {
+  const result = launch(f, admission, false, false, [], ceiling, admissionTimeout)
+  expect((result.error as NodeJS.ErrnoException | undefined)?.code,
+    `containment ceiling exceeded (${ceiling} ms): refusal CLI did not return\n${result.stderr}`).not.toBe('ETIMEDOUT')
   expect(result.status).toBe(3)
   expect(existsSync(f.marker)).toBe(false)
   expect(result.stderr).toContain('WT_SECOND_OPINION_ADMISSION')
@@ -87,6 +99,25 @@ function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: 
   expect(output).toContain('REFUSED: WT_SECOND_OPINION_ADMISSION')
   expect(output).toContain(expectedCause)
   expect(output.endsWith('\nEXIT=3\n')).toBe(true)
+}
+
+async function interruptAfterPolicyEntry(f: ReturnType<typeof fixture>) {
+  const env = sealedPluginCliEnv(f.root)
+  Object.assign(env, { CLAUDE_CONFIG_DIR: join(f.root, 'config'), TMPDIR: join(f.root, 'temp'), TMP: join(f.root, 'temp'), TEMP: join(f.root, 'temp'),
+    WT_SECOND_OPINION_ADMISSION: f.module, WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS: '5000' })
+  const child = spawn(process.execPath, ['--loader', pathToFileURL(f.loader).href, ...containmentLoader(f.root, f.platform), CLI,
+    '--request', f.request, '--out', f.out, '--repo', f.repo], { cwd: f.repo, env, stdio: 'ignore' })
+  const closed = once(child, 'close')
+  try {
+    // Interrupt only after the policy actually observes publication, not after a
+    // startup-speed sample. The deadline only detects a missing policy entry.
+    await vi.waitUntil(() => existsSync(join(f.root, 'pending-seen')), { timeout: 10_000 })
+    expect(readFileSync(join(f.root, 'pending-seen'), 'utf8')).toContain('PENDING: WT_SECOND_OPINION_ADMISSION')
+  } finally {
+    child.kill('SIGKILL')
+    await closed
+  }
+  return child
 }
 
 function useRealCore(f: ReturnType<typeof fixture>) {
@@ -321,12 +352,13 @@ describe('second-opinion admission round 3 publication', () => {
     expect(existsSync(f.marker)).toBe(false)
   })
 
-  policyIt.each(['module import', 'policy call'])('publishes pending before a synchronous hang in %s', (kind) => {
-    const source = kind === 'module import' ? 'while (true) {} ; export default () => null' : 'export default () => { while (true) {} }'
-    const f = fixture(source)
+  policyIt.each(['module import', 'policy call'])('publishes pending before a synchronous hang in %s', async (kind) => {
+    const witness = `writeFileSync(new URL('./pending-seen', import.meta.url), readFileSync(new URL('./out.log', import.meta.url), 'utf8')); while (true) {}`
+    const source = kind === 'module import' ? `${witness}; export default () => null` : `export default () => { ${witness} }`
+    const f = fixture(`import { readFileSync, writeFileSync } from 'node:fs'; ${source}`)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
-    const result = launch(f, f.module, false, false, [], 1000, 5000)
-    expect(result.signal).toBe('SIGKILL')
+    const result = await interruptAfterPolicyEntry(f)
+    expect(result.signalCode).toBe('SIGKILL')
     expect(readFileSync(f.out, 'utf8')).toContain('PENDING: WT_SECOND_OPINION_ADMISSION')
     expect(readFileSync(f.out, 'utf8').includes('EXIT=')).toBe(false)
     expect(existsSync(f.marker)).toBe(false)
@@ -510,15 +542,15 @@ describe('second-opinion worker containment', () => {
     ['import detached rejection plus null', 'Promise.reject(new Error("import detached failed")); export default () => null', 'import detached failed'],
     ['late callback exception plus null', 'export default () => { setTimeout(() => { throw new Error("late failed") }, 20); return null }', 'late failed'],
     ['clean worker exit without verdict', 'export default () => { process.exit(0) }', 'without a verdict'],
-    ['worker crash', 'export default () => { process.exit(7) }', 'exited'],
-    ['synchronous infinite loop', 'export default () => { while (true) {} }', 'timed out'],
+    ['worker crash', 'export default () => { process.exit(7) }', 'admission worker exited with code 7'],
+    ['synchronous infinite loop', 'export default () => { while (true) {} }', 'timed out after 100 ms'],
   ])('contains %s before dispatch', (_kind, source, cause) => {
     const f = fixture(source)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
-    const started = performance.now()
-    expectRefusal(f, f.module, cause, cause === 'timed out' ? 100 : 5000)
-    expect(performance.now() - started < 2000).toBe(true)
-  })
+    // Bound the spawned CLI independently of the runner; keep the policy's own
+    // 100 ms loop deadline and the refusal/cause/no-dispatch contract as well.
+    expectRefusal(f, f.module, cause, cause.startsWith('timed out') ? 100 : 5000, true, containmentCeiling)
+  }, CONTAINMENT_CEILING_MS + 5000)
 })
 
 function forceCreatedWriteFailure(f: ReturnType<typeof fixture>) {

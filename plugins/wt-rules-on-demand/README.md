@@ -10,6 +10,62 @@ to `true`. Claude Code exports this option to the startup hook as
 quality check. When rules exist but the switch is off, startup reports their count.
 See [TRIGGERS.md](TRIGGERS.md).
 
+## Intervention evidence policy (inert contract)
+
+`scripts/intervention-policy.mjs` exports exactly two synchronous pure functions:
+
+```js
+validateIntervention(input) // { valid: boolean, errors: string[] }
+interventionEligibility(input) // { mode: 'proposal' | 'eligible' | 'reject', reasons: string[] }
+```
+
+`eligible` means evidence eligibility only. It grants no SDK dispatch or mutation
+authority. Autonomous interventions remain unimplemented; lifecycle commands and
+serving hooks do not call this module. Replay, different-family review, prospective
+owner-agreement probation, qualified signing and subsequent verification are
+separate future requirements. Five measurement cases alone do not pass probation.
+
+The v1 envelope requires `schemaVersion: 1` and complete `request`, `target`,
+`evaluation`, and `policy` records. The module declares the full closed schema;
+the node:test fixtures show complete inputs. All declared keys are required,
+including nullable evidence fields. Extra keys, missing keys, invalid enums,
+non-JSON values, accessors, cycles, unsafe counts and malformed hashes reject.
+Unknown evidence is explicit `null`, never omitted or inferred as zero. Errors
+and reasons are sorted unique strings; schema pointers use RFC6901 escaping.
+
+Target/evaluation bindings each carry `rootId`, physical `ruleId`, `scope`,
+`snapshotHash`, and `generation`. Known binding, policy-hash or scanner-hash
+mismatches reject before proposal blockers. A future trusted coherent-export and
+physical-identity adapter must attest these values; an SDK draft or arbitrary
+JSON claim is not filesystem identity. `adopted-local` storage with `plugin`
+provenance is editable; shipped-plugin source remains proposal-only.
+
+| Supported action / selected kind | Unit | Causal evidence (at least five cases) |
+| --- | --- | --- |
+| fix-trigger / misses | governed-act | trigger unmatched rate > 0.2; zero engine, unattributable and unobservable misses |
+| fix-trigger / noise | resolved-delivery | bad rate > 0.5; zero unresolved deliveries |
+| revert-static / cost | effective-context | positive static bytes; served bytes strictly greater; zero unknown-timing contexts |
+
+Units are validated by **measure kind**, independently of action. A null unit is
+valid unknown evidence: supported pairs produce `proposal / measure:unknown`;
+unsupported pairs produce `proposal / measure:unsupported`. A known incorrect
+unit rejects as `inconsistent:unit`. Irrelevant numeric fields and units must be
+null. Integer ratios are compared exactly, before any rendering/rounding.
+
+Eligibility also requires unchanged body/check, known identity/storage/provenance,
+complete coherent current uncached problem evidence, bound policy/scanner hashes,
+and ordered known windows within the policy's inclusive freshness limit. Every
+applicable blocker is returned. Other actions/kinds stay proposals. Rejection
+means malformed/inconsistent input or known binding mismatch, not absent evidence.
+
+The engine-only legacy-report fixture in `test/intervention-policy.test.mjs`
+maps volume due/gap to scheduling flags, selected status/cases/count to
+measureStatus/denominator/bad, and attribution by name. Its ten cases and three
+engine misses remain `proposal / measure:not-causal`, regardless of legacy verdict
+or proposal text. Binding, capture times, manifest/policy/scanner hashes and
+storage in that fixture are separate synthetic host attestations; legacy reports
+cannot supply them. Production normalization and coherent export are future work.
+
 ## Agent types that are never refused
 
 Set `WT_ROD_NO_REFUSE_AGENT_TYPES` to the exact agent type names whose tool calls

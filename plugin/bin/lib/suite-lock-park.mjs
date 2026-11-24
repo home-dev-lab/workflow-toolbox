@@ -5,7 +5,8 @@ import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite
 import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
 import { ticketIsStale } from './host/suite-lock-liveness.mjs'
 import { readHostPlatform } from './host/platform.mjs'
-import { takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
+import { prepareJournalTicket, takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
+import { linkSuiteSignal } from './host/suite-lock-signals.mjs'
 import { claimParkedTicket, consumeParkAsides, createParkedFile, listParkedFiles, newParkNonce, parkClaimPresent, parkEnvironment, parkFile, readParkJson, readParkRequest, recoverParkAsides, removeParkClaim, removeParkedInstance, removeParkPrivate, validateParkDirectory, watchParkWait, writeParkPrivate } from './host/suite-lock-park-files.mjs'
 
 const PARKED_RECORD = 'parked.json'
@@ -41,6 +42,7 @@ const validPark = (park) => typeof park?.nonce === 'string' && Number.isFinite(p
 const resumedRecords = new WeakMap()
 
 export function takeParkTicket(queueDir, record, options, ownerIsStale) {
+  if (options.signal?.aborted) throw Object.assign(new Error('suite lock acquisition aborted'), { code: 'ABORT_ERR' })
   if (!options.park) return takeJournalTicket(queueDir, record)
   const entry = resumeParkedTicket(queueDir, record, options.park, options.now?.() ?? Date.now(), ownerIsStale, { now: () => options.now?.() ?? Date.now() })
   if (entry) resumedRecords.set(record, entry)
@@ -116,6 +118,7 @@ export function resumeParkedTicket(queueDir, record, context, now, ownerIsStale,
   if (!entry) return null
   const resumed = { ...entry.park.record, pid: record.pid, startTime: record.startTime, pidNamespace: record.pidNamespace, argv: record.argv, cwd: record.cwd, leaseId: record.leaseId }
   upgradeResumedOrder(resumed, record)
+  prepareJournalTicket(queueDir, record, entry.number, entry.number, resumed)
   if (!claimParkedTicket(queueDir, entry.number, resumed)) return null
   try {
     seams.afterClaim?.(entry)
@@ -208,10 +211,13 @@ export function acquireParkCliLease(acquire, context) {
 
 async function acquireWithParkWait(acquire, options, context) {
   const waiting = watchParkWait()
-  try { return await acquire({ ...options, park: context, signal: waiting.signal }) } catch (error) {
+  const controller = new AbortController()
+  const unlink = [linkSuiteSignal(options.signal, controller), linkSuiteSignal(waiting.signal, controller)]
+  try { return await acquire({ ...options, park: context, signal: controller.signal }) } catch (error) {
+    if (options.signal?.aborted) throw error
     if (error?.code === 'ABORT_ERR') return waiting.exit()
     throw error
-  } finally { waiting.close() }
+  } finally { for (const close of unlink) close(); waiting.close() }
 }
 
 export const parkChildEnvironment = (context) => context ? { WT_SUITE_LOCK_PARK_REQUEST: path.join(context.directory, 'request') } : undefined

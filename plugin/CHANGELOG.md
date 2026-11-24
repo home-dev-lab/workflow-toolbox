@@ -5,6 +5,33 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Suite-lock journals record sampled process-tree CPU and resident-memory peaks, wall time and exits; status reports history-based job classes without changing admission.
+
+- `wt-suite-lock run --replace <ticket-number> -- <command> [args...]` can replace a
+  queued exclusive CLI command without losing its rank. The original waiter executes
+  the latest command with its existing working directory, environment and output
+  streams. Started, stale, legacy, parked, light and broker tickets are refused.
+  On storage without hard links, queued tickets still start their original command
+  and `--replace` refuses with a filesystem limitation message.
+
+### Fixed
+
+- pr-review no longer approves while any finding went unchecked: a failed Verify stage keeps its findings as unverified instead of dropping them, cap-cut and all-null-vote findings count as unchecked, a reviewer reply without a findings list counts as a missing review, an approve with any gap becomes incomplete with the unchecked count in the summary, a docs routing that touches non-prose files adds the correctness and security lenses with a warning (.txt files count as code, not prose), and untrusted PR text and findings are fenced in every prompt (reduced-dag variant included)
+- The quota watcher now honors an inherited session config-directory flag before the config-directory environment variable, using that single decision for account fingerprints and its child probe. This prevents wrong-account cache acceptance or rejection when a wrapper pins or removes the config-directory variable.
+- The quota watcher now shares the hook's login cache for pool-named login sessions, resolves the session's global config before pinning its probe environment, and passes that config choice to the probe. Cache fingerprint checks and token-session cache ownership remain enforced.
+- Every suite-lock lease that reached its request now gets a terminal journal line, and the journal reader reports exactly one outcome per lease: when racing writers append more than one terminal line, it keeps the first in append order (rotated generation first) and counts the rest in `ignoredDuplicateTerminals`. The ending paths: a waiting client killed by TERM, INT or HUP records an abort with the signal and exits 128+n, any other failure after the request records an abort with its error code, a waiter proven dead is journaled when the next waiter reaps its ticket, a dead holder is journaled when its lock is reclaimed, and release --force journals and checks the holder's identity before removing it. The reclaimed or force-released line also carries `heldS`, the time held in seconds at full precision (null when it cannot be known), and `result: 'unknown'`.
+- A lifecycle with a pending stop can still extend or abandon its own timed-out lane; other run kinds remain refused, and a completed stop refuses every run kind.
+- Stream-end lifecycle finalization now retains owned worker PIDs and submits best-effort abandon decisions before archiving, recording each submission or failure in the partial summary.
+- A single Workflow run in a session no longer exempts an unrelated delegate from the outbound and cancelled-call guards; the session-level lookup now requires the agent's own transcript, and the harness-delivery classification uses the same Workflow-payload predicate
+
+### Changed
+- The arc watch no longer wakes a session for a WAITING-ON-SPAWNER record that a complete transcript scan proves belongs to another project, nor for STALE or IDLE-MID-MISSION silence of an observer transcript; each skipped line is written with its reason to a per-session journal under the plugin data directory, and an incomplete scan, undecidable ownership or a failed journal write still emits the line.
+- Eligible plain single-file Node tests (one existing test file, built-in test options only) requested with `run --light` now run immediately without a queue ticket, with a warning after 60 seconds; exclusive, static and park requests keep admission.
+- The `pilot` and `pilot-orchestrator` agent templates now bound every wait at 55 minutes and re-arm it on expiry, so a wake lands inside the one-hour prompt-cache lifetime instead of rewriting the whole context at a higher price.
+- A general-purpose Agent spawn that pins model and effort now also needs a `general-purpose because:` reason line outside code fences; pinning no longer exempts the call from the right-sized spawn guard.
+
 ## [0.201.0] - 2026-11-20
 
 ### Fixed

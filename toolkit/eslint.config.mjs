@@ -220,7 +220,11 @@ export default tseslint.config(
       'plugin/bin/lib/suite-lock-light-scope.mjs', '../plugin/bin/lib/suite-lock-light-scope.mjs',
       'plugin/bin/lib/host/suite-lock-light-scope-log.mjs', '../plugin/bin/lib/host/suite-lock-light-scope-log.mjs',
       'toolkit/test-support/suite-lease.global-setup.mjs', 'test-support/suite-lease.global-setup.mjs',
-      'toolkit/packages/build/test/suite-lock-light-scope.test.ts', 'packages/build/test/suite-lock-light-scope.test.ts'],
+      'toolkit/packages/build/test/suite-lock-light-scope.test.ts', 'packages/build/test/suite-lock-light-scope.test.ts',
+      'plugin/bin/lib/suite-lock-direct-run.mjs', '../plugin/bin/lib/suite-lock-direct-run.mjs',
+      'plugin/bin/lib/host/suite-lock-direct-file.mjs', '../plugin/bin/lib/host/suite-lock-direct-file.mjs',
+      'toolkit/packages/build/test/suite-lock-direct-run.test.ts', 'packages/build/test/suite-lock-direct-run.test.ts',
+      'toolkit/packages/build/test/helpers/suite-lock-direct-scenarios.mjs', 'packages/build/test/helpers/suite-lock-direct-scenarios.mjs'],
     rules: {
       complexity: ['error', 10],
       'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
@@ -237,10 +241,10 @@ export default tseslint.config(
     },
   },
   {
-    files: ['plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common}.mjs',
-      '../plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common}.mjs',
-      'plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files,suite-lock-liveness}.mjs',
-      '../plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files,suite-lock-liveness}.mjs',
+    files: ['plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common,suite-lock-resources}.mjs',
+      '../plugin/bin/lib/{suite-lock-order,suite-lock-legacy-order,suite-lock-priority,suite-lock-cli-options,suite-lock-journal-lifecycle,suite-lock-journal,suite-lock-precedence,suite-lock-rank-common,suite-lock-resources}.mjs',
+      'plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files,suite-lock-liveness,suite-lock-resources}.mjs',
+      '../plugin/bin/lib/host/{suite-lock-rank-state,suite-lock-project,suite-lock-rank-files,suite-lock-liveness,suite-lock-resources}.mjs',
       'scripts/generate-suite-lock-order-golden.mjs', 'toolkit/scripts/generate-suite-lock-order-golden.mjs'],
     rules: {
       complexity: ['error', 10],

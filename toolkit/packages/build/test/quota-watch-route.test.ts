@@ -48,7 +48,7 @@ async function run(env: Record<string, string>) {
   await mkdir(project, { recursive: true })
   await writeFile(join(project, 'session.jsonl'), '{"type":"assistant","message":{"model":"gpt-test"}}\n')
   const result = await new Promise<{ stdout: string, status: number | null }>((resolve, reject) => {
-    const child = spawn(process.execPath, [WATCH, '--poll', '5', '--timeout', '3'], { env: { ...process.env, ...env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: 'session', WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2', WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(config, 'sleep.log'), WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1' } })
+    const child = spawn(process.execPath, [WATCH, '--poll', '5', '--timeout', '3'], { env: { ...process.env, WT_SESSION_CONFIG_DIR_SET: '1', ...env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: 'session', WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2', WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(config, 'sleep.log'), WT_QUOTA_WATCH_ALLOW_DUPLICATE: '1' } })
     let stdout = ''
     child.stdout.on('data', (chunk) => { stdout += chunk })
     child.on('error', reject)

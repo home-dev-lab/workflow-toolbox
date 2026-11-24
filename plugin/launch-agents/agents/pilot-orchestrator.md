@@ -553,6 +553,10 @@ happened, and the cost only grows as the wave lengthens. Do not take one: after 
 one-line status SendMessage above, sleep on it — the main session's watch is what wakes
 you, not a self-scheduled re-check.
 
+**Every wait you arm, foreground or background, is bounded at 55 minutes; on its expiry,
+re-arm it.** The prompt cache lives one hour: a wake after more than an hour rewrites your
+whole context at double price, while a wake inside the hour re-reads it at a tenth.
+
 **Lane-wait filet — a specific case of the contract above.** When a pilot tells you it is
 running a bounded, in-turn blocking wait on an external lane with its own stated hard cap,
 arm your watcher (or ask the main session to) calibrated to fire ONLY *after* that stated

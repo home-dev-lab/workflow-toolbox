@@ -121,7 +121,10 @@ export function consumeParkAsides(queueDir, number, nonce) {
 
 export function recoverParkAsides(queueDir, now, ownerIsStale, parkIsLive) {
   let names
-  try { names = readdirSync(queueDir) } catch (error) { if (error?.code === 'ENOENT') return; throw error }
+  try { names = readdirSync(queueDir) } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
   for (const name of names) {
     if (!/^\d{16}\.parked\.reclaimed-/.test(name)) continue
     const aside = path.join(queueDir, name)
@@ -139,11 +142,17 @@ function retainParkAside(name, aside, now, ownerIsStale) {
   return judged ? !ownerIsStale(creator) : now - lstatSync(aside).mtimeMs <= 60_000
 }
 
+function linkParkAttempt(candidate, file) {
+  try { linkSync(candidate.file, file); return null } catch (error) { return { error } }
+}
+
 function takeParkAttemptFile(context, ownerIsStale, candidate) {
   const file = path.join(context.directory, 'attempt')
   const claim = candidate.claim
   // Link a completed record exclusively: interruption cannot publish an ownerless empty claim.
-  try { linkSync(candidate.file, file) } catch (error) {
+  const failed = linkParkAttempt(candidate, file)
+  if (failed) {
+    const { error } = failed
     if (error?.code !== 'EEXIST') throw error
     const held = readParkJson(file)
     if (!Number.isSafeInteger(held?.pid) || !ownerIsStale(held)) throw new Error('another attempt holds this park directory')
@@ -226,7 +235,11 @@ export function watchParkWait() {
   const controller = new AbortController()
   let exit = 143
   const handlers = Object.entries({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129, SIGQUIT: 131 }).flatMap(([signal, code]) => {
-    const handler = () => { exit = code; controller.abort() }
+    const handler = () => {
+      if (controller.signal.aborted) return
+      exit = code
+      controller.abort(Object.assign(new Error(`suite lock interrupted by ${signal}`), { code: 'ABORT_ERR', signal }))
+    }
     try { process.once(signal, handler); return [[signal, handler]] } catch { return [] }
   })
   return { signal: controller.signal, exit: () => exit, close: () => {

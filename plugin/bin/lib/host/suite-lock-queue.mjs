@@ -60,8 +60,13 @@ export function takeTicket(queueDir, record, seams = {}) {
     for (const old of markers) {
       if (old < pruneBelow) rmSync(`${ticketBase(queueDir, old)}.ticket`, { force: true })
     }
-    if (createExclusive(recordFile(queueDir, number), `${JSON.stringify(record)}\n`)) return number
+    if (createExclusive(recordFile(queueDir, number), ticketContent(record, number, seams))) return number
   }
+}
+
+function ticketContent(record, number, seams) {
+  seams.prepare?.(number)
+  return `${JSON.stringify(record)}\n`
 }
 
 /** Refreshes the record's mtime; a record someone removed is put back under the same number. */

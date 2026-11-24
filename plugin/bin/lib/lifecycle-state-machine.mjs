@@ -626,7 +626,7 @@ function createLaneDirAssertion({ laneDir, root, archiveRoot }) {
 function guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun) {
   return (args) => {
     if (state.stopped) return stoppedRefusal()
-    return dodEscalation.beforeLane(args).then(() => state.stopped || state.pendingStop ? stoppedRefusal() : lifecycleRun(args))
+    return dodEscalation.beforeLane(args).then(() => state.stopped || (state.pendingStop && args?.kind !== 'control') ? stoppedRefusal() : lifecycleRun(args))
   }
 }
 
@@ -722,18 +722,18 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
   return { requestStop, stopAtBoundary, stoppedRefusal }
 }
 
-// The stream has ended, so nothing can wait for or control an owned lane any more: finalize anyway and
-// name every lane still running, so the partial record never hides a lane that outlives the run.
-function withOwnedLanesAtFinalization(state, partial) {
+// Keep lane identities and best-effort control outcomes even when a lane outlives the stream.
+function withOwnedLanesAtFinalization(state, partial, abandon) {
   if (!state.ownedLanes.size) return partial
-  const owned = [...state.ownedLanes.values()].map((record) => ({ phase: record.phase, slot: record.slot ?? null, pid: record.pid ?? null, runId: record.runId ?? null }))
+  const owned = [...state.ownedLanes.values()].map((record, index) => ({ phase: record.phase, slot: record.slot ?? null, pid: record.workerPid ?? null, runId: record.runId ?? null, abandon: abandon[index] }))
   return { ...partial, ownedLanesAtFinalization: owned }
 }
 
-function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile }) {
+function createPartialFinalizer({ state, abandonOwnedLanes, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile }) {
   return (reason) => {
     if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
-    state.partial = withOwnedLanesAtFinalization(state, finalizedPartial(state, state.phase, reason))
+    const abandon = abandonOwnedLanes()
+    state.partial = withOwnedLanesAtFinalization(state, finalizedPartial(state, state.phase, reason), abandon)
     const endedAt = now()
     timeline.phases.at(-1).exited_at ??= endedAt
     timeline.ended_at = endedAt
@@ -1138,11 +1138,11 @@ function initializeLifecycleLaunch(context) {
 function initializeLifecycleControls(context) {
   const { state, laneDir, timeline, now, persistTimeline, onBoundaryStop, refusal, rawDodBullets, dodBullets,
     dodDecisions, lifecycleRun, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath,
-    assertLaneDir, copy, stopAfterPhase } = context
+    assertLaneDir, copy, stopAfterPhase, abandonOwnedLanes } = context
   const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop, refusal })
   const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
   const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
-  const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
+  const finalizePartial = createPartialFinalizer({ state, abandonOwnedLanes, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   const stopRequestedAt = createPhaseStopRequest(stopAfterPhase, requestStop, state)
   Object.assign(context, { requestStop, stopAtBoundary, stoppedRefusal, dodEscalation, run, finalizePartial, stopRequestedAt })
 }
