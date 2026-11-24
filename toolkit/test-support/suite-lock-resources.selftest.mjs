@@ -27,7 +27,7 @@ async function fakeSampler(readTree) {
   let cancelled = 0
   const sampler = createSuiteResourceSampler({ pid: 1, readTree, now: () => time,
     schedule: () => { scheduled++; return { unref() {} } }, cancel: () => { cancelled++ } })
-  await sampler.ready
+  await sampler.sample()
   return { sampler, time: (value) => { time = value }, counts: () => ({ scheduled, cancelled }) }
 }
 
@@ -147,9 +147,10 @@ async function timerStops() {
     await sampler.ready; sampler.stop();`)
   const fake = await fakeSampler(async () => ({ processes: [row(1, 0, 0, 1)] }))
   const count = fake.counts().scheduled
+  const cancelled = fake.counts().cancelled
   fake.sampler.stop(); await fake.sampler.sample()
   assert.equal(fake.counts().scheduled, count, 'stopped sampler must not schedule again')
-  assert.equal(fake.counts().cancelled, 1)
+  assert.equal(fake.counts().cancelled, cancelled + 1)
 }
 
 async function stopInFlight() {
@@ -159,12 +160,13 @@ async function stopInFlight() {
   let schedules = 0
   const sampler = createSuiteResourceSampler({ readTree: (pid, options) => { signal = options.signal; return new Promise((resolve) => { complete = resolve }) },
     schedule: () => { schedules++; return { unref() {} } } })
+  const sampling = sampler.sample()
   const result = sampler.stop()
   assert.equal(result.peakCores, 'unknown')
   assert.equal(signal.aborted, true)
   complete({ processes: [row(1, 0, 0, 10)] })
-  await sampler.ready
-  assert.equal(schedules, 0, 'late sample must not restart a stopped sampler')
+  await sampling
+  assert.equal(schedules, 1, 'late sample must not restart a stopped sampler')
 }
 
 async function platformSources() {
@@ -291,6 +293,122 @@ async function reapedChildCpu() {
   assert.equal(fake.sampler.stop().peakCores, 0.9, 'reaped child CPU must transfer without being counted twice')
 }
 
+function procStat(pid, ppid, cpu, birth = pid, childCpu = 0) {
+  const fields = Array(22).fill('0')
+  fields[0] = 'S'; fields[1] = String(ppid); fields[11] = String(cpu)
+  fields[13] = String(childCpu); fields[19] = String(birth)
+  return `${pid} (fixture) ${fields.join(' ')}`
+}
+
+async function samplerStopFailure() {
+  const { acquireSuiteLock, releaseSuiteLock, readSuiteLock } = await import(lockUrl)
+  const root = scratch()
+  const resourceSampler = () => ({ stop() { throw new Error('injected stop failure') } })
+  try {
+    const lease = await acquireSuiteLock({ root, env: {}, argv: ['pnpm', 'test'], resourceSampler })
+    assert.doesNotThrow(() => releaseSuiteLock(lease, { exit: 7 }), 'sampler stop failure must not block lease release')
+    assert.equal(readSuiteLock({ root }).held, false, 'sampler failure must remove the held lease')
+    const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    assert.equal(events.at(-1).event, 'release')
+    assert.equal(events.at(-1).exit, 7)
+    assert.equal(events.at(-1).resources.peakCores, 'unknown')
+    assert.equal(events.at(-1).resources.peakMemMiB, 'unknown')
+    assert.deepEqual(events.at(-1).resources.unknownReasons, ['sampler-stop-failed'])
+    const { validSuiteResources } = await import(resourceUrl)
+    assert.equal(validSuiteResources(events.at(-1).resources), true, 'sampler error must preserve a valid unknown resource row')
+    let wire
+    let released = false
+    releaseSuiteLock({ broker: 'fixture', resourceStarted: performance.now(), resourceSampler: resourceSampler(), markReleased: () => { released = true },
+      socket: { end: (line) => { wire = line } } }, { exit: 9 })
+    assert.equal(released, true, 'broker lease must be marked released despite a sampler error')
+    const frames = wire.trim().split('\n').map(JSON.parse)
+    assert.equal(frames[0].exit, 9)
+    assert.deepEqual(frames[1].resources.unknownReasons, ['sampler-stop-failed'])
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
+async function incoherentCensus() {
+  const { createSuiteResourceReader } = await hostModule()
+  let census = 0
+  const calls = []
+  const read = async (file) => {
+    calls.push(file)
+    if (file.endsWith('/status')) return 'VmRSS: 2048 kB\n'
+    if (file === '/proc/1/stat') return procStat(1, 0, 0, 1, census ? 100 : 0)
+    if (census) throw Object.assign(new Error('child reaped after parent read'), { code: 'ENOENT' })
+    return procStat(2, 1, 100)
+  }
+  const reader = createSuiteResourceReader({ platform: 'linux', list: async () => ['1', '2'], read, run: async () => '100' })
+  const fake = await fakeSampler(reader)
+  census++; calls.length = 0
+  fake.time(1000); await fake.sampler.sample()
+  assert.ok(calls.indexOf('/proc/1/stat') < calls.indexOf('/proc/2/stat'), 'fixture must read the parent before the child disappears')
+  const result = fake.sampler.stop()
+  assert.equal(result.peakCores, 'unknown', 'a child reaped between census reads must not look like zero CPU')
+  assert.ok(result.unknownReasons.includes('census-incoherent'), 'an unaccounted disappearing member must name census-incoherent')
+}
+
+async function reusedPidRss() {
+  const { createSuiteResourceReader } = await hostModule()
+  let statusRead = false
+  const read = async (file) => {
+    if (file.endsWith('/status')) { statusRead = true; return 'VmRSS: 999999 kB\n' }
+    return procStat(1, 0, 100, statusRead ? 2 : 1)
+  }
+  const reader = createSuiteResourceReader({ platform: 'linux', list: async () => ['1'], read, run: async () => '100' })
+  const result = await reader(1)
+  assert.equal(result.unknown, 'pid-reused', 'RSS read across PID reuse must be dropped with named unknown pid-reused')
+  assert.equal(result.processes, undefined, 'reused PID memory must never contribute to the sample')
+}
+
+function countingCommands(platform) {
+  const commands = []
+  const execFile = (command, args, options, callback) => {
+    commands.push(command)
+    callback(null, platform === 'linux' ? '100\n' : '1 0 1024 00:00.00 Tue Nov 24 10:00:00 2026\n')
+  }
+  const run = (command, args, options) => new Promise((resolve, reject) => {
+    execFile(command, args, options, (error, output) => error ? reject(error) : resolve(output))
+  })
+  return { commands, run }
+}
+
+async function acquisitionDoesNotSpawn() {
+  const { createSuiteResourceReader, createSuiteResourceSampler } = await hostModule()
+  const { acquireSuiteLock, releaseSuiteLock } = await import(lockUrl)
+  for (const platform of ['linux', 'darwin']) {
+    const root = scratch()
+    const { commands, run } = countingCommands(platform)
+    let tick
+    const readerOptions = { platform, run, list: async () => ['1'],
+      read: async (file) => file.endsWith('/status') ? 'VmRSS: 1024 kB\n' : procStat(1, 0, 0) }
+    const resourceSampler = () => createSuiteResourceSampler({ pid: 1, readTree: createSuiteResourceReader(readerOptions),
+      schedule: (callback) => { tick = callback; return { unref() {} } }, cancel: () => {} })
+    let lease
+    try {
+      lease = await acquireSuiteLock({ root, env: {}, argv: ['pnpm', 'test'], resourceSampler })
+      const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+      assert.equal(events.at(-1).event, 'grant')
+      assert.equal(commands.length, 0, 'acquisition must spawn zero resource commands before the grant is recorded')
+      await tick()
+      assert.equal(commands.length, 1, 'the first timer tick must resolve its platform source lazily')
+      await createSuiteResourceReader(readerOptions)(1)
+      assert.equal(commands.length, platform === 'linux' ? 1 : 2, 'clock ticks must be cached across readers in one process')
+    } finally { if (lease) releaseSuiteLock(lease); rmSync(root, { recursive: true, force: true }) }
+  }
+}
+
+async function heldLeaseTimerExits() {
+  const root = scratch()
+  try {
+    await runChild(`import { acquireSuiteLock } from ${JSON.stringify(lockUrl)};
+      import { createSuiteResourceSampler } from ${JSON.stringify(hostUrl)};
+      await acquireSuiteLock({root:${JSON.stringify(root)},env:{},argv:['held-fixture'],
+        resourceSampler:()=>createSuiteResourceSampler({intervalMs:10,readTree:async()=>({processes:[${JSON.stringify(row(1, 0, 0, 1))}]})})});
+      await new Promise(resolve=>setTimeout(resolve,30));`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
 export const resourceCases = [
   ['fake process tree peak reaches the release journal', knownPeakJournal],
   ['missing source is named unknown', missingSource],
@@ -308,6 +426,11 @@ export const resourceCases = [
   ['unreadable advisory history preserves status availability', unreadableJournalStatus],
   ['legacy broker retains exit and service outcome under fragmentation', legacyBrokerTerminal],
   ['reaped child CPU transfers without double counting', reapedChildCpu],
+  ['sampler stop errors cannot block file or broker release', samplerStopFailure],
+  ['non-atomic child reap is named census-incoherent', incoherentCensus],
+  ['PID reuse between stat and RSS drops the sample', reusedPidRss],
+  ['acquisition defers platform commands and caches clock ticks', acquisitionDoesNotSpawn],
+  ['held lease sampler timer never keeps the child alive', heldLeaseTimerExits],
 ]
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

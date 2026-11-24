@@ -12,6 +12,7 @@ const READ_BATCH = 64
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const unknown = (reason) => ({ unknown: reason })
 const nonnegative = (value) => Number.isFinite(value) && value >= 0
+const clockTickReads = new WeakMap()
 
 function runResourceCommand(command, args, { signal } = {}) {
   return new Promise((resolve, reject) => {
@@ -33,15 +34,41 @@ async function linuxRows(procfs, ticks, signal) {
   const names = (await procfs.listProcesses()).filter((name) => /^[1-9]\d*$/.test(name))
   if (names.length > SUITE_RESOURCE_MAX_PROCESSES) throw new Error('census bound')
   const rows = []
+  const missing = new Set()
   for (let i = 0; i < names.length; i += READ_BATCH) {
     signal?.throwIfAborted()
     const batch = await Promise.all(names.slice(i, i + READ_BATCH).map(async (pid) => {
       try { return linuxStat(pid, await procfs.readProcessStat(pid, { encoding: 'utf8', signal }), ticks) }
-      catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) return null; throw error }
+      catch (error) { if (['ENOENT', 'ESRCH'].includes(error.code)) { missing.add(pid); return null }; throw error }
     }))
     rows.push(...batch.filter(Boolean))
   }
-  return rows
+  return { rows, missing }
+}
+
+function linuxClockTicks(run) {
+  // A lease's abort must not poison the process-wide cache. The command has its own timeout.
+  if (!clockTickReads.has(run)) clockTickReads.set(run, Promise.resolve()
+    .then(() => run('getconf', ['CLK_TCK']))
+    .then((text) => Number(text.trim())).catch(() => NaN))
+  return clockTickReads.get(run)
+}
+
+async function linuxResourceTree(procfs, ticks, pid, retained, signal) {
+  const { rows, missing } = await linuxRows(procfs, ticks, signal)
+  // Separate stat reads cannot prove a coherent transfer to the parent's child counters.
+  if ([...retained].some((identity) => missing.has(identity.split(':')[0]))) return unknown('census-incoherent')
+  const processes = selectFamily(rows, pid, retained)
+  for (const process of processes) {
+    const options = { encoding: 'utf8', signal }
+    const status = await procfs.readProcessStatus(process.pid, options)
+    const current = linuxStat(process.pid, await procfs.readProcessStat(process.pid, options), ticks)
+    if (current.identity !== process.identity) return unknown('pid-reused')
+    const rss = /^VmRSS:\s+(\d+)\s+kB\s*$/m.exec(status)
+    if (!rss) throw new Error('RSS unavailable')
+    process.memMiB = Number(rss[1]) / 1024
+  }
+  return { processes }
 }
 
 function selectFamily(rows, pid, retained) {
@@ -90,21 +117,13 @@ function darwinRows(text) {
 export function createSuiteResourceReader({ platform = process.platform, read = readFile, list = readdir, run = runResourceCommand } = {}) {
   const procfs = createProcfs({ platform, readFile: read, readdir: list })
   const retained = new Set()
-  let ticks
   return async (pid, { signal } = {}) => {
     if (!['linux', 'darwin'].includes(platform)) return unknown('unsupported-platform')
     try {
       if (platform === 'darwin') return { processes: selectFamily(darwinRows(await run('/bin/ps', ['-S', '-axo', 'pid=,ppid=,rss=,time=,lstart='], { signal })), pid, retained) }
-      if (ticks === undefined) ticks = Number((await run('getconf', ['CLK_TCK'], { signal })).trim())
+      const ticks = await linuxClockTicks(run)
       if (!Number.isSafeInteger(ticks) || ticks <= 0) return unknown('clock-ticks-unavailable')
-      const processes = selectFamily(await linuxRows(procfs, ticks, signal), pid, retained)
-      for (const process of processes) {
-        const status = await procfs.readProcessStatus(process.pid, { encoding: 'utf8', signal })
-        const rss = /^VmRSS:\s+(\d+)\s+kB\s*$/m.exec(status)
-        if (!rss) throw new Error('RSS unavailable')
-        process.memMiB = Number(rss[1]) / 1024
-      }
-      return { processes }
+      return await linuxResourceTree(procfs, ticks, pid, retained, signal)
     } catch { return unknown('source-unavailable') }
   }
 }
@@ -174,7 +193,9 @@ export function createSuiteResourceSampler({ pid = process.pid, readTree = creat
     result = sampleResult(state, Math.max(0, now() - started))
     return result
   }
-  return { sample, stop, ready: sample() }
+  timer = schedule(sample, intervalMs)
+  timer?.unref?.()
+  return { sample, stop, ready: Promise.resolve() }
 }
 
 async function takeResourceSample(read, pid, signal, state, now, stopped) {

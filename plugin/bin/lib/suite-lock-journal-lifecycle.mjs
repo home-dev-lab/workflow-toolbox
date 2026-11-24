@@ -8,6 +8,7 @@ import { suiteLockRankOptions } from './suite-lock-priority.mjs'
 import { suiteLockBootClock } from './host/platform.mjs'
 import { suiteSignalExit } from './host/suite-lock-signals.mjs'
 import { startSuiteResourceSampler } from './host/suite-lock-resources.mjs'
+import { unknownSuiteResources } from './suite-lock-resources.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -113,10 +114,11 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   try {
     const lease = await acquire({ ...deadline.options, [CONTEXT]: context })
     if (lease.inherited || lease.offloaded) return lease
+    const resourceStarted = performance.now()
     const resourceSampler = startSuiteResourceSampler(options)
-    if (lease.broker) return { ...lease, resourceSampler }
+    if (lease.broker) return { ...lease, resourceSampler, resourceStarted }
     suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel })
-    return { ...lease, resourceSampler, journal: context.journal, staticDomain: options.staticDomain }
+    return { ...lease, resourceSampler, resourceStarted, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)
     journalAcquisitionFailure(context, failure, deadline.options.signal)
@@ -132,8 +134,13 @@ function holderBootStart() {
 export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString(), ...holderBootStart() })
 
 export function finishSuiteResourceSample(lease, outcome) {
-  const resources = lease?.resourceSampler?.stop()
-  return resources ? { ...outcome, resources } : outcome
+  try {
+    const resources = lease?.resourceSampler?.stop()
+    return resources ? { ...outcome, resources } : outcome
+  } catch {
+    const wallMs = Math.max(0, performance.now() - lease.resourceStarted)
+    return { ...outcome, resources: unknownSuiteResources(wallMs, 'sampler-stop-failed') }
+  }
 }
 
 export function finishBrokerLease(lease, outcome) {
