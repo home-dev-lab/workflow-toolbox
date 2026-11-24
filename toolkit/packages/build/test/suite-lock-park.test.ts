@@ -111,7 +111,7 @@ async function resume(f: Fixture, extra: Record<string, unknown> = {}) {
     const lease = await resume(f, { light: true, priority: 'P0' })
     try {
       expect(lease.ticket, 'a resumed ticket keeps its number').toBe(parked.number)
-      expect(lease.record).toEqual({ ...parked.data.record, leaseId: expect.any(String), pid: process.pid, startTime: processStartTime(process.pid), argv: process.argv, cwd: process.cwd() })
+      expect(lease.record).toEqual({ ...parked.data.record, journal: lease.journal.base, leaseId: expect.any(String), pid: process.pid, startTime: processStartTime(process.pid), argv: process.argv, cwd: process.cwd() })
       expect(lease.record.leaseId).not.toBe(parked.data.record.leaseId)
       expect(lease.record.light).toBeUndefined()
       expect(existsSync(f.file(parked.number))).toBe(false)

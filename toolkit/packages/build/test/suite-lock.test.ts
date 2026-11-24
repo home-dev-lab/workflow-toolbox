@@ -149,6 +149,7 @@ function registerLibraryBasics() {
     const root = tempRoot('handoff')
     const first = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
     expect(readSuiteLock({ root }).holder).toEqual({
+      journal: first.journal.base,
       leaseId: expect.any(String),
       level: 1,
       project: expect.any(String), size: 'L',
