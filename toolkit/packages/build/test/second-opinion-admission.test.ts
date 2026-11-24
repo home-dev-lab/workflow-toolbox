@@ -11,6 +11,15 @@ import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platfo
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const CLI = process.env.WT_SECOND_OPINION_TEST_CLI ?? join(ROOT, 'plugin/bin/wt-second-opinion.mjs')
+// The containment ceiling allows slow startup but still fails a refusal that hangs.
+const CONTAINMENT_CEILING_MS = 30_000
+// Only a red-proof CLI copy may use a reduced ceiling; normal runs always get 30 s.
+const containmentCeiling = process.env.WT_SECOND_OPINION_TEST_CLI
+  ? Number(process.env.WT_SECOND_OPINION_TEST_CONTAINMENT_CEILING_MS ?? CONTAINMENT_CEILING_MS)
+  : CONTAINMENT_CEILING_MS
+if (!Number.isInteger(containmentCeiling) || containmentCeiling < 1 || containmentCeiling > CONTAINMENT_CEILING_MS) {
+  throw new Error('red-proof containment ceiling must be a positive integer no greater than 30000 ms')
+}
 const roots: string[] = []
 // These cases require policy execution or an admitted model; unsupported hosts
 // refuse before import and cannot reach their signal/snapshot assertions.
@@ -77,8 +86,10 @@ function launch(f: ReturnType<typeof fixture>, admission: string | undefined, re
   })
 }
 
-function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000, executesPolicy = true) {
-  const result = launch(f, admission, false, false, [], 10_000, admissionTimeout)
+function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000, executesPolicy = true, ceiling = 10_000) {
+  const result = launch(f, admission, false, false, [], ceiling, admissionTimeout)
+  expect((result.error as NodeJS.ErrnoException | undefined)?.code,
+    `containment ceiling exceeded (${ceiling} ms): refusal CLI did not return\n${result.stderr}`).not.toBe('ETIMEDOUT')
   expect(result.status).toBe(3)
   expect(existsSync(f.marker)).toBe(false)
   expect(result.stderr).toContain('WT_SECOND_OPINION_ADMISSION')
@@ -536,11 +547,10 @@ describe('second-opinion worker containment', () => {
   ])('contains %s before dispatch', (_kind, source, cause) => {
     const f = fixture(source)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
-    // Refusal, its specific cause, no dispatch and the final EXIT=3 are the
-    // containment contract. End-to-end startup speed is not part of it; launch's
-    // watchdog still bounds a genuinely stuck CLI, and the loop keeps its 100 ms deadline.
-    expectRefusal(f, f.module, cause, cause.startsWith('timed out') ? 100 : 5000)
-  })
+    // Bound the spawned CLI independently of the runner; keep the policy's own
+    // 100 ms loop deadline and the refusal/cause/no-dispatch contract as well.
+    expectRefusal(f, f.module, cause, cause.startsWith('timed out') ? 100 : 5000, true, containmentCeiling)
+  }, CONTAINMENT_CEILING_MS + 5000)
 })
 
 function forceCreatedWriteFailure(f: ReturnType<typeof fixture>) {
