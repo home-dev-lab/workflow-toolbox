@@ -1,12 +1,16 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { describe, it } from 'vitest'
+import { join } from 'node:path'
+import { afterAll, describe, it } from 'vitest'
+import { suiteAdmissionFixture } from './helpers/suite-lock-admission-fixture.js'
 // @ts-expect-error plugin runtime module
 import * as parser from '../../../../plugin/bin/lib/suite-lock-direct-run.mjs'
 // @ts-expect-error standalone integration scenarios also run without Vitest
 import { assertDirect, assertNoWait, assertTwoFiles, assertExclusive, assertPark, assertNested, assertOverrun, assertShort, assertTimerCancelled, assertParser } from './helpers/suite-lock-direct-scenarios.mjs'
 
-const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-suite-lock.mjs', import.meta.url))
+const admission = suiteAdmissionFixture(fileURLToPath(new URL('../../../../plugin', import.meta.url)))
+const cli = join(admission.plugin, 'bin/wt-suite-lock.mjs')
+afterAll(() => admission.close())
 
 // Keep the real spawn boundary visible to the scheduling-policy census.
 function spawnChild(command: string, args: string[], options: SpawnOptions) {

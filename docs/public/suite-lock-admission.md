@@ -71,6 +71,8 @@ Supervisor warm-up holds no compatibility fence: only an eligible admission
 claims the fences, so a lower-ranked client cannot obstruct a legacy queue head.
 Windows retains exclusive admission and explicitly reports that the reservation
 memory watchdog and load measurement are unavailable.
+Explicit zero-wait requests retain the exclusive fail-fast protocol: they try
+once without waiting for watchdog warm-up and still respect reservation fences.
 
 The POSIX compatibility record uses the live init identity. It is a fence, not
 a command to signal. Actual reservation holders and watchdog state are listed

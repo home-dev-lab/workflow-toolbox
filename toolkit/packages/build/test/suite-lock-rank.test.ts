@@ -6,11 +6,15 @@ import { createHash } from 'node:crypto'
 import { tmpdir, uptime } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { suiteAdmissionFixture } from './helpers/suite-lock-admission-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { suiteBrokerAddress, suiteBrokerFixture } from './helpers/suite-broker-fixture.js'
 
 const plugin = process.env.WT_RANK_TEST_PLUGIN ?? resolve(import.meta.dirname, '../../../../plugin')
+const admission = suiteAdmissionFixture(plugin)
+const cliPath = join(admission.plugin, 'bin/wt-suite-lock.mjs')
+afterAll(() => admission.close())
 const load = (name: string) => import(pathToFileURL(join(plugin, 'bin/lib', name + '.mjs')).href)
 const order = await load('suite-lock-order')
 const lock = await load('suite-lock')
@@ -34,7 +38,7 @@ const ticket = (number: number, fields = {}) => ({ number, record: { level: 2, l
 const rank = (entry: ReturnType<typeof ticket>, extra = {}) => order.rankSuiteLockTicket(entry, context(extra))
 const numbers = (tickets: ReturnType<typeof ticket>[], extra = {}) => order.orderSuiteLockTickets(tickets, counter, now, undefined, context(extra)).tickets.map((t: { number: number }) => t.number)
 const envFor = (root: string, extra = {}) => sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK_PROJECT: '', WT_SUITE_LOCK_SIZE: '', ...extra })
-const cli = (root: string, args: string[], extra = {}) => spawnSync(process.execPath, [join(plugin, 'bin/wt-suite-lock.mjs'), ...args], { env: envFor(root, extra), encoding: 'utf8', timeout: 15_000 })
+const cli = (root: string, args: string[], extra = {}) => spawnSync(process.execPath, [cliPath, ...args], { env: envFor(root, extra), encoding: 'utf8', timeout: 15_000 })
 const readState = (root: string, projects = ['alpha', 'beta']) => state.readSuiteLockRankState(root, projects.map((project, i) => ticket(i, { project })))
 const statePath = (root: string, kind: string, project: string) => join(root, kind, createHash('sha256').update(project).digest('hex').slice(0, 16) + '.json')
 const events = (root: string) => readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
@@ -384,7 +388,9 @@ function registerCompletionContracts() {
   registerCliStarted()
   it('CLI history records command runtime rather than grant-to-release elapsed time', () => {
     const root = temp()
-    const script = `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const write=fs.writeSync;const mono=performance.now.bind(performance);const wall=Date.now;let gap=false;fs.writeSync=function(...args){const result=Reflect.apply(write,this,args);if(String(args[1]).includes('"event":"grant"')){Object.defineProperty(performance,'now',{configurable:true,value:()=>mono()+3600000});Date.now=()=>wall()+3600000;gap=true}return result};syncBuiltinESMExports();const {runSuiteLockCli}=await import(${JSON.stringify(pathToFileURL(join(plugin, 'bin/wt-suite-lock.mjs')).href)});process.exitCode=await runSuiteLockCli(['run','--size','S','--project','alpha','--',process.execPath,'-e','setTimeout(()=>{},120)']);process.stdout.write('gap='+Number(gap))`
+    // Move the elapsed-time clock used by lease accounting, while leaving the
+    // watchdog's cross-process wall clock real. A wall jump tests lease loss.
+    const script = `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const write=fs.writeSync;const mono=performance.now.bind(performance);let gap=false;fs.writeSync=function(...args){const result=Reflect.apply(write,this,args);if(String(args[1]).includes('"event":"grant"')){Object.defineProperty(performance,'now',{configurable:true,value:()=>mono()+3600000});gap=true}return result};syncBuiltinESMExports();const {runSuiteLockCli}=await import(${JSON.stringify(pathToFileURL(cliPath).href)});process.exitCode=await runSuiteLockCli(['run','--size','S','--project','alpha','--',process.execPath,'-e','setTimeout(()=>{},120)']);process.stdout.write('gap='+Number(gap))`
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: envFor(root), encoding: 'utf8' })
     expect(result.status).toBe(0); expect(result.stdout).toBe('gap=1')
     const history = readState(root).history.alpha

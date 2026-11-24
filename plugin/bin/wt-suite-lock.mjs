@@ -147,7 +147,7 @@ async function queueAndRun(command, options) {
   if (scopeGuard.refused) return 2
   const waiting = watchSuiteWaitSignals()
   try {
-    const reservation = cliReservationRequested(park, staticRun)
+    const reservation = cliReservationRequested(park, staticRun, waitS)
     if (!reservationHostSupported()) process.stderr.write('wt-suite-lock: memory watchdog unknown (unsupported-platform-memory-and-load); using exclusive protocol\n')
     const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: replaceableCliRun(park, light, staticRun), light, static: staticRun, priority, project, size, reservation, requeue: options.requeue, signal: waiting.signal, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
     if (typeof lease === 'number') return lease
@@ -164,7 +164,9 @@ async function queueAndRun(command, options) {
   } finally { waiting.close() }
 }
 
-const cliReservationRequested = (park, staticRun) => reservationHostSupported(undefined, true) && !park && !staticRun && !process.env.WT_SUITE_LOCK_BROKER && !staticAncestorLease()
+// A fail-fast request cannot wait for a supervisor's first heartbeat. Its
+// exclusive attempt still respects both legacy holders and reservation fences.
+const cliReservationRequested = (park, staticRun, waitS) => waitS !== 0 && reservationHostSupported(undefined, true) && !park && !staticRun && !process.env.WT_SUITE_LOCK_BROKER && !staticAncestorLease()
 const staticAncestorLease = () => /\|static:[^|]+$/.test(process.env.WT_SUITE_LEASE ?? '')
 const replaceableCliRun = (park, light, staticRun) => !park && !light && !staticRun
 const shouldRetryReservation = (timing) => timing.requeue && !timing.stopUnconfirmed && !timing.releaseFailed

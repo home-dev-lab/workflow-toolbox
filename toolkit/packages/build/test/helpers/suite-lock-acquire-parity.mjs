@@ -131,7 +131,7 @@ function queueDependencies(config, t, options, steps, lease) {
   const fields = t.named({}, 'p0-fields')
   const judge = t.named(() => false, 'judge')
   let poll = 0
-  return {
+  const dependencies = {
     // Currency admission is separately locked using real cache copies; this differential
     // continues to compare the acquisition mechanics after the admission predicate.
     SUITE_LOCK_MODULE_URL: 'file:///checkout/plugin/bin/lib/suite-lock.mjs', SUITE_LOCK_ORDER_VERSION: 4,
@@ -156,6 +156,12 @@ function queueDependencies(config, t, options, steps, lease) {
     removeTicket(...args) { t.call('remove', ...args) },
     options,
   }
+  // Ticket selection is a dependency of the extracted acquisition loop. Retry
+  // requeueing has its own real-process lock; these cases compare the original
+  // fresh/park ticket operation at that boundary without hiding loop reads.
+  dependencies.takeAcquisitionTicket = (queueDir, value, settings) =>
+    dependencies.takeParkTicket(queueDir, value, settings, dependencies.parkOwnerJudge(settings))
+  return dependencies
 }
 
 async function observe(source, config) {

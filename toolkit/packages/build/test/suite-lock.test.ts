@@ -3,7 +3,8 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirS
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { suiteAdmissionFixture } from './helpers/suite-lock-admission-fixture.js'
 import { competitorArgs, POSIX_STALENESS } from './helpers/suite-lock-platform.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
 import { acquireTestSuiteLock as acquireSuiteLock, suiteLockEnv } from './helpers/suite-lock-env.js'
@@ -17,8 +18,10 @@ const { certify, sampleLoad } = certification
 import { acquireSuiteLock as acquireAmbientSuiteLock, formatSuiteLockHolder, hasSuiteLeaseAsync, readSuiteLock, releaseSuiteLock, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
-const RUNNER = process.env.WT_SUITE_LOCK_RUNNER_TEST_PATH ?? join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
+const admission = suiteAdmissionFixture(join(ROOT, 'plugin'))
+const CLI = join(admission.plugin, 'bin/wt-suite-lock.mjs')
+const RUNNER = process.env.WT_SUITE_LOCK_RUNNER_TEST_PATH ?? join(admission.plugin, 'bin/wt-suite-lock-run.mjs')
+afterAll(() => admission.close())
 const roots: string[] = []
 // Same probe as wt-lane-launcher.test.ts: the ubuntu-latest GitHub runner in cross-os run
 // 36238137992 had no working zsh, so an unconditional spawn returned status: null (spawn error,
@@ -93,14 +96,15 @@ function runner(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) 
 }
 
 // Held: the runner's own child stays in its process group, so stopping the runner stops that child too.
-function runAsync(args: string[], root: string) {
-  const child = spawnHeld(process.execPath, [CLI, ...args], {
+function runAsync(args: string[], root: string, entry = CLI) {
+  const child = spawnHeld(process.execPath, [entry, ...args], {
     env: suiteLockEnv(root, { PATH: hermeticPath([]) }),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  let stderr = ''
+  let stderr = ''; let stdout = ''
   child.stderr!.on('data', (chunk: Buffer) => { stderr += String(chunk) })
-  return { child, stderr: () => stderr, done: new Promise<number | null>((resolve) => child.once('exit', resolve)) }
+  child.stdout!.on('data', (chunk: Buffer) => { stdout += String(chunk) })
+  return { child, stderr: () => stderr, stdout: () => stdout, done: new Promise<number | null>((resolve) => child.once('exit', resolve)) }
 }
 
 function processAlive(pid: number): boolean {
@@ -792,20 +796,59 @@ function registerCliNesting() {
 }
 
 function registerCliTimeout() {
+  it.each([{ flags: [] }, { flags: ['--light'] }, { flags: ['--priority', 'release'] }])('zero wait tries immediately without a watchdog: $flags', async ({ flags }) => {
+    const root = tempRoot('zero-wait')
+    const run = () => cli(['run', ...flags, '--wait-s', '0', '--', process.execPath, '-e', 'process.stdout.write("ran")'], root)
+    const first = run()
+    expect(first.status, first.stderr).toBe(0)
+    expect(first.stdout).toBe('ran')
+    expect(existsSync(join(root, 'reservations.json'))).toBe(false)
+    const blocker = await acquireSuiteLock({ root })
+    try {
+      const blocked = run()
+      expect(blocked.status, blocked.stderr).toBe(75)
+      expect(blocked.stdout).toBe('')
+    } finally { releaseSuiteLock(blocker) }
+    if (process.platform === 'win32') return
+    const managed = await import(pathToFileURL(join(admission.plugin, 'bin/lib/suite-lock.mjs')).href)
+    const reservation = await managed.acquireSuiteLock({ root, reservation: true, env: suiteLockEnv(), waitS: 5, pollMs: 10 })
+    try {
+      const blocked = run()
+      expect(blocked.status, blocked.stderr).toBe(75)
+      expect(blocked.stdout).toBe('')
+      expect(managed.readSuiteLockStatus({ root }).reservations.holders).toHaveLength(1)
+    } finally { managed.releaseSuiteLock(reservation) }
+  })
   it('times out with 75 and never runs the command', async () => {
     const root = tempRoot('timeout')
     const marker = join(root, 'ran')
     const holderPid = join(root, 'holder.pid')
-    const owner = runAsync(['run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(holderPid)}, String(process.pid));setInterval(()=>{},1000)`], root)
+    // Keep the original forced-group cleanup assertion on the legacy protocol;
+    // managed commands isolate their group and need catchable owner shutdown.
+    const owner = runAsync(['run', '--wait-s', '0', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(holderPid)}, String(process.pid));setInterval(()=>{},1000)`], root)
     try {
-      await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
-       const result = cli(['run', ...competitorArgs({ waitS: 0.05, staleS: 0.05 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+      await waitFor(() => existsSync(holderPid), 15_000)
+      const result = cli(['run', ...competitorArgs({ waitS: 0.05, staleS: 0.05 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain('timed out waiting for suite lock: holder pid')
       expect(existsSync(marker)).toBe(false)
     } finally { stopHeld(owner.child); await owner.done }
-    // The runner dies by SIGKILL and cannot forward it: its keepalive child must still be gone.
+    // The legacy runner dies by SIGKILL without forwarding; its group is gone.
     await waitFor(() => existsSync(holderPid) && !processAlive(Number(readFileSync(holderPid, 'utf8'))), 15_000)
+  }, 30_000)
+
+  it.skipIf(process.platform === 'win32')('stops the managed command group before releasing on SIGTERM', async () => {
+    const root = tempRoot('managed-shutdown'); const marker = join(root, 'child.pid')
+    const owner = runAsync(['run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)},String(process.pid));setInterval(()=>{},1000)`], root)
+    try {
+      await waitFor(() => existsSync(marker) && readFileSync(marker, 'utf8') !== '', 15_000)
+      const pid = Number(readFileSync(marker, 'utf8'))
+      owner.child.kill('SIGTERM')
+      expect(await owner.done).toBe(143)
+      expect(processAlive(pid)).toBe(false)
+      expect(readSuiteLock({ root }).held).toBe(false)
+      expect(JSON.parse(readFileSync(join(root, 'reservations.json'), 'utf8')).holders).toEqual([])
+    } finally { owner.child.kill('SIGTERM'); await owner.done }
   }, 30_000)
 
 }
@@ -934,19 +977,35 @@ describe('wt-suite-lock-run runner', () => {
 
   it('takes the suite lock itself while the child runs, and a second runner waits for it', async () => {
     const root = tempRoot('runner-takes-lock')
-    const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {
+    const ready = join(root, 'ready'); const finish = join(root, 'finish')
+    const program = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(ready)},'ready');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finish)}))clearInterval(timer)},20)`
+    const child = spawnHeld(process.execPath, [RUNNER, process.execPath, '-e', program], {
       env: suiteLockEnv(root, { PATH: hermeticPath([]) }),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-    await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
-    const holder = JSON.parse(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8'))
-    expect(holder.pid).toBe(child.pid)
-    const statusWhileHeld = cli(['status'], root)
-    expect(statusWhileHeld.stdout).toContain('suite lock held')
-    const second = runner([process.execPath, '-e', 'process.stdout.write("second ran")'], root)
-    expect(second.stderr).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ /)
-    expect(second.stdout).toBe('second ran')
-    await new Promise((resolve) => child.once('exit', resolve))
+    const done = new Promise((resolve) => child.once('exit', resolve))
+    let second: ReturnType<typeof runAsync> | undefined
+    try {
+      await waitFor(() => existsSync(ready), 15_000)
+      const snapshot = JSON.parse(cli(['status', '--json'], root).stdout)
+      const holders = snapshot.reservations?.holders ?? [snapshot.holder]
+      expect(holders).toHaveLength(1)
+      expect(holders[0].pid).toBe(child.pid)
+      expect(holders[0].argv).toEqual([process.execPath, '-e', program])
+      expect(cli(['status'], root).stdout).toContain('suite lock held')
+      second = runAsync([process.execPath, '-e', 'process.stdout.write("second ran")'], root, RUNNER)
+      await waitFor(() => /waiting for suite lock: position 1 of 1, holder pid \d+ /.test(second!.stderr()), 15_000)
+      expect(second.child.exitCode).toBeNull()
+      writeFileSync(finish, 'finish')
+      expect(await second.done).toBe(0)
+      await waitFor(() => second!.stdout() === 'second ran')
+      expect(second.stdout()).toBe('second ran')
+      expect(await done).toBe(0)
+    } finally {
+      writeFileSync(finish, 'finish')
+      child.kill('SIGTERM'); second?.child.kill('SIGTERM')
+      await done; if (second) await second.done
+    }
   })
 })
 
@@ -1256,17 +1315,21 @@ releaseSuiteLock(lease)
   it.skipIf(!BWRAP_WORKS)('same through the CLI from a real bwrap PID namespace (skips: bwrap unavailable)', async () => {
     const root = tempRoot('excl-bwrap')
     const log = join(root, 'events.log')
+    const finish = join(root, 'finish-host')
     const mark = (name: string, holdMs: number) => `const f=require('fs');f.appendFileSync(${JSON.stringify(log)},'${name} START '+Date.now()+'\\n');setTimeout(()=>f.appendFileSync(${JSON.stringify(log)},'${name} END '+Date.now()+'\\n'),${holdMs})`
     const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
-    const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', mark('HOST', 3000)], { env, stdio: 'ignore' })
+    const hostProgram = `const f=require('fs');f.appendFileSync(${JSON.stringify(log)},'HOST START '+Date.now()+'\\n');const timer=setInterval(()=>{if(f.existsSync(${JSON.stringify(finish)})){clearInterval(timer);f.appendFileSync(${JSON.stringify(log)},'HOST END '+Date.now()+'\\n')}},20)`
+    const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', hostProgram], { env, stdio: 'ignore' })
     const hostDone = new Promise((resolve) => host.once('exit', resolve))
     // Same reasoning as the sibling non-bwrap test: HOST's own START event already proves the lock
     // is held, so there is nothing left to pad with a fixed pause.
-    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
-    const boxed = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', process.execPath, CLI, 'run', '--wait-s', '1', '--stale-s', '1', '--', process.execPath, '-e', mark('SANDBOX', 100)], { env, encoding: 'utf8' })
-    await hostDone
-    expect(boxed.status, boxed.stderr).toBe(75)
-    expect(overlaps(log)).toBeNull()
+    try {
+      await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
+      const boxed = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', process.execPath, CLI, 'run', '--wait-s', '1', '--stale-s', '1', '--', process.execPath, '-e', mark('SANDBOX', 100)], { env, encoding: 'utf8', timeout: 12_000 })
+      expect(boxed.status, boxed.stderr).toBe(75)
+      expect(events(log).some((e) => e.name === 'HOST' && e.kind === 'END')).toBe(false)
+      expect(overlaps(log)).toBeNull()
+    } finally { writeFileSync(finish, 'finish'); await hostDone }
   }, 20_000)
 
   it('never reclaims a live POSIX holder on elapsed time when its PID namespace is foreign', async () => {

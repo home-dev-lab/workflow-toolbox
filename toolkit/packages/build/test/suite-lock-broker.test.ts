@@ -4,7 +4,8 @@ import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { suiteAdmissionFixture } from './helpers/suite-lock-admission-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { stopBrokerFixtureTimers, suiteBrokerAddress, suiteBrokerFixture, writeBrokerFixtureLine } from './helpers/suite-broker-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -14,7 +15,9 @@ import { createSuiteLockBroker, DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, DEFAULT_LANE
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BROKER = join(ROOT, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')
-const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
+const admission = suiteAdmissionFixture(join(ROOT, 'plugin'))
+const CLI = join(admission.plugin, 'bin/wt-suite-lock.mjs')
+afterAll(() => admission.close())
 const RUNNER = join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
 const GLOBAL_SETUP = join(ROOT, 'toolkit/test-support/suite-lease.global-setup.mjs')
 const roots: string[] = []
