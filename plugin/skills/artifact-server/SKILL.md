@@ -75,9 +75,8 @@ server cannot infer the proxy-owned prefix; artifact authors must use document-r
 
 ## Adding diagrams
 
-Use `interactive` for a trusted HTML report you authored whose page scripts need more than rich
-mode's inline-only sandbox, such as loading a same-origin script file. Orca's annotation can
-inject into every HTML mode, so annotation is no reason to choose interactive. Put `<!-- wt-artifact-server: interactive -->` on its first line,
+Use `interactive` for a trusted HTML report you authored that needs both page scripts and
+browser page/annotation tools. Put `<!-- wt-artifact-server: interactive -->` on its first line,
 entirely within the first 256 bytes. For anything you did not author, keep raw mode. Interactive
 mode has no sandbox: it permits inline and same-origin scripts, including **any file served by
 the server**, while blocking connections, forms, objects, base changes, and framing.
@@ -218,7 +217,22 @@ the tailnet.
   `tailscale` executable for hermetic probes; PATH stays the default), are also env-only. Policy is per registration and
   is checked against canonical path segments plus the root basename, so benign symlink aliases do
   not bypass it.
-- How each file type is served, the HTML page policies (default, `rich`, `annotatable`) and their CSP: open [references/html-page-policies.md](references/html-page-policies.md) before changing or explaining the HTML page policies.
+- Markdown raw HTML is escaped. `.txt`, `.log`, and `.json` are escaped. HTML is unchanged and
+  sandboxed without scripts by default. An HTML file whose first non-whitespace content is the
+  visible `<!-- wt-artifact-server: rich -->` marker opts into inline scripts, still without
+  same-origin authority, network connections, or external images. The marker travels inside the
+  file; an extension can be lost on rename, while a sibling policy file can drift away. Rich mode
+  narrows blast radius but does not make the artifact trusted: opening it still runs unreviewed code
+  the owner chose to open. Raw SVG and unknown content retain the no-script sandbox; generated
+  Markdown without Mermaid fences and indexes use a strict no-script CSP.
+- For HTML documents the owner reviews and annotates in Orca, put
+  `<!-- wt-artifact-server: annotatable -->` before any non-whitespace content. Like the rich
+  marker, it is case-insensitive and must fit entirely within the first 256 bytes. Annotatable
+  mode keeps the server's real origin (no CSP sandbox), so browser annotation tools can access
+  the document, but it never runs page scripts: `script-src 'none'` blocks them. Network
+  connections, forms, base-URL changes, and framing are blocked; inline styles and same-origin
+  or data images are allowed. For script-free expand/collapse interactivity, use native
+  `<details><summary>More</summary>...</details>` elements. This mode does not enable rich scripts.
 - Health reports service version and OS uid. UID and Linux command-line checks prevent cross-user
   attachment and accidental stale-PID signalling; they are not cryptographic attestation against a
   malicious process running as the same user. There is no rate limit or file-size limit.

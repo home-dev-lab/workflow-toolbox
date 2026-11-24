@@ -101,20 +101,9 @@ export function observeClosedProgramInputs(ts) {
   }
 }
 
-// Native admission is independent of the compiler's version and namespace.
-export function boundNativeWatches(fs = filesystem) {
-  if (typeof fs.watch !== 'function' || typeof fs.promises?.watch !== 'function') throw new Error('missing native watch surface')
-  const watch = createBoundedFsWatch(undefined, fs.watch.bind(fs))
-  const promisesWatch = boundedPromisesWatch(watch)
-  fs.watch = watch
-  fs.promises.watch = promisesWatch
-  if (fs.watch !== watch || fs.promises.watch !== promisesWatch) throw new Error('native watch surface rejected the cap')
-}
-
 // No filesystem snapshots or preload polling timers: TypeScript owns sampling.
 export function boundTypeScriptWatches(ts, fs = filesystem) {
-  // Keep the lightweight filesystem seam (no promises API) for existing callers.
-  if (!fs.promises) fs.watch = createBoundedFsWatch(undefined, fs.watch.bind(fs))
-  else boundNativeWatches(fs)
+  fs.watch = createBoundedFsWatch(ts, fs.watch.bind(fs))
+  if (fs.promises) fs.promises.watch = boundedPromisesWatch(fs.watch)
   ts.sys.watchDirectory = createPollingDirectoryWatch(ts)
 }

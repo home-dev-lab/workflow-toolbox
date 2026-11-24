@@ -15,6 +15,27 @@ const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
 const roots: string[] = []
 const previousExtraEnv = process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
 
+// Hold each wave until all its fake processes have entered. The deadline is only
+// a deadlock safeguard; overlap is established by arrivals, never elapsed time.
+const concurrencyBarrier = [
+  'if (process.env.WT_FAKE_CONCURRENCY_LOG) {',
+  '  const log = process.env.WT_FAKE_CONCURRENCY_LOG',
+  "  const index = Number(/Answer q([0-9]+)/.exec(fs.readFileSync(taskFile, 'utf8'))[1])",
+  '  const first = index < 8 ? 0 : 8',
+  '  const count = index < 8 ? 8 : 2',
+  "  fs.appendFileSync(log, 'enter\\n')",
+  "  fs.writeFileSync(log + '.ready-' + index, '')",
+  '  const arrivals = Array.from({ length: count }, (_, i) => log + ".ready-" + (first + i))',
+  '  const pause = new Int32Array(new SharedArrayBuffer(4))',
+  '  const deadline = Date.now() + 20_000',
+  '  while (!arrivals.every(file => fs.existsSync(file))) {',
+  "    if (Date.now() >= deadline) throw new Error('concurrency barrier did not fill')",
+  '    Atomics.wait(pause, 0, 0, 10)',
+  '  }',
+  "  fs.appendFileSync(log, 'leave\\n')",
+  '}',
+]
+
 // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
 // the sandbox itself is locked in lane-sandbox.test.ts.
 beforeEach(() => {
@@ -88,13 +109,7 @@ function installFakeOpencode(root: string) {
     "fs.writeFileSync(__dirname + '/ran.txt', 'task child started\\n')",
     "fs.writeFileSync(__dirname + '/argv.json', JSON.stringify(process.argv.slice(2)))",
     "const taskFile = process.argv[process.argv.indexOf('-f') + 1]",
-    "if (process.env.WT_FAKE_CONCURRENCY_LOG) {",
-    "  const fs = require('node:fs')",
-    "  fs.appendFileSync(process.env.WT_FAKE_CONCURRENCY_LOG, 'enter\\n')",
-    "  const until = Date.now() + 120",
-    "  while (Date.now() < until) {}",
-    "  fs.appendFileSync(process.env.WT_FAKE_CONCURRENCY_LOG, 'leave\\n')",
-    "}",
+    ...concurrencyBarrier,
     "if (process.env.WT_FAKE_PROMPT_CAPTURE) require('node:fs').writeFileSync(process.env.WT_FAKE_PROMPT_CAPTURE, require('node:fs').readFileSync(taskFile, 'utf8'))",
     "const model = process.argv[process.argv.indexOf('--model') + 1]",
     "if (process.env.WT_FAKE_MODEL_CAPTURE) require('node:fs').writeFileSync(process.env.WT_FAKE_MODEL_CAPTURE, model)",
@@ -555,5 +570,50 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.status).toBe(0)
     expect(result.stderr).toContain('dropped 1 answers because --max-reduce-chars=90: second')
     expect(JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8'))).toMatchObject({ maxReduceChars: 90, cappedAnswerIds: ['second'], total: 1 })
+  })
+})
+
+// Runs 10 generated tasks at --concurrency 8 through the barrier fake and reads back
+// the manifest and the enter/leave log. Kept outside the describe above so the older
+// test's function body stays unchanged for the quality ratchet.
+function runTenAtConcurrencyEight() {
+  const root = makeRoot()
+  const workdir = join(root, 'workdir')
+  mkdirSync(workdir)
+  installFakeOpencode(root)
+  const source = join(root, 'items.json')
+  const concurrencyLog = join(root, 'concurrency.log')
+  writeFileSync(source, JSON.stringify(Array.from({ length: 10 }, (_, i) => `q${i}`)) + '\n')
+  const result = spawnSync(process.execPath, [SCRIPT, '--each-json', source, '--prompt-template', 'Answer {{item}}',
+    '--id-template', '{{item}}', '--concurrency', '8', '--dir', workdir, '--manifest', join(root, 'manifest.json')], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), WT_FAKE_CONCURRENCY_LOG: concurrencyLog },
+  })
+  const events = readFileSync(concurrencyLog, 'utf8').split('\n').filter(Boolean)
+  return { result, events, manifest: JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8')) }
+}
+
+describe('wt-opencode-envelope concurrency batches under the start barrier', () => {
+  it('10 tasks at --concurrency 8 run as exactly a batch of 8 then a batch of 2, none dropped', () => {
+    // A start barrier holds the first eight calls, then the last two, so scheduler delays
+    // cannot turn genuinely concurrent calls into disjoint samples.
+    const { result, events, manifest } = runTenAtConcurrencyEight()
+    expect(result.status).toBe(0)
+    expect(manifest.total).toBe(10)
+    expect(manifest.dropped).toBe(0)
+    expect(manifest.tasks).toHaveLength(10)
+    expect(manifest.tasks.map((task: { status: string }) => task.status)).toEqual(Array(10).fill('answer'))
+    expect(events.filter((e) => e === 'enter')).toHaveLength(10)
+    expect(events.filter((e) => e === 'leave')).toHaveLength(10)
+    let live = 0
+    let peak = 0
+    for (const e of events) {
+      live += e === 'enter' ? 1 : -1
+      expect(live).toBeGreaterThanOrEqual(0)
+      if (live > peak) peak = live
+    }
+    expect(peak).toBeLessThanOrEqual(8)
+    expect(peak).toBe(8)
+    expect(live).toBe(0)
   })
 })
