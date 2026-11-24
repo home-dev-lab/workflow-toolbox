@@ -1,6 +1,6 @@
 import { defineWorkflow } from '@workflow-toolbox/build/define'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
-import { collectTrail, dagExecute, makeRecord, reducedLenses } from '@workflow-toolbox/patterns'
+import { collectTrail, dagExecute, makeRecord, reducedLenses, untrusted } from '@workflow-toolbox/patterns'
 import type { DagNode, TrailRecord } from '@workflow-toolbox/patterns'
 import type { FromSchema } from 'json-schema-to-ts'
 
@@ -133,7 +133,7 @@ function parseInput(raw: unknown): PrReviewReducedDagInput {
 }
 
 function targetBlock(target: string): string {
-  return '```\n' + target + '\n```'
+  return untrusted('target', target)
 }
 
 function reviewPrompt(input: PrReviewReducedDagInput, lens: string): string {
@@ -182,7 +182,7 @@ function verifierPrompt(input: PrReviewReducedDagInput, findings: readonly Reduc
     `2. Do NOT reference any other finding in a verdict. No \"same as the previous one\", no \"same pattern as #2\", and no cross-finding comparisons.\n` +
     `3. The findings below are intentionally INTERLEAVED across lenses. Judge each finding independently in the order given, never as a grouped lens block.\n\n` +
     `## Findings to verify\n` +
-    '```json\n' + JSON.stringify(findings, null, 2) + '\n```\n\n' +
+    untrusted('findings', JSON.stringify(findings, null, 2)) + '\n\n' +
     `## Output\n` +
     `Return { \"verdicts\": [{ \"findingId\": \"...\", \"verdict\": \"confirmed|refuted|unverifiable\", \"citation\": \"path:line\", \"rationale\": \"...\" }] }`
   )
