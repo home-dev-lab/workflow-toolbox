@@ -1,17 +1,18 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error executable JavaScript fixtures
 import { terminalEvents } from './suite-lock-terminal-review-cases.mjs'
 // @ts-expect-error plugin runtime module
-import { acquireSuiteLock, operatorReleaseSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const roots: string[] = []
 const children: ChildProcess[] = []
-const cli = new URL('../../../../plugin/bin/wt-suite-lock.mjs', import.meta.url).pathname
+const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-suite-lock.mjs', import.meta.url))
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), 'wt-terminal-')); roots.push(root); return root }
 const events = (root: string): Record<string, unknown>[] => terminalEvents(root)
 const ends = (root: string, id: string) => events(root).filter((event) => event.leaseId === id && ['abort', 'release', 'timeout'].includes(String(event.event)))
@@ -351,8 +352,22 @@ it.skipIf(process.platform !== 'linux' || !existsSync('/usr/bin/setpriv'))('reco
 it('records age-only Windows reclaim with explicit age proof', async () => {
   const root = scratch()
   const lease = await acquireSuiteLock({ root })
-  operatorReleaseSuiteLock({ root, platform: 'win32', staleS: 0 })
+  // Filesystem timestamps can be ahead of integer-millisecond Date.now().
+  const now = statSync(lease.lockDir).mtimeMs + 1000
+  operatorReleaseSuiteLock({ root, platform: 'win32', staleS: 1, now: () => now })
   expect(ends(root, lease.holder.leaseId)).toEqual([expect.objectContaining({ event: 'release', cause: 'reclaimed', proof: 'age' })])
+})
+
+it.each(['linux', 'darwin', 'win32'])('does not treat negative fractional age as stale proof on %s', async (platform) => {
+  const root = scratch()
+  const lease = await acquireSuiteLock({ root })
+  const now = statSync(lease.lockDir).mtimeMs - 0.25
+  const options = { root, platform, staleS: 0, now: () => now }
+  expect(readSuiteLock(options).ageMs).toBe(-0.25)
+  expect(operatorReleaseSuiteLock(options)).toMatchObject({ released: false, reason: 'live' })
+  expect(ends(root, lease.holder.leaseId)).toEqual([])
+  expect(readSuiteLock({ root }).holder.leaseId).toBe(lease.holder.leaseId)
+  releaseSuiteLock(lease)
 })
 
 it.skipIf(process.platform === 'win32')('reaps a killed static waiter into the parent journal (POSIX delivery only)', async () => {
