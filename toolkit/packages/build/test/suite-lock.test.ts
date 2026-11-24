@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { competitorArgs, POSIX_STALENESS } from './helpers/suite-lock-platform.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
 import { acquireTestSuiteLock as acquireSuiteLock, suiteLockEnv } from './helpers/suite-lock-env.js'
+import { probePty, ptyUnavailableReason, spawnDiagnostics } from './helpers/environment-guards.js'
 // @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
 import { spawnHeld, stopHeld } from '../../../test-support/held-processes.mjs'
 // @ts-expect-error Node script under toolkit/scripts/
@@ -23,7 +24,48 @@ const roots: string[] = []
 // 36238137992 had no working zsh, so an unconditional spawn returned status: null (spawn error,
 // never a real exit code) — `expected null to be 7`. Gate on the same real-zsh probe and name why.
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
-const PTY_WORKS = process.platform !== 'win32' && spawnSync('python3', ['-c', 'import pty'], { stdio: 'ignore' }).status === 0
+const PTY_UNAVAILABLE = probePty({ PATH: hermeticPath([]) })
+
+describe('PTY capability guard', () => {
+  const ok = { status: 0, signal: null, stdout: 'PTY READY', stderr: '' }
+  it('runs when the real PTY child exits successfully with its marker', () => {
+    expect(ptyUnavailableReason(ok)).toBeNull()
+  })
+
+  it('skips with a diagnostic reason when the probe times out', () => {
+    const error = Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })
+    const result = { ...ok, status: null, signal: 'SIGTERM' as const, error, stderr: 'probe stderr' }
+    const reason = ptyUnavailableReason(result)
+    for (const detail of ['pty.spawn', 'SIGTERM', 'ETIMEDOUT', 'probe stderr']) expect(reason).toContain(detail)
+  })
+
+  it('skips with a diagnostic reason when the probe dies on a signal', () => {
+    expect(ptyUnavailableReason({ ...ok, status: null, signal: 'SIGKILL' })).toContain('signal=SIGKILL')
+  })
+
+  it('rejects a nonzero exit, missing marker, or unavailable python3', () => {
+    expect(ptyUnavailableReason({ ...ok, status: 1 })).toContain('status=1')
+    expect(ptyUnavailableReason({ ...ok, stdout: '' })).toContain('probe failed')
+    const error = Object.assign(new Error('not found'), { code: 'ENOENT' })
+    expect(ptyUnavailableReason({ ...ok, status: null, error })).toContain('error=ENOENT')
+  })
+})
+
+describe('PTY probe execution', () => {
+  it.each(['linux', 'darwin'] as const)('probes one real controlling-terminal child with a deadline on %s', (platform) => {
+    const start = vi.fn(() => ({ status: 0, signal: null, stdout: 'PTY READY', stderr: '' }))
+    expect(probePty({}, platform, start)).toBeNull()
+    expect(start).toHaveBeenCalledExactlyOnceWith('python3', expect.arrayContaining([
+      expect.stringContaining('pty.spawn'), expect.stringContaining('/dev/tty'),
+    ]), { env: {}, encoding: 'utf8', timeout: 5000 })
+  })
+
+  it('declares the missing POSIX capability on Windows without spawning python3', () => {
+    const start = vi.fn()
+    expect(probePty({}, 'win32', start)).toContain('POSIX PTY')
+    expect(start).not.toHaveBeenCalled()
+  })
+})
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -719,14 +761,15 @@ describe('wt-suite-lock CLI', () => {
 })
 
 function registerCliNesting() {
-  it.skipIf(!PTY_WORKS)('preserves /dev/tty for an interactive child (skips: POSIX PTY or python3 unavailable)', () => {
+  it('preserves /dev/tty for an interactive child (skips: controlling-terminal PTY probe fails)', ({ skip }) => {
+    if (PTY_UNAVAILABLE) skip(PTY_UNAVAILABLE)
     const root = tempRoot('controlling-tty')
     const script = 'import pty,sys;sys.exit(pty.spawn(sys.argv[1:]))'
     const command = 'require("fs").openSync("/dev/tty","r");process.stdout.write("TTY OK")'
     const result = spawnSync('python3', ['-c', script, process.execPath, CLI, 'run', '--', process.execPath, '-e', command], {
       encoding: 'utf8', timeout: 5000, env: suiteLockEnv(root, { PATH: hermeticPath([]), HOME: root }),
     })
-    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.status, spawnDiagnostics(result)).toBe(0)
     expect(result.stdout).toContain('TTY OK')
   }, 8000)
 
