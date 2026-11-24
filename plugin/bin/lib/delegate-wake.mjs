@@ -299,6 +299,9 @@ export function detectRelays({ sessionId, main, agents, meta, now = Date.now(), 
 // FORWARD stays a scanner diagnostic.
 export const announceable = (lines) => lines.filter((entry) => entry.kind === 'WAKE' || entry.kind === 'ORPHANED BY RESTART')
 
+// Recovery must reach main: the delegate whose missed wake we observed is asleep.
+export function routeDelegateWake(item) { return item.line }
+
 // Restart evidence is injected by the host boundary. Ignore evidence newer than a
 // historical replay; a monitor reload is not itself evidence of a session restart.
 export function classifyRelays(input) {

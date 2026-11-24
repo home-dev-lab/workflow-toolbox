@@ -605,10 +605,19 @@ Schema:
 }
 ```
 
-Update this optional coverage at existing loop points: intake after grounding (`complete:false`,
+For launcher-attributed work, publish this file with `complete:false` before launching. Pass the
+spawner's raw `LIVENESS_AGENT_ID` to `wt-lane.mjs --launcher-agent <id>`; request it if it has not
+arrived. The launcher waiter (`wt-lane-wait.mjs --launcher-agent <id>`) is your wake channel
+for lane-exit events. Arm it as your own background Bash call
+(`run_in_background:true`) before yielding, then handle each event and re-arm until your owned
+work is finished. Set `WT_LAUNCHER_AGENT=<id>` per command for direct gate or suite-lock wrappers.
+Bound each wait, foreground or background, to 55 minutes or less; re-arm it on expiry.
+Consume the final events before marking liveness complete, so handled work stays out of main.
+
+Update liveness at existing loop points: intake after grounding (`complete:false`,
 `waitingOn:"none"`); every wait transition (lane → `"lane"` with lane worktree, spawner →
 `"spawner"`, resumed → `"none"`); and while writing the closing report/comment
-(`complete:true`). Ordinary runs can skip it. Autonomous runs let `wt-arc-watch.mjs` distinguish
+(`complete:true`). Other ordinary runs can skip it. Autonomous runs let `wt-arc-watch.mjs` distinguish
 asleep mid-mission from finished cleanly, so update state changes immediately, never on a timer.
 
 ## Tools of the trade
@@ -656,13 +665,12 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
 - **Every wait you arm, foreground or background, is bounded at 55 minutes; on its expiry,
   re-arm it.** The prompt cache lives one hour: a wake after more than an hour rewrites your
   whole context at double price, while a wake inside the hour re-reads it at a tenth.
-- **Waiting on an EXTERNAL LANE process (an `opencode`/`codex` CLI call) — block IN YOUR
-  TURN with a HARD CAP; never arm your own background watcher and yield expecting it to
-  wake you.** A lane process is not tracked as your child by the harness — backgrounding it
-  and arming a Monitor/watcher on its output puts you to sleep on a signal that never fires
-  (an external lane's completion alone supplies no harness wake event; main's inbound
-  SendMessage is needed after yielding). For a toolbox-launched lane, run its waiter in the
-  FOREGROUND: `node <configDir>/scripts/wt-lane-wait.mjs --dir <worktree> --pid <pid printed at launch> --timeout <cap in seconds>`.
+- **Waiting on an EXTERNAL LANE:** use the launcher waiter above as your own background
+  wake channel, then yield. For any other external CLI wait (including a direct
+  `opencode`/`codex` call), block IN YOUR TURN with a HARD CAP. A lane process by itself
+  supplies no harness wake event; the attributed waiter's background completion does.
+  For an in-turn, single-lane status check, use
+  `node <configDir>/scripts/wt-lane-wait.mjs --dir <worktree> --pid <pid printed at launch> --timeout <cap in seconds>`.
   It reads the launcher's host supervision record and returns one line: `LANE DONE exit=<n>`,
   `LANE DIED exit=unknown`, or `WAIT BUDGET ENDED: lane pid <N> still running` (exit 125).
   A budget-ended line says `liveness unknown (<reason>)` when identity cannot be verified, or names
@@ -679,7 +687,7 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   an `EXIT=` line in the lane's run.log (which includes the lane's own output) nor an existing report
   file signals completion.
   For a direct CLI call, keep the call in the FOREGROUND until it returns. Name an explicit
-  HARD CAP (e.g. 30 min) for either wait — never wait unboundedly. This trades a
+  HARD CAP of at most 55 minutes for every wait, and re-arm on expiry. This trades a
   SILENT failure (dormant, unreachable) for a BLOCKING one (costs your turn, exposed to turn
   limits) — better, not free. **When the cap is hit**: journal it, SendMessage your arbiter
   one line ("lane wait capped at <N> min on <what>, still pending — arm a filet above my

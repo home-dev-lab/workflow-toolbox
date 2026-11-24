@@ -2,6 +2,9 @@ import path from 'node:path'
 import { laneHostStateRoot } from './host/lane-host-dir.mjs'
 import { exitNoticeStore } from './host/lane-exit-store.mjs'
 import { classifyLane as defaultClassifyLane, writeJsonAtomic } from './lane-supervisor-core.mjs'
+import { deliverLauncherRoute, routeLauncherEvent, storedLauncherRoute } from './launcher-routing.mjs'
+import { pendingLauncherEvents } from './host/launcher-events.mjs'
+import { writeLauncherLine } from './host/launcher-event-io.mjs'
 
 // A day covers resumed sessions without scanning the machine's entire lane history.
 const EXIT_NOTICE_LOOKBACK_MS = 24 * 60 * 60 * 1000
@@ -44,31 +47,53 @@ function boundedArchive(archive, now, settings) {
 }
 
 function scanCompletions(settings, archive) {
-  const now = settings.clock(); const lines = []; let found = 0
-  const pending = { ...archive, entries: new Map(archive.entries) }
+  const now = settings.clock(); let found = 0
   for (const { record, modifiedAt } of settings.store.records(settings.stateRoot, now - settings.lookbackMs, settings.reportSkip)) {
-    const entry = completedEntry(record, modifiedAt, settings, now)
-    if (!entry || pending.entries.has(entry.runId) || (pending.through && order(entry, pending.through) <= 0)) continue
-    pending.entries.set(entry.runId, entry); found += 1
-    if (!archive.baseline) lines.push(completionLine(record, settings.store))
+    try {
+      const entry = completedEntry(record, modifiedAt, settings, now)
+      if (!entry || archive.entries.has(entry.runId) || (!record.launcherAgentId && archive.through && order(entry, archive.through) <= 0)) continue
+      found += routeCompletion(record, entry, { settings, archive, now })
+    } catch (error) { settings.reportSkip(record.worktree, error) }
   }
-  const persisted = boundedArchive(pending, now, settings)
-  for (const line of lines) settings.stdout(line)
-  settings.write(settings.file, persisted)
-  archive.entries = new Map(persisted.entries.map((entry) => [entry.runId, entry])); archive.through = persisted.through
+  scanLaneOrphans(settings, now)
+  persistArchive(settings, archive, archive.entries, now)
   if (archive.baseline) settings.stdout(`LANE exit-watch baseline: ${found} finished lanes recorded, not announced`)
   archive.baseline = false
   settings.store.pruneArchives?.(settings.file, now - EXIT_NOTICE_ARCHIVE_RETENTION_MS, settings.reportSkip)
 }
 
+function persistArchive(settings, archive, entries, now) {
+  const persisted = boundedArchive({ ...archive, entries }, now, settings)
+  settings.write(settings.file, persisted)
+  archive.entries = new Map(persisted.entries.map((entry) => [entry.runId, entry])); archive.through = persisted.through
+}
+
+function routeCompletion(record, entry, { settings, archive, now }) {
+  const routed = routeLauncherEvent(record, { key: `${record.ownerSessionId}:${record.worktree}:${entry.runId}:exit`, line: completionLine(record, settings.store) }, { ...settings, now })
+  if (!routed.main) return 0
+  const entries = new Map(archive.entries); entries.set(entry.runId, entry)
+  persistArchive(settings, archive, entries, now)
+  if (!archive.baseline || record.launcherAgentId) deliverLauncherRoute(routed, settings.stdout)
+  // The baseline summary counts suppressed main history, not announced orphans.
+  return record.launcherAgentId ? 0 : 1
+}
+
+function scanLaneOrphans(settings, now) {
+  for (const event of pendingLauncherEvents(settings)) {
+    try { deliverLauncherRoute(storedLauncherRoute(event, { ...settings, now }), settings.stdout) }
+    catch (error) { settings.reportSkip(event.name, error) }
+  }
+}
+
 function noticeSettings(options) {
   const stateRoot = options.stateRoot ?? laneHostStateRoot()
   const dataDir = options.dataDir ?? path.join(path.dirname(stateRoot), 'wt-lane-exit-notices')
-  return { stateRoot, file: path.join(dataDir, `${options.sessionId}.json`), sessionId: options.sessionId,
+  return { stateRoot, livenessDir: options.livenessDir, file: path.join(dataDir, `${options.sessionId}.json`), sessionId: options.sessionId,
+    monotonicClock: options.monotonicClock, observations: options.observations, reportReason: options.reportReason,
     clock: options.clock ?? Date.now, classifyLane: options.classifyLane ?? defaultClassifyLane,
     lookbackMs: options.lookbackMs ?? EXIT_NOTICE_LOOKBACK_MS, maxEntries: options.maxEntries ?? EXIT_NOTICE_MAX_ENTRIES,
     store: options.store ?? exitNoticeStore, write: options.write ?? writeJsonAtomic,
-    stdout: options.stdout ?? ((line) => process.stdout.write(`${line}\n`)), reportSkip: options.reportSkip }
+    stdout: options.stdout ?? writeLauncherLine, reportSkip: options.reportSkip }
 }
 
 export function createLaneExitNotices(options = {}) {
@@ -91,7 +116,7 @@ export function createLaneExitNotices(options = {}) {
   }
   return () => {
     try {
-      settings ??= noticeSettings({ ...options, sessionId, reportSkip })
+      settings ??= noticeSettings({ ...options, sessionId, reportSkip, reportReason: options.reportReason ?? stderr })
       archive ??= settings.store.load(settings.file, report)
       scanCompletions(settings, archive)
     } catch (error) { report(error) }

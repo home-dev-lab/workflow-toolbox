@@ -194,8 +194,9 @@ back silently.
    escalations to <your agent name> via SendMessage", and the one-line brief-vs-deliverable
    footer (see Brief vs deliverable below). If the brief authorizes lane calls or any other
    backgrounded work, it ALSO states the async-wait discipline explicitly (block in-turn with
-   a hard cap; never arm-and-yield on a self-owned watcher) — a pilot brief that authorizes a
-   lane without this is the exact incomplete-brief shape that has already produced a silently
+   a hard cap, except for the bounded background launcher waiter for lane exits described
+   below) — a pilot brief that authorizes a lane without this is the exact incomplete-brief
+   shape that has already produced a silently
    dormant delegate. On resumption, read the pilot's latest Discovery block first: its `Phase:`
    and `Next:` state identifies the phase to continue and the next concrete action.
 
@@ -544,14 +545,17 @@ After spawning pilots or launching runs: write
 your in-flight state (what runs where, which file will appear where) to
 `<REPORT_DIR>/orchestrator-state.md`, SendMessage the main session ONE line ("wave in
 flight: N pilots; watch <dir>; ping me on ticks"), and yield. The main session owns the
-disk watchers and pings you. On EVERY wake, FIRST poll the report dir and each expected
+disk watchers and pings you. **Launcher-waiter exception:** for launcher-attributed work,
+arm your own bounded background launcher waiter as described under Liveness below;
+it supplies lane-exit wakes while main retains the report-directory watchers.
+On EVERY wake, FIRST poll the report dir and each expected
 report file, then act. A settled-but-unprocessed report found on wake was a missed wake —
 process it; it is not a new instruction. Pilots messaging you by name DO wake you reliably.
 **A turn that merely re-reports "still waiting, nothing changed" is the single most
 expensive turn available to you** — it re-reads your entire transcript to say nothing
 happened, and the cost only grows as the wave lengthens. Do not take one: after the
 one-line status SendMessage above, sleep on it — the main session's watch is what wakes
-you, not a self-scheduled re-check.
+you, not a self-scheduled re-check (subject to the launcher-waiter exception above).
 
 **Every wait you arm, foreground or background, is bounded at 55 minutes; on its expiry,
 re-arm it.** The prompt cache lives one hour: a wake after more than an hour rewrites your
@@ -664,8 +668,19 @@ it is one line at three points you already pass through:
    your spawner → `"spawner"`; resuming work after either → `"none"`.
 3. At the exact moment you write your closing report/comment: `complete:true`.
 
-This file is OPTIONAL coverage — its absence changes nothing about how you work, and an ordinary
-run with no autonomous/overnight stretch can skip it. Under an autonomous mandate it is what lets
+For launcher-attributed work, publish this file with `complete:false` before launching. Use the raw
+`LIVENESS_AGENT_ID` supplied by your spawner as `wt-lane.mjs --launcher-agent <id>`; request it from
+the spawner if it has not arrived. The launcher waiter (`wt-lane-wait.mjs --launcher-agent <id>`)
+is your wake channel for lane-exit events. Arm it as **your own**
+background Bash call (`run_in_background:true`) before yielding. Handle each event and re-arm the
+waiter until your owned work has finished. Set `WT_LAUNCHER_AGENT=<id>` per command when starting
+direct gate or suite-lock wrappers. Mark liveness complete only after handling the final events;
+unconsumed events then fall back to main if you finish or your liveness file stays absent.
+Bound each wait, foreground or background, to 55 minutes or less; re-arm it on expiry.
+For any other external CLI wait, block IN YOUR TURN with a HARD CAP of at most 55 minutes.
+
+For other work this file is optional coverage; an ordinary run with no autonomous/overnight
+stretch can skip it. Under an autonomous mandate it is what lets
 the arc watcher (`wt-arc-watch.mjs`) tell "asleep mid-mission" apart from "finished cleanly".
 A liveness file left with `waitingOn:"spawner"` after you got your answer, or left
 `complete:false` after you actually finished, misleads the watcher — update it at the moment the

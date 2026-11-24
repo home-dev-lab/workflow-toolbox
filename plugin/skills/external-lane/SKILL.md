@@ -17,7 +17,61 @@ Use an external lane for a complete implementation or review, not a five-minute 
 4. Monitor with the allow-covered waiter: `Monitor({command: 'node <configDir>/scripts/wt-lane-wait.mjs --dir <wt>'})`. The matching rule is `Bash(node <configDir>/scripts/wt-lane-wait.mjs:*)`; an allow rule covers the command a Monitor runs. It waits for the host-owned supervision record's terminal state and exit code; an `EXIT=` in the lane's stdout is display-only. A report is input, not proof.
 5. Read the report and diff-read the worktree. Run real required gates on that tree, detached with independent `EXIT=` logs. Never re-gate less than once on the real tree. Then commit and merge normally.
 
-### Waiter outcomes and process evidence
+### Delegate launcher routing
+
+A delegate must pass its own raw liveness agent ID explicitly: the inherited
+`CLAUDE_CODE_SESSION_ID` identifies its parent session, not the delegate.
+Use IDs containing only letters, digits, underscores or hyphens. Before launching,
+write your liveness file as described in the pilot template (`complete:false`,
+`waitingOn:"lane"`, your raw ID in `agentId`). Then launch and wait using that same ID:
+
+```sh
+node <configDir>/scripts/wt-lane.mjs --launcher-agent <id> --dir <worktree> --model <provider/model> --brief <worktree>/.lane/brief.md
+node <configDir>/scripts/wt-lane-wait.mjs --launcher-agent <id> --poll 2 --timeout 3300
+```
+
+Run the **second command as your own background Bash tool call** (`run_in_background:true`),
+then yield. Its completion is the channel that wakes you. Re-arm it on expiry and
+after handling each lane exit. Launcher
+mode returns 0 when it consumes an event, 125 when its wait budget ends, and 1 when
+delivery is unknown. Completion text carries the work's own exit code. Persistent
+acknowledgements prevent later waiters from replaying consumed events; pending events from
+before waiter startup are delivered too. Use one waiter per launcher ID.
+
+`WT_LAUNCHER_AGENT=<id>` is the lane flag's fallback. Set it per lane launch rather than
+exporting a delegate's identity into main. The host watcher publishes lane-exit events;
+keep that watcher running from the updated install.
+
+Events are individual files under `wt-launcher-events/<id>/pending/` beside the
+lane host-state root, created mode 0600 in private directories (on Windows, access follows the owner's
+state-directory ACL). Live delegate events stay out of main's watcher output.
+For an unconsumed event, if liveness says `complete:true`, main receives
+`orphaned-launcher=<id>` immediately; consumed events are never echoed to main.
+An absent liveness file gets a 120-second grace from its first observed absence.
+The main watcher revisits pending lane exits even if their lane record disappears.
+Even with live liveness, an event unconsumed for 57 minutes (one 55-minute waiter plus
+the 120-second grace) falls back to main. Keep re-arming the waiter on expiry.
+An orphan delivered to main is acknowledged separately from the historical notice
+archive, so archive eviction cannot hide a pending event or replay a handled one.
+An unreadable liveness file triggers a named routing diagnostic and main fallback.
+A failed publication reports `launcher-publish-failed` and is retried from the lane record;
+storage errors do not change the sweep's or waiter's exit status. A delegate must keep `complete:false` while
+waiting and mark it complete only after handling its final work events.
+Publishers write complete private temporary files with exclusive creation, then publish
+with a hard link that never overwrites an existing name. No publisher waits on a reader.
+Readers rename pending events into their own claimed directory; only the successful
+claimer prints. Both recipients complete synchronous output before renaming into `done/`.
+A crash between output and acknowledgement can replay delivery. A later reader returns
+a claim to pending only with positive process-death or measured PID-reuse evidence,
+never age alone; unknown ownership is reported and retained. Done history is retained
+for seven days, exceeding the one-day completion lookback. Temporary hard links reserve
+names until done retention; half-written temporary files never enter pending.
+Windows sharing failures retry at most four attempts and report a named exhaustion.
+Legacy spool files, locks and malformed old claims are ignored with `launcher-legacy-ignored`.
+Gate/test/queue events and supervision notices retain their existing channels; recovery
+WAKEs stay with main. The launcher waiter consumes lane-exit events only.
+
+### Lane waiter outcomes
 
 The waiter's `--timeout` caps only the wait. `WAIT BUDGET ENDED: lane pid <N> still running`
 exits **125**, leaving the lane alive. If identity cannot be verified it prints `liveness unknown (<reason>)`;

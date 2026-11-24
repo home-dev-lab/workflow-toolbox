@@ -27,6 +27,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - pr-review no longer approves while any finding went unchecked: a failed Verify stage keeps its findings as unverified instead of dropping them, cap-cut and all-null-vote findings count as unchecked, a reviewer reply without a findings list counts as a missing review, an approve with any gap becomes incomplete with the unchecked count in the summary, a docs routing that touches non-prose files adds the correctness and security lenses with a warning (.txt files count as code, not prose), and untrusted PR text and findings are fenced in every prompt (reduced-dag variant included)
+- Delegate-launched lanes now retain an explicit `--launcher-agent` identity (or
+  `WT_LAUNCHER_AGENT`) and route lane exits to that launcher's private event files. The extended
+  `wt-lane-wait --launcher-agent <id>` wakes a delegate's own background command
+  on the first unconsumed event. Main-owned work keeps its session notices;
+  unconsumed events fall back to main with an orphan attribution when their
+  launcher completes, goes missing or stops consuming. Publication uses exclusive
+  hard links without a publisher mutex; readers claim by rename and acknowledge
+  after synchronous output. Positively dead readers' claims are recovered, with
+  at-least-once replay across a print/acknowledgement crash. Gate and queue output,
+  supervision notices and recovery WAKEs keep their existing main-owned channels.
 - The quota watcher now honors an inherited session config-directory flag before the config-directory environment variable, using that single decision for account fingerprints and its child probe. This prevents wrong-account cache acceptance or rejection when a wrapper pins or removes the config-directory variable.
 - The quota watcher now shares the hook's login cache for pool-named login sessions, resolves the session's global config before pinning its probe environment, and passes that config choice to the probe. Cache fingerprint checks and token-session cache ownership remain enforced.
 - Every suite-lock lease that reached its request now gets a terminal journal line, and the journal reader reports exactly one outcome per lease: when racing writers append more than one terminal line, it keeps the first in append order (rotated generation first) and counts the rest in `ignoredDuplicateTerminals`. The ending paths: a waiting client killed by TERM, INT or HUP records an abort with the signal and exits 128+n, any other failure after the request records an abort with its error code, a waiter proven dead is journaled when the next waiter reaps its ticket, a dead holder is journaled when its lock is reclaimed, and release --force journals and checks the holder's identity before removing it. The reclaimed or force-released line also carries `heldS`, the time held in seconds at full precision (null when it cannot be known), and `result: 'unknown'`.

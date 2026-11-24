@@ -182,30 +182,30 @@ describe('session lane completion notices', () => {
         if (attempts++ === 0) throw new Error('write refused')
         writeFileSync(file, JSON.stringify(value))
       } })
-    sweep(); expect(exits(lines.join('\n'))).toHaveLength(1); sweep(); sweep()
-    expect(exits(lines.join('\n'))).toHaveLength(2)
+    sweep(); expect(exits(lines.join('\n'))).toHaveLength(0); sweep(); sweep()
+    expect(exits(lines.join('\n'))).toHaveLength(1)
     expect(errors).toHaveLength(1)
   })
 })
 
 describe('completion notice interruption and retention locks', () => {
-  it('prints every completion before recording the batch as announced', async () => {
+  it('persists each completion before printing it', async () => {
     const f = fixture(); seed(f); record(f); record(f, '30-40')
     const { createLaneExitNotices } = await moduleUnderTest(); const calls: string[] = []
     createLaneExitNotices({ ...f, sessionId: 'test-session', stdout: () => calls.push('stdout'),
       write: () => calls.push('write') })()
-    expect(calls, 'all completion output precedes the archive write').toEqual(['stdout', 'stdout', 'write'])
+    expect(calls, 'each completion output follows its archive write').toEqual(['write', 'stdout', 'write', 'stdout', 'write'])
   })
-  it('prints again after a writer throws following completion output', async () => {
+  it('never prints when archive persistence fails', async () => {
     const f = fixture(); seed(f); record(f)
     const { createLaneExitNotices } = await moduleUnderTest(); const lines: string[] = []; const calls: string[] = []
     const sweep = createLaneExitNotices({ ...f, sessionId: 'test-session', stdout: (line: string) => {
       calls.push('stdout'); lines.push(line)
     }, stderr: () => {}, write: () => { calls.push('write'); throw new Error('interrupted write') } })
     sweep()
-    expect(calls, 'the failed writer is reached only after output').toEqual(['stdout', 'write'])
+    expect(calls, 'the failed writer prevents output').toEqual(['write', 'write'])
     sweep()
-    expect(exits(lines.join('\n')), 'failed persistence leaves the printed run eligible').toHaveLength(2)
+    expect(exits(lines.join('\n')), 'failed persistence leaves the unprinted run eligible').toHaveLength(0)
     expect(entries(f)).toEqual([])
   })
   it('removes only expired regular other-session archives on a write', async () => {

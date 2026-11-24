@@ -28,6 +28,7 @@ import { laneBoundLine, unattendedMaxSeconds, validateLaneTiming } from './lib/l
 import { createLaneDeadline } from './lib/host/lane-deadline-worker.mjs'
 import { appendLaneReceipt } from './lib/host/lane-diagnostics.mjs'
 import { withLaneLaunchAdmission } from './lib/host/lane-launch-admission.mjs'
+import { launcherEnvIdentity, launcherId } from './lib/launcher-routing.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
@@ -61,7 +62,8 @@ export const BRIEF_GATE_RUNNABLES = Object.freeze([
 // A script named `exec` is not folded: `pnpm run exec vitest` runs that script, not the pnpm exec command.
 const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
 const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
-const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+const LANE_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason', '--launcher-agent': 'launcherAgentId' }
+const laneOptionValue = (arg, value) => value ?? (arg === '--launcher-agent' ? '' : null)
 const PNPM_VERIFY_DEPS_ENV = 'pnpm_config_verify_deps_before_run'
 // The spellings pnpm reads on Linux; the launcher honours exactly these, in the environment and in a brief.
 const PNPM_VERIFY_DEPS_SPELLINGS = Object.freeze([PNPM_VERIFY_DEPS_ENV, PNPM_VERIFY_DEPS_ENV.toUpperCase()])
@@ -120,7 +122,7 @@ function launchRecoveryCondition(reason) {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every lane gate, with or without a host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P2).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml, package-lock.json, yarn.lock or bun.lock/bun.lockb has no matching install (pnpm and npm: the install marker; yarn and bun: a node_modules holding a non-dot entry, or for yarn a Plug\'n\'Play .pnp.cjs/.pnp.js); --allow-missing-install skips that check (a docs-only lane, or one that must install inside its sandbox).\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --launcher-agent <id> (fallback WT_LAUNCHER_AGENT) records the delegate recipient; omitted means main. IDs use letters, digits, underscore or hyphen.\n       --lock-priority sets the suite-lock level of every lane gate, with or without a host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P2).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml, package-lock.json, yarn.lock or bun.lock/bun.lockb has no matching install (pnpm and npm: the install marker; yarn and bun: a node_modules holding a non-dot entry, or for yarn a Plug\'n\'Play .pnp.cjs/.pnp.js); --allow-missing-install skips that check (a docs-only lane, or one that must install inside its sandbox).\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 // The suite-lock level a lane's host broker queues its gates at. Release stays reserved to the main session.
@@ -139,9 +141,9 @@ function laneLockPriority(value) {
  * Dependency verification defaults off so pnpm cannot recreate an offline lane's install before running a gate;
  * a caller's own value, in either spelling pnpm reads, is kept and gains no default beside it.
  */
-export function laneWorkerEnv(env, lockPriority) {
+export function laneWorkerEnv(env, lockPriority, launcherAgentId = env.WT_LAUNCHER_AGENT) {
   const verifyDeps = callerVerifyDeps(env).length ? {} : { [PNPM_VERIFY_DEPS_ENV]: 'false' }
-  return { ...env, ...verifyDeps, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
+  return { ...env, ...verifyDeps, ...(launcherAgentId ? { WT_LAUNCHER_AGENT: launcherId(launcherAgentId) } : {}), WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
 }
 
 // Preserve only this caller-owned pnpm choice across the model environment filter; the default stays in laneWorkerEnv.
@@ -159,6 +161,7 @@ function laneChoiceError(out) {
 }
 
 function laneOwnerChoiceError(out) {
+  try { launcherId(out.launcherAgentId) } catch (error) { return error.message }
   if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB'
   if (!['session', 'pilot'].includes(out.owner)) return '--owner must be session or pilot'
   if (out.owner === 'pilot' && !out.ownerToken) return OWNER_TOKEN_REQUIRED
@@ -178,7 +181,7 @@ function laneRunChoiceError(out) {
 
 export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, idleWindow: DEFAULT_IDLE_WINDOW, idleTimeout: 0, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low', lockPriority: null }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, idleWindow: DEFAULT_IDLE_WINDOW, idleTimeout: 0, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, launcherAgentId: launcherEnvIdentity(), briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low', lockPriority: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -186,7 +189,7 @@ export function parse(argv) {
     else if (arg === '--brief') out.brief = argv[++i] ?? null
     else if (arg === '--max-brief-age') out.maxBriefAge = Number(argv[++i])
     else if (arg === '--acknowledge-stale-brief') out.acknowledgeStaleBrief = true
-    else if (Object.hasOwn(BRIEF_VALUE_OPTIONS, arg)) out[BRIEF_VALUE_OPTIONS[arg]] = argv[++i] ?? null
+    else if (Object.hasOwn(LANE_VALUE_OPTIONS, arg)) out[LANE_VALUE_OPTIONS[arg]] = laneOptionValue(arg, argv[++i])
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
     else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
@@ -1036,7 +1039,7 @@ function spawnDetachedLaneWorker(opts, consentModules, paths, runId, briefSnapsh
   const spawnedAt = Date.now()
   // The worker's stderr goes to the host-owned lane log: a worker that refuses or throws before
   // its first stage would otherwise vanish with the launcher already reporting success.
-  const child = spawnWithLaneLogStderr(opts.log, (stdio) => spawn(process.execPath, workerArgs, { detached: true, stdio, env: laneWorkerEnv(process.env, opts.lockPriority) }))
+  const child = spawnWithLaneLogStderr(opts.log, (stdio) => spawn(process.execPath, workerArgs, { detached: true, stdio, env: laneWorkerEnv(process.env, opts.lockPriority, opts.launcherAgentId) }))
   writeLaneStage(opts.log, 'worker-identity-capture-start')
   const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath, expectedArgv: child.spawnargs, spawnedAt })
   if (process.platform === 'win32' && !captured.identity) {
@@ -1063,7 +1066,7 @@ function publishDetachedLaneWorker(opts, consentModules, paths, runId, briefSnap
   const identity = captured.identity
   const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
   try {
-    writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, ...launchingWorkerIdentity(child, identity, captured), childPid: null, childArgv: null, childStartTime: null, ...(process.platform === 'darwin' ? { childCwd: null } : {}), worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+    writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, launcherAgentId: opts.launcherAgentId, ownerToken: opts.ownerToken, ...launchingWorkerIdentity(child, identity, captured), childPid: null, childArgv: null, childStartTime: null, ...(process.platform === 'darwin' ? { childCwd: null } : {}), worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   } catch (error) {
     child.kill('SIGTERM')
     rmSync(briefSnapshot, { force: true })
@@ -1193,7 +1196,7 @@ function runningChildIdentity(child, childIdentity, childCapture) {
 function initialiseWorkerState(opts, consentModules, session, child, captures, { stateFile, decisionFile }, journal) {
   const { runId, fd, statePaths, args } = session
   const { workerIdentity, workerCapture, childIdentity, childCapture } = captures
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, ...runningWorkerIdentity(workerIdentity, workerCapture), ...runningChildIdentity(child, childIdentity, childCapture), worktree: opts.dir, log: opts.log, sandbox: child.laneSandbox?.line ?? null, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, launcherAgentId: opts.launcherAgentId, ownerToken: opts.ownerToken, ...runningWorkerIdentity(workerIdentity, workerCapture), ...runningChildIdentity(child, childIdentity, childCapture), worktree: opts.dir, log: opts.log, sandbox: child.laneSandbox?.line ?? null, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
     currentState = { ...currentState, ...extra }

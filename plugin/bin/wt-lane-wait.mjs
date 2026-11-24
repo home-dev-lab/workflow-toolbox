@@ -6,9 +6,11 @@ import path from 'node:path'
 import { classifyLane, laneHostPlatform, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'
 import { laneHostDir } from './lib/host/lane-host-dir.mjs'
 import { legacySupervision } from './lib/lane-supervisor-core.mjs'
+import { launcherId } from './lib/launcher-routing.mjs'
+import { startLauncherWait } from './lib/launcher-wait.mjs'
 
 const DEFAULT_POLL = 30
-const DEFAULT_TIMEOUT = 5400
+const DEFAULT_TIMEOUT = 3300
 const TERMINAL_PUBLICATION_MS = 1_000
 const WAIT_BUDGET_EXIT = 125
 const ABANDONMENT_CAUSES = new Map([
@@ -19,6 +21,8 @@ const ABANDONMENT_CAUSES = new Map([
 function usage() {
   return [
     'Usage: node wt-lane-wait.mjs --dir <worktree> [--pid <n>] [--poll 30] [--timeout <s>]',
+    '       node wt-lane-wait.mjs --launcher-agent <id> [--poll 30] [--timeout <s>]',
+    'Launcher mode returns 0 on the first unconsumed event; its persistent cursor prevents replay. WT_LAUNCHER_AGENT is the fallback when --dir is absent.',
     '--timeout bounds this waiter only; it does not stop the lane.',
     'Exit codes: lane exit for LANE DONE; 1 unknown exit/refusal; 2 invalid arguments or supervision;',
     '125 WAIT BUDGET ENDED (lane still running or liveness unknown). Read the outcome, since lane exits can also be 125.',
@@ -33,6 +37,7 @@ function parseArguments(argv) {
     const arg = argv[i]
     switch (arg) {
       case '--dir': out.dir = argv[++i] ?? null; break
+      case '--launcher-agent': out.launcherAgentId = argv[++i] ?? ''; break
       case '--pid': out.pid = argv[++i] ?? null; break
       case '--poll': out.poll = Number(argv[++i]); break
       case '--timeout': out.timeout = Number(argv[++i]); break
@@ -43,8 +48,18 @@ function parseArguments(argv) {
   return out
 }
 
+function waiterIdentityError(out) {
+  if (!out.dir && !out.launcherAgentId) return 'missing required --dir or --launcher-agent'
+  if (out.dir && out.launcherAgentId) return '--dir and --launcher-agent cannot be combined'
+  if (out.launcherAgentId !== undefined) {
+    try { launcherId(out.launcherAgentId) } catch (error) { return error.message }
+  }
+  return null
+}
+
 function argumentError(out) {
-  if (!out.dir) return 'missing required --dir'
+  const identityError = waiterIdentityError(out)
+  if (identityError) return identityError
   if (!Number.isFinite(out.poll) || out.poll <= 0) return '--poll must be a positive number of seconds'
   if (!Number.isFinite(out.timeout) || out.timeout <= 0) return '--timeout must be a positive number of seconds'
   if (out.pid !== null && (!/^\d+$/.test(out.pid) || Number(out.pid) <= 0)) return '--pid must be a positive process id'
@@ -54,11 +69,12 @@ function argumentError(out) {
 function parse(argv) {
   const out = parseArguments(argv)
   if (out.help || out.error) return out
+  if (!out.dir) out.launcherAgentId ??= process.env.WT_LAUNCHER_AGENT
   const error = argumentError(out)
   if (error) return { error }
   // Keep the waiter and the recorded lane identity on the same spelling when TMPDIR
   // traverses a macOS /private symlink.
-  try { out.dir = realpathSync(out.dir) } catch { out.dir = path.resolve(out.dir) }
+  if (out.dir) { try { out.dir = realpathSync(out.dir) } catch { out.dir = path.resolve(out.dir) } }
   return out
 }
 
@@ -187,6 +203,7 @@ function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (opts.error) { process.stderr.write(`wt-lane-wait: ${opts.error}\n${usage()}\n`); return 2 }
+  if (opts.launcherAgentId) return startLauncherWait(opts.launcherAgentId, opts)
   if (typeof classifyLane !== 'function' || typeof readCurrentSupervisions !== 'function') {
     process.stderr.write('wt-lane-wait: Refused: the installed workflow-toolbox plugin is too old for this adopted waiter; update the plugin and re-adopt wt-lane-wait.mjs.\n')
     return 1
@@ -206,4 +223,7 @@ function main() {
   return waitForLane(opts, lane, pid, log)
 }
 
-process.exitCode = main()
+try { process.exitCode = main() } catch (error) {
+  process.stderr.write(`wt-lane-wait: launcher delivery unknown: ${error.message}\n`)
+  process.exitCode = 1
+}

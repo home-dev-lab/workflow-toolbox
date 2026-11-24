@@ -58,7 +58,7 @@ import { relaySkipLine } from './lib/session-role.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { transcriptLocality, isProvenForeign } from './lib/arc-watch-ownership.mjs'
 import { skipJournalPath, recordSkippedWake } from './lib/watch-skip-journal.mjs'
-import { announceable, classifyRelays, dueRelays, eventBudget, readAgents, readNewMain, readThrottle, writeThrottle, writeResumed } from './lib/delegate-wake.mjs'
+import { announceable, classifyRelays, dueRelays, eventBudget, readAgents, readNewMain, readThrottle, routeDelegateWake, writeThrottle, writeResumed } from './lib/delegate-wake.mjs'
 import { restartEvidence } from './lib/host/delegate-wake-restart.mjs'
 import { acknowledgementCommand, claimDecision, claimOrphan, hasDecision, settleAged, unsettled } from './lib/host/delegate-wake-decisions.mjs'
 
@@ -822,7 +822,9 @@ function publishDelegateWake(candidates, attributionProblems, budget) {
 }
 
 function emitDelegateWake(item, state, now, budget) {
-  if (suppressEmission || !budget.emit(item.line, () => claimWakeDecision(item, budget))) return
+  if (suppressEmission) return
+  const line = routeDelegateWake(item, { sessionId: currentSessionId })
+  if (!line || !budget.emit(line, () => claimWakeDecision(item, budget))) return
   const prior = state[item.key]
   state[item.key] = { lastEmittedAt: now, count: (prior?.count ?? 0) + 1 }
 }
