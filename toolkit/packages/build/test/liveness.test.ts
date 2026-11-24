@@ -1,15 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess, type ChildProcessByStdio } from 'node:child_process'
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
+import type { Readable } from 'node:stream'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,6 +27,7 @@ const ARC_WATCH = path.join(REPO_ROOT, 'plugin/bin/wt-arc-watch.mjs')
 
 const spawned: ChildProcess[] = []
 const roots: string[] = []
+const refreshTimers: ReturnType<typeof setInterval>[] = []
 
 function tmpRoot(tag: string): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), `${tag}-`))
@@ -65,12 +68,16 @@ async function runIdleRegistryScenario(records: unknown[], runForMs = 11_000): P
       CLAUDE_CODE_SESSION_ID: sessionId,
       WT_OUTBOUND_GUARD_DIR: stateDir,
       WT_LIVENESS_DIR: path.join(root, 'missing-liveness-dir'),
+      WT_WATCH_SKIP_JOURNAL_DIR: path.join(root, 'watch-skips'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   spawned.push(child)
+  return await collectOutputFor(child, runForMs)
+}
 
-  return await new Promise<string>((resolve, reject) => {
+function collectOutputFor(child: ChildProcessByStdio<null, Readable, Readable>, runForMs: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     let stdout = ''
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
@@ -89,7 +96,7 @@ async function runIdleRegistryScenario(records: unknown[], runForMs = 11_000): P
   })
 }
 
-type WatchPaths = { transcriptPath: string, metaPath: string }
+type WatchPaths = { transcriptPath: string, metaPath: string, journalPath: string }
 type WatchCondition = { readonly description: string, readonly complete: boolean, test: (stdout: string) => boolean }
 type WatchLineStep = { line: string | RegExp, after?: () => void }
 
@@ -136,9 +143,11 @@ type WatchScenarioOptions = {
   transcriptAfterArm?: boolean
   manualTranscript?: boolean
   afterArmed?: (paths: WatchPaths) => void
+  beforeStart?: (paths: WatchPaths) => void
   waitFor?: RegExp | WatchCondition | null
   runForMs?: number
   cwd?: string
+  journalDir?: string
 }
 
 type ResolvedScenario = WatchScenarioOptions & {
@@ -281,16 +290,20 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
     CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_SESSION_ID: '',
     WT_LIVENESS_DIR: s.livenessDir ?? path.join(root, 'missing-liveness-dir'),
+    WT_WATCH_SKIP_JOURNAL_DIR: s.journalDir ?? path.join(root, 'watch-skips'),
   }
   writeScenarioLiveness(s)
+  const paths = { transcriptPath, metaPath, journalPath: path.join(env.WT_WATCH_SKIP_JOURNAL_DIR, 'no-session.arc.jsonl') }
+  s.beforeStart?.(paths)
   const child = startWatcher(s, env, projectDir)
   return await collectWatcherOutput(child, s, () => {
     if (!s.manualTranscript && s.transcriptAfterArm) prepareTranscript()
-    s.afterArmed?.({ transcriptPath, metaPath })
+    s.afterArmed?.(paths)
   })
 }
 
 afterEach(async () => {
+  for (const timer of refreshTimers.splice(0)) clearInterval(timer)
   const exits: Promise<void>[] = []
   for (const child of spawned.splice(0)) {
     if (child.exitCode === null && child.signalCode === null) exits.push(new Promise((resolve) => child.once('exit', () => resolve())))
@@ -960,7 +973,9 @@ async function caseEmitsWAITINGONSPAWNERWithoutWaitingFor() {
 
 async function caseLabelsWAITINGONSPAWNERRecordsFromOther() {
   const dir = tmpRoot('wt-liveness-spawner-foreign')
+  const journalDir = tmpRoot('wt-watch-skips')
   const out = await runWatchScenario({
+    journalDir,
     metaName: 'pilot/local-only',
     livenessDir: dir,
     livenessRecord: {
@@ -974,9 +989,10 @@ async function caseLabelsWAITINGONSPAWNERRecordsFromOther() {
     },
     transcriptAgeMs: 0,
     transcriptAfterArm: false,
-    waitFor: /WAITING-ON-SPAWNER: /,
+    waitFor: null,
   })
-  expect(out).toContain('WAITING-ON-SPAWNER: pilot/foreign-agent — card:foreign (foreign to this project)')
+  expect(out).not.toContain('WAITING-ON-SPAWNER: pilot/foreign-agent')
+  expect(journalRows(journalDir)[0]?.line).toBe('WAITING-ON-SPAWNER: pilot/foreign-agent — card:foreign (foreign to this project)')
 }
 
 
@@ -1033,11 +1049,13 @@ async function caseKeepsLocalWAITINGONSPAWNERWordingUnchanged2() {
 
 async function caseLabelsWAITINGONSPAWNERBriefSourcedRecords() {
   const dir = tmpRoot('wt-liveness-spawner-foreign-brief')
+  const journalDir = tmpRoot('wt-watch-skips')
   const transcriptName = 'agent-brieflocal123.jsonl'
   const localRawId = /^agent-(.+)\.jsonl$/.exec(transcriptName)?.[1]
   expect(localRawId).toBe('brieflocal123')
   const foreignRawId = 'briefforeign456'
   const out = await runWatchScenario({
+    journalDir,
     transcriptName,
     metaName: null,
     livenessDir: dir,
@@ -1053,9 +1071,10 @@ async function caseLabelsWAITINGONSPAWNERBriefSourcedRecords() {
     },
     transcriptAgeMs: 0,
     transcriptAfterArm: false,
-    waitFor: /WAITING-ON-SPAWNER: /,
+    waitFor: null,
   })
-  expect(out).toContain('WAITING-ON-SPAWNER: briefforeign456 — card:brief foreign (foreign to this project)')
+  expect(out).not.toContain('WAITING-ON-SPAWNER: briefforeign456')
+  expect(journalRows(journalDir)[0]?.line).toBe('WAITING-ON-SPAWNER: briefforeign456 — card:brief foreign (foreign to this project)')
 }
 
 
@@ -1071,17 +1090,21 @@ function refreshSpawnerRecord(updatedAt: string) {
   }
 }
 
-function cachedRefreshSequence(dir: string) {
-  let paths: WatchPaths
+function cachedRefreshSequence() {
   const waiting = /^WAITING-ON-SPAWNER: pilot\/cached-refresh — card:refresh/
   return {
-    afterArmed: (armedPaths: WatchPaths) => { paths = armedPaths },
-    waitFor: emittedLineSequence('cached transcript refresh emissions', [
-      { line: waiting, after: () => {
-        touchFile(paths.transcriptPath, Date.now())
+    afterArmed: (paths: WatchPaths) => {
+      // A complete first scan knows only a different local name; a later poll discovers this name.
+      touchFile(paths.transcriptPath, Date.now())
+      writeFileSync(paths.metaPath, JSON.stringify({ name: 'pilot/other-local' }))
+      const timer = setInterval(() => {
+        if (!existsSync(paths.journalPath)) return
+        clearInterval(timer)
         writeFileSync(paths.metaPath, JSON.stringify({ name: 'pilot/cached-refresh' }))
-        writeFileSync(path.join(dir, `${sanitizeLivenessKey('pilot/cached-refresh')}.json`), JSON.stringify(refreshSpawnerRecord('2026-08-05T00:00:10.000Z')))
-      } },
+      }, 10)
+      refreshTimers.push(timer)
+    },
+    waitFor: emittedLineSequence('cached transcript refresh emissions', [
       { line: waiting },
     ]),
     runForMs: 25_000,
@@ -1096,12 +1119,11 @@ async function caseRefreshesTheCachedLocalTranscriptIdsWhen() {
     livenessRecord: refreshSpawnerRecord('2026-08-05T00:00:00.000Z'),
     transcriptAgeMs: 0,
     manualTranscript: true,
-    ...cachedRefreshSequence(dir),
+    ...cachedRefreshSequence(),
   })
 
   const waitingLines = out.split('\n').filter((line) => line.startsWith('WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh'))
   expect(waitingLines).toEqual([
-    'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh (foreign to this project)',
     'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh',
   ])
 }
@@ -1128,8 +1150,11 @@ async function caseKeepsTheSameEmissionCountWhileLabeling() {
     worktree: null,
     updatedAt: '2026-08-05T00:00:00.000Z',
   }))
+  writeFileSync(path.join(dir, 'foreign-count.json'), JSON.stringify(waitingRecord('brief', 'foreign-count')))
+  const journalDir = tmpRoot('wt-count-skips')
 
   const out = await runWatchScenario({
+    journalDir,
     metaName: 'pilot/local-count',
     livenessDir: dir,
     transcriptAgeMs: 0,
@@ -1140,6 +1165,7 @@ async function caseKeepsTheSameEmissionCountWhileLabeling() {
 
   const emissionCount = out.split('\n').filter((line) => /^(WAITING-ON-SPAWNER|UNCORRELATABLE): /.test(line)).length
   expect(emissionCount).toBe(2)
+  expect(journalRows(journalDir).filter((row) => row.reason === 'foreign-complete-scan')).toHaveLength(1)
   expect(out).toContain('UNCORRELATABLE: mission:uncorrelated count — liveness file declares no correlation key, cannot be matched to a transcript (project unknown)')
   // Windows worst 7521 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
 }
@@ -1258,19 +1284,103 @@ describe('wt-arc-watch liveness integration', () => {
 
   it('emits WAITING-ON-SPAWNER without waiting for transcript staleness', caseEmitsWAITINGONSPAWNERWithoutWaitingFor, 12_000)
 
-  it('labels WAITING-ON-SPAWNER records from other projects on the same line', caseLabelsWAITINGONSPAWNERRecordsFromOther, 12_000)
+  it('journals foreign name-sourced WAITING-ON-SPAWNER records on a complete scan', caseLabelsWAITINGONSPAWNERRecordsFromOther, 12_000)
 
   it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own delegates', caseKeepsLocalWAITINGONSPAWNERWordingUnchanged, 12_000)
 
   it('keeps local WAITING-ON-SPAWNER wording unchanged for this project\'s own brief-sourced delegates', caseKeepsLocalWAITINGONSPAWNERWordingUnchanged2, 12_000)
 
-  it('labels WAITING-ON-SPAWNER brief-sourced records from other projects on the same line', caseLabelsWAITINGONSPAWNERBriefSourcedRecords, 12_000)
+  it('journals foreign brief-sourced WAITING-ON-SPAWNER records on a complete scan', caseLabelsWAITINGONSPAWNERBriefSourcedRecords, 12_000)
 
   it('refreshes the cached local transcript ids when a newly-seen project transcript becomes part of the baseline', caseRefreshesTheCachedLocalTranscriptIdsWhen, 32_000)
 
-  it('keeps the same emission count while labeling uncorrelatable records as project unknown', caseKeepsTheSameEmissionCountWhileLabeling, 19_000)
+  it('filters only proven foreign waits while local waits and project-unknown records still fire', caseKeepsTheSameEmissionCountWhileLabeling, 19_000)
 
   it('emits UNCORRELATABLE once per distinct updatedAt for tier-none records', caseEmitsUNCORRELATABLEOncePerDistinctUpdatedAtFor, 32_000)
+})
+
+type SkipRow = { reason: string, line: string }
+function journalRows(dir: string): SkipRow[] {
+  const file = path.join(dir, 'no-session.arc.jsonl')
+  return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []
+}
+function waitingRecord(agentIdSource = 'brief', agentId = 'foreign-wait') {
+  return { agentIdSource, agentId, scope: 'mission:waiting', complete: false, waitingOn: 'spawner', worktree: null, updatedAt: '2026-08-05T00:00:00.000Z' }
+}
+function foreignOptions() {
+  return { livenessDir: tmpRoot('wt-foreign-wait'), livenessFileName: 'foreign.json', livenessRecord: waitingRecord(),
+    transcriptAgeMs: 0, transcriptAfterArm: false, staleMinutes: 10, journalDir: tmpRoot('wt-foreign-journal') }
+}
+
+describe('arc wake filtering safety', () => {
+  it('an incomplete current scan still emits a labelled foreign wait', async () => {
+    const options = foreignOptions()
+    const out = await runWatchScenario({ ...options, beforeStart: ({ transcriptPath }) => {
+      const session = path.resolve(path.dirname(transcriptPath), '../../unreadable-session')
+      mkdirSync(session, { recursive: true })
+      // ENOTDIR makes this session unenumerable without POSIX permission assumptions.
+      writeFileSync(path.join(session, 'subagents'), 'not a directory')
+    }, waitFor: /WAITING-ON-SPAWNER: foreign-wait/ })
+    expect(out).toContain('WAITING-ON-SPAWNER: foreign-wait — mission:waiting (foreign to this project)')
+    expect(journalRows(options.journalDir)).toEqual([])
+  })
+  it('a malformed local name meta cannot prove foreign ownership', async () => {
+    const options = foreignOptions()
+    const out = await runWatchScenario({ ...options, livenessRecord: waitingRecord('name', 'pilot/local'),
+      beforeStart: ({ metaPath }) => writeFileSync(metaPath, '{malformed'), waitFor: /WAITING-ON-SPAWNER: pilot\/local/ })
+    expect(out).toContain('WAITING-ON-SPAWNER: pilot/local — mission:waiting (project unknown)')
+    expect(journalRows(options.journalDir)).toEqual([])
+  })
+  it('journal failure emits the labelled foreign line', async () => {
+    const options = foreignOptions()
+    const blocked = path.join(options.journalDir, 'blocked')
+    writeFileSync(blocked, 'not a directory')
+    const out = await runWatchScenario({ ...options, journalDir: blocked, waitFor: /WAITING-ON-SPAWNER: foreign-wait/ })
+    expect(out).toContain('WAITING-ON-SPAWNER: foreign-wait — mission:waiting (foreign to this project)')
+  })
+})
+
+describe('arc wake filtering safety: journal markers', () => {
+  it('journals one entry per marker across three polls, and journals a new marker again', async () => {
+    const options = foreignOptions()
+    let polls = 0
+    const out = await runWatchScenario({ ...options, waitFor: null, runForMs: 16_000, afterArmed: ({ journalPath }) => {
+      const timer = setInterval(() => {
+        if (!existsSync(journalPath) || polls++) return
+        writeFileSync(path.join(options.livenessDir, 'foreign.json'), JSON.stringify({ ...waitingRecord(), updatedAt: '2026-08-05T00:00:10.000Z' }))
+      }, 6_000)
+      refreshTimers.push(timer)
+    } })
+    expect(out).not.toContain('WAITING-ON-SPAWNER: foreign-wait')
+    expect(journalRows(options.journalDir)).toHaveLength(2)
+  }, 20_000)
+})
+
+describe('arc wake filtering safety: observer transcripts', () => {
+  it.each([false, true])('observer=%s: STALE silence is journaled, regular silence still wakes', async (isObserver) => {
+    const journalDir = tmpRoot('wt-observer-journal')
+    const out = await runWatchScenario({ journalDir, meta: { isObserver }, waitFor: null })
+    if (isObserver) {
+      expect(out).not.toContain('STALE:')
+      expect(journalRows(journalDir)).toEqual([{ ...journalRows(journalDir)[0], reason: 'observer-transcript', line: 'STALE: watch-session/agent-under-test.jsonl — no write for 0+ min' }])
+    } else expect(out).toContain('STALE: watch-session/agent-under-test.jsonl')
+  }, 12_000)
+  it('unreadable observer metadata fails toward STALE', async () => {
+    const out = await runWatchScenario({ afterArmed: ({ metaPath }) => writeFileSync(metaPath, '{malformed') })
+    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl')
+  })
+  it('observer IDLE-MID-MISSION is journaled and a failed observer journal still emits', async () => {
+    const options = foreignOptions()
+    const settings = { ...options, transcriptAfterArm: true, staleMinutes: 0, meta: { isObserver: true }, livenessFileName: 'under-test.json',
+      livenessRecord: { ...waitingRecord('brief', 'under-test'), waitingOn: 'none' }, waitFor: null }
+    const out = await runWatchScenario(settings)
+    expect(out).not.toContain('IDLE-MID-MISSION:')
+    expect(journalRows(options.journalDir)[0]?.line).toContain('IDLE-MID-MISSION:')
+    const blocked = path.join(options.journalDir, 'blocked')
+    writeFileSync(blocked, '')
+    const fallback = await runWatchScenario({ ...settings, journalDir: blocked, waitFor: /IDLE-MID-MISSION:/ })
+    expect(fallback).toContain('IDLE-MID-MISSION:')
+  }, 20_000)
 })
 
 describe('test harness sanity', () => {

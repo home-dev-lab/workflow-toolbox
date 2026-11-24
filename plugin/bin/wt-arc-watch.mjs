@@ -56,6 +56,8 @@ import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs, finishe
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
+import { transcriptLocality, isProvenForeign } from './lib/arc-watch-ownership.mjs'
+import { skipJournalPath, recordSkippedWake } from './lib/watch-skip-journal.mjs'
 import { announceable, classifyRelays, dueRelays, eventBudget, readAgents, readNewMain, readThrottle, writeThrottle, writeResumed } from './lib/delegate-wake.mjs'
 import { restartEvidence } from './lib/host/delegate-wake-restart.mjs'
 import { acknowledgementCommand, claimDecision, claimOrphan, hasDecision, settleAged, unsettled } from './lib/host/delegate-wake-decisions.mjs'
@@ -458,27 +460,26 @@ function isAccountedForByStop(name, modifiedAt) {
 // take ~710 ms, which would block the watcher's event loop every 60s to recompute an identical
 // answer. The two call sites below are the only ones, and both sit where the baseline changes.
 function ownTranscriptIds(transcriptsMap) {
-  const ids = { brief: new Set(), name: new Set() }
+  const ids = { brief: new Set(), name: new Set(), nameComplete: true }
   for (const transcriptName of transcriptsMap.keys()) {
     const slash = transcriptName.indexOf('/')
-    if (slash < 0) continue
+    if (slash < 0) { ids.nameComplete = false; continue }
     const sessionName = transcriptName.slice(0, slash)
     const transcriptFile = transcriptName.slice(slash + 1)
     const rawId = TRANSCRIPT_RAW_ID_RE.exec(transcriptFile)?.[1]
     if (rawId) ids.brief.add(rawId)
     const meta = readTranscriptMeta(sessionName, transcriptFile)
-    if (typeof meta?.name === 'string' && meta.name) ids.name.add(meta.name)
+    if (typeof meta?.name === 'string' && meta.name.trim()) ids.name.add(meta.name)
+    else ids.nameComplete = false
   }
   return ids
 }
 
 function projectScopeLabel(record, transcriptIds) {
-  if (record.agentIdSource === 'none') return ' (project unknown)'
-  let isLocal
-  if (record.agentIdSource === 'brief') isLocal = transcriptIds.brief.has(record.agentId)
-  else if (record.agentIdSource === 'name') isLocal = transcriptIds.name.has(record.agentId)
-  else isLocal = transcriptIds.brief.has(record.agentId) || transcriptIds.name.has(record.agentId)
-  return isLocal ? '' : ' (foreign to this project)'
+  // Proven foreign waits are journaled on complete scans; uncertainty still wakes with a label.
+  const locality = transcriptLocality(record, transcriptIds)
+  if (locality === 'unknown') return ' (project unknown)'
+  return locality === 'local' ? '' : ' (foreign to this project)'
 }
 
 // The gate this file's header describes: has THIS session (identified by the
@@ -486,6 +487,17 @@ function projectScopeLabel(record, transcriptIds) {
 // delegated at least once? `currentSessionId` empty means the check cannot be
 // made — fail toward coverage (arm immediately) rather than toward silence.
 const currentSessionId = process.env.CLAUDE_CODE_SESSION_ID || ''
+const skipPath = skipJournalPath({ env: process.env, sessionId: currentSessionId, watcher: 'arc' })
+function skipWake(reason, line) {
+  return recordSkippedWake({ watcher: 'arc', reason, line, path: skipPath })
+}
+
+function emitTranscriptSilence(name, line, budget) {
+  const parts = splitTranscriptName(name)
+  const meta = parts && readTranscriptMeta(parts.sessionName, parts.transcriptFile)
+  if (meta?.isObserver === true && skipWake('observer-transcript', line)) return
+  budget.emit(line)
+}
 const GATE_POLL_MS = Math.min(pollSeconds * 1000, 30_000)
 
 async function ownSessionHasDelegated() {
@@ -595,6 +607,7 @@ const announcedStale = new Set()
 const announcedGone = new Set()
 const announcedFuture = new Set()
 const announcedWaitingOnSpawner = new Map()
+const skippedWaitingOnSpawner = new Map()
 const announcedUncorrelatable = new Map()
 const announcedIdle = new Set()
 // Reports present at arming are already known to the user; only NEW ones matter.
@@ -642,12 +655,32 @@ function sweepIdleRegistry(budget) {
   })
 }
 
-async function sweepWaitingOnSpawner(budget, transcriptIds) {
+function handleWaitingOnSpawner(budget, transcriptIds, scanComplete, key, record) {
+  const marker = record.updatedAt || 'unknown'
+  const line = `WAITING-ON-SPAWNER: ${safeName(record.agentId)} — ${safeName(record.scope)}${projectScopeLabel(record, transcriptIds)}`
+  if (isProvenForeign(record, transcriptIds, scanComplete)) {
+    if (skippedWaitingOnSpawner.get(key) === marker) return
+    if (skipWake('foreign-complete-scan', line)) {
+      skippedWaitingOnSpawner.set(key, marker)
+      return
+    }
+  }
+  if (announcedWaitingOnSpawner.get(key) === marker) return
+  budget.emit(line)
+  announcedWaitingOnSpawner.set(key, marker)
+}
+
+function forgetKeysNotIn(map, keep) {
+  for (const key of map.keys()) {
+    if (!keep.has(key)) map.delete(key)
+  }
+}
+
+async function sweepWaitingOnSpawner(budget, transcriptIds, scanComplete) {
   let entries
   try {
     entries = await readdir(LIVENESS_DIR, { withFileTypes: true })
-  } catch (error) {
-    if (error?.code === 'ENOENT') return
+  } catch {
     return
   }
   const stillWaiting = new Set()
@@ -657,15 +690,10 @@ async function sweepWaitingOnSpawner(budget, transcriptIds) {
     const record = await readLivenessRecord(LIVENESS_DIR, key)
     if (!record || record.complete === true || record.waitingOn !== 'spawner') continue
     stillWaiting.add(key)
-    const marker = record.updatedAt || 'unknown'
-    if (announcedWaitingOnSpawner.get(key) !== marker) {
-      budget.emit(`WAITING-ON-SPAWNER: ${safeName(record.agentId)} — ${safeName(record.scope)}${projectScopeLabel(record, transcriptIds)}`)
-      announcedWaitingOnSpawner.set(key, marker)
-    }
+    handleWaitingOnSpawner(budget, transcriptIds, scanComplete, key, record)
   }
-  for (const key of announcedWaitingOnSpawner.keys()) {
-    if (!stillWaiting.has(key)) announcedWaitingOnSpawner.delete(key)
-  }
+  forgetKeysNotIn(announcedWaitingOnSpawner, stillWaiting)
+  forgetKeysNotIn(skippedWaitingOnSpawner, stillWaiting)
 }
 
 async function sweepUncorrelatable(budget, transcriptIds) {
@@ -915,11 +943,11 @@ while (true) {
           } else if (liveness) {
             // The agent's own "not complete" outranks a clean end_turn: an agent that ended its
             // turn waiting on a background task that never wakes it ends cleanly too.
-            budget.emit(`IDLE-MID-MISSION: ${safeName(name)} — declared not complete, no write for ${staleMinutes}+ min`)
+            emitTranscriptSilence(name, `IDLE-MID-MISSION: ${safeName(name)} — declared not complete, no write for ${staleMinutes}+ min`, budget)
           } else if (!transcriptEndedCleanly(name) && !metaSaysFinished(name)) {
             // A terminal end_turn, or the harness's own finished meta flag, with no declaration is a
             // clean finish; anything else stays loud.
-            budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
+            emitTranscriptSilence(name, `STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`, budget)
           }
         }
         announcedStale.add(name)
@@ -946,7 +974,7 @@ while (true) {
     previousReports = currentReports
   }
 
-  await sweepWaitingOnSpawner(budget, previousTranscriptIds)
+  await sweepWaitingOnSpawner(budget, previousTranscriptIds, currentTranscripts !== undefined && currentComplete === true)
   await sweepUncorrelatable(budget, previousTranscriptIds)
 
   budget.close()
