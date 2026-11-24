@@ -127,7 +127,10 @@ export async function admissionScenario(url = lockUrl) {
 }
 
 async function admissionUnchanged() {
-  assert.deepEqual(await admissionScenario(), ['light', 'heavy'], 'fixed admission scenario must match the original implementation')
+  const reference = process.env.SUITE_RESOURCE_REFERENCE_LOCK_MODULE ?? lockUrl
+  const expected = await admissionScenario(reference)
+  assert.deepEqual(await admissionScenario(), expected, 'fixed admission scenario must match the original implementation')
+  assert.deepEqual(expected, ['light', 'heavy'], 'reference admission must preserve bounded light bypass')
 }
 
 function runChild(source, timeout = 3000) {
@@ -311,8 +314,8 @@ async function samplerStopFailure() {
     const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
     assert.equal(events.at(-1).event, 'release')
     assert.equal(events.at(-1).exit, 7)
-    assert.equal(events.at(-1).resources.peakCores, 'unknown')
-    assert.equal(events.at(-1).resources.peakMemMiB, 'unknown')
+    assert.equal(events.at(-1).resources.peakCores, null)
+    assert.equal(events.at(-1).resources.peakMemMiB, null)
     assert.deepEqual(events.at(-1).resources.unknownReasons, ['sampler-stop-failed'])
     const { validSuiteResources } = await import(resourceUrl)
     assert.equal(validSuiteResources(events.at(-1).resources), true, 'sampler error must preserve a valid unknown resource row')
@@ -401,11 +404,176 @@ async function acquisitionDoesNotSpawn() {
 async function heldLeaseTimerExits() {
   const root = scratch()
   try {
-    await runChild(`import { acquireSuiteLock } from ${JSON.stringify(lockUrl)};
+    await runChild(`import assert from 'node:assert/strict';
+      import { acquireSuiteLock } from ${JSON.stringify(lockUrl)};
       import { createSuiteResourceSampler } from ${JSON.stringify(hostUrl)};
+      let initial;
       await acquireSuiteLock({root:${JSON.stringify(root)},env:{},argv:['held-fixture'],
-        resourceSampler:()=>createSuiteResourceSampler({intervalMs:10,readTree:async()=>({processes:[${JSON.stringify(row(1, 0, 0, 1))}]})})});
-      await new Promise(resolve=>setTimeout(resolve,30));`)
+        resourceSampler:()=>createSuiteResourceSampler({schedule:callback=>(initial=setTimeout(callback,10000)),
+          readTree:async()=>({processes:[${JSON.stringify(row(1, 0, 0, 1))}]})})});
+      assert.equal(initial.hasRef(),false,'initial census timer must be unrefed while a lease is held');`)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
+async function retainedIdentityLoss() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const mode of ['reused', 'absent', 'regressed', 'empty-transfer']) {
+    let census = 0
+    const read = async (file) => {
+      if (file.endsWith('/status')) return 'VmRSS: 2048 kB\n'
+      // The parent has consumed 1000 ms BEFORE reaping the former 1000 ms child.
+      if (file === '/proc/1/stat') return procStat(1, 0, census ? 100 : 0)
+      if (!census) return procStat(2, 1, mode === 'empty-transfer' ? 0 : 100)
+      return mode === 'regressed' ? procStat(2, 1, 50) : procStat(2, 9, 0, 99)
+    }
+    const reader = createSuiteResourceReader({ platform: 'linux', read, run: async () => '100',
+      list: async () => census && mode === 'absent' ? ['1'] : ['1', '2'] })
+    const fake = await fakeSampler(reader)
+    census++; fake.time(1000); await fake.sampler.sample()
+    const result = fake.sampler.stop()
+    assert.equal(result.peakCores, 'unknown', `${mode}: unexplained retained identity loss must not yield plausible CPU`)
+    assert.ok(result.unknownReasons.includes('census-incoherent'), `${mode}: retained identity loss must name census-incoherent`)
+  }
+}
+
+async function malformedResourceSchema() {
+  const { finishSuiteResourceSample } = await import(new URL('../../plugin/bin/lib/suite-lock-journal-lifecycle.mjs', import.meta.url))
+  const normalize = (value) => finishSuiteResourceSample({ resourceStarted: performance.now(), resourceSampler: { stop: () => value } }, {}).resources
+  for (const value of [null, { ...resources(), unknownReasons: 'abc' }, { ...resources(), peakCores: Infinity },
+    { ...resources(), peakMemMiB: -1 }, { ...resources(), unknownReasons: [42] }, { get peakCores() { throw new Error('getter failure') } }]) {
+    assertNormalizedResources(normalize(value), false)
+  }
+  const hooked = Object.assign(Object.create({ toJSON() { throw new Error('prototype hook must not run') } }), resources())
+  assert.deepEqual(normalize(hooked), resources(), 'normalization must strip a sampler prototype and its serialization hooks')
+  const missing = normalize(resources('unknown', 'unknown'))
+  assert.equal(missing.peakCores, null, 'unknown sampler CPU must normalize to null')
+  assert.equal(missing.peakMemMiB, null, 'unknown sampler memory must normalize to null')
+  const { classifySuiteJob } = await import(resourceUrl)
+  assert.equal(classifySuiteJob([missing, missing, missing], 'heavy').basis, 'declared', 'null peaks must never become measured zeroes')
+}
+
+async function observedReap() {
+  const { createSuiteResourceReader } = await hostModule()
+  let census = 0
+  const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100',
+    list: async () => census ? ['1'] : ['1', '2'],
+    read: async (file) => file.endsWith('/status') ? 'VmRSS: 2048 kB\n'
+      : file === '/proc/1/stat' ? procStat(1, 0, census ? 50 : 0, 1, census ? 100 : 0) : procStat(2, 1, 100) })
+  const fake = await fakeSampler(reader)
+  census++; fake.time(1000); await fake.sampler.sample()
+  assert.equal(fake.sampler.stop().peakCores, 0.5, 'observed child-counter transfer must keep a coherent interval measurable')
+}
+
+async function darwinRetainedIdentityLoss() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const mode of ['reused', 'absent', 'regressed']) {
+    let census = 0
+    const run = async () => {
+      const parent = `1 0 1024 00:0${census}.00 Tue Nov 24 10:00:00 2026\n`
+      if (census && mode === 'absent') return parent
+      const child = census && mode === 'reused' ? '2 9 1024 00:00.00 Tue Nov 24 10:00:02 2026\n'
+        : `2 1 1024 00:0${census && mode === 'regressed' ? 0 : 1}.00 Tue Nov 24 10:00:01 2026\n`
+      return parent + child
+    }
+    const fake = await fakeSampler(createSuiteResourceReader({ platform: 'darwin', run }))
+    census++; fake.time(1000); await fake.sampler.sample()
+    const result = fake.sampler.stop()
+    assert.equal(result.peakCores, 'unknown', `${mode}: macOS retained identity loss must not yield plausible CPU`)
+    assert.ok(result.unknownReasons.includes('census-incoherent'), `${mode}: macOS retained identity loss must name census-incoherent`)
+  }
+}
+
+async function clockLookupRecovers() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const failure of [new Error('transient clock failure'), 'garbage', '0', '-1', '1.5']) {
+    let calls = 0
+    const run = async () => { calls++; if (calls > 1) return '100'; if (failure instanceof Error) throw failure; return failure }
+    const options = { platform: 'linux', run, list: async () => ['1'],
+      read: async (file) => file.endsWith('/status') ? 'VmRSS: 1024 kB\n' : procStat(1, 0, 100) }
+    assert.equal((await createSuiteResourceReader(options)(1)).unknown, 'clock-ticks-unavailable')
+    const recovered = await createSuiteResourceReader(options)(1)
+    assert.equal(calls, 2, 'a failed clock lookup must be retried by the next reader')
+    assert.equal(recovered.processes[0].cpuMs, 1000, 'the recovered clock source must produce a measurement')
+  }
+}
+
+async function firstCensusIsImmediate() {
+  const { createSuiteResourceSampler } = await hostModule()
+  const scheduled = []
+  let reads = 0
+  const sampler = createSuiteResourceSampler({ readTree: async () => { reads++; return { processes: [row(1, 0, 0, 1)] } },
+    schedule: (callback, delay) => { scheduled.push({ callback, delay }); return { unref() {} } }, cancel: () => {} })
+  try {
+    assert.equal(reads, 0, 'the initial census must never run synchronously inside acquisition')
+    assert.equal(scheduled[0].delay, 0, 'a short job must get its first census before the first one-second tick')
+    await scheduled[0].callback()
+    assert.equal(reads, 1)
+    assert.equal(scheduled[1].delay, 1000, 'the later census cadence must remain one second')
+  } finally { sampler.stop() }
+  await runChild(`import assert from 'node:assert/strict';
+    import {createSuiteResourceSampler} from ${JSON.stringify(hostUrl)};
+    let sampler;
+    await new Promise(resolve=>{
+      const deadline=setTimeout(()=>assert.fail('short job must be observed before the first one-second tick'),900);
+      sampler=createSuiteResourceSampler({readTree:async()=>{
+        clearTimeout(deadline);resolve();return {processes:[${JSON.stringify(row(1, 0, 0, 1))}]};
+      }});
+    });sampler.stop();`)
+}
+
+async function malformedSamplerRelease() {
+  const { acquireSuiteLock, releaseSuiteLock, readSuiteLock } = await import(lockUrl)
+  for (const valid of [true, false]) {
+    const circular = valid ? resources() : {}
+    circular.self = circular
+    const resourceSampler = () => ({ stop: () => circular })
+    const root = scratch()
+    try {
+      const lease = await acquireSuiteLock({ root, env: {}, resourceSampler })
+      assert.doesNotThrow(() => releaseSuiteLock(lease), 'circular sampler output must not block file lease release')
+      assert.equal(readSuiteLock({ root }).held, false, 'malformed sampler output must remove the held lease')
+      const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+      assert.equal(events.at(-1).event, 'release', 'circular sampler output must not erase the terminal journal row')
+      assertNormalizedResources(events.at(-1).resources, valid)
+      let wire
+      let released = false
+      assert.doesNotThrow(() => releaseSuiteLock({ broker: 'fixture', resourceStarted: performance.now(), resourceSampler: resourceSampler(),
+        markReleased: () => { released = true }, socket: { end: (line) => { wire = line } } }), 'circular sampler output must not block broker release')
+      assert.equal(released, true, 'circular sampler output must release the broker lease')
+      assert.equal(typeof wire, 'string', 'circular sampler output must end the broker socket')
+      assertNormalizedResources(JSON.parse(wire.trim().split('\n')[1]).resources, valid)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  }
+}
+
+function assertNormalizedResources(value, valid) {
+  assert.equal(Object.getPrototypeOf(value), Object.prototype)
+  assert.deepEqual(Object.keys(value).sort(), ['peakCores', 'peakMemMiB', 'unknownReasons', 'wallMs'])
+  assert.ok([value.peakCores, value.peakMemMiB, value.wallMs].every((number) => number === null || Number.isFinite(number)), 'normalized telemetry must contain finite numbers or null')
+  assert.ok(value.unknownReasons.every((reason) => typeof reason === 'string'))
+  if (valid) assert.deepEqual(value, resources())
+  else assert.deepEqual(value.unknownReasons, ['resources-unserializable'])
+}
+
+async function telemetrySerializationFailure() {
+  const { finishBrokerLease } = await import(new URL('../../plugin/bin/lib/suite-lock-journal-lifecycle.mjs', import.meta.url))
+  const { observeBrokerJournalSocket, acquireBrokerJournalLease, releaseBrokerJournalLease } = await import(new URL('../../plugin/bin/lib/host/suite-lock-broker-journal.mjs', import.meta.url))
+  const root = scratch()
+  try {
+    const socket = new EventEmitter()
+    let ended = false
+    socket.write = () => true
+    socket.end = (wire) => { ended = true; socket.emit('data', wire) }
+    const handlers = observeBrokerJournalSocket(socket, { onWait: () => {} })
+    const lease = await acquireBrokerJournalLease({ root, env: {}, argv: ['sandbox', 'label', 'test'], ...handlers })
+    socket.write('granted fixture\n')
+    const circular = {}; circular.self = circular
+    assert.doesNotThrow(() => finishBrokerLease({ socket }, { exit: 7, served: true, resources: circular }), 'telemetry serialization failure must still end the socket')
+    assert.equal(ended, true, 'telemetry serialization failure must not suppress socket.end')
+    assert.equal(releaseBrokerJournalLease(lease), true, 'telemetry serialization failure must release the host lease')
+    const events = readFileSync(join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    assert.equal(events.at(-1).exit, 7)
+    assert.deepEqual(events.at(-1).resources.unknownReasons, ['resources-unserializable'], 'the host release row must name telemetry serialization failure')
   } finally { rmSync(root, { recursive: true, force: true }) }
 }
 
@@ -431,6 +599,14 @@ export const resourceCases = [
   ['PID reuse between stat and RSS drops the sample', reusedPidRss],
   ['acquisition defers platform commands and caches clock ticks', acquisitionDoesNotSpawn],
   ['held lease sampler timer never keeps the child alive', heldLeaseTimerExits],
+  ['retained identity reuse, disappearance and regression are incoherent', retainedIdentityLoss],
+  ['observed reap into parent counters stays measurable', observedReap],
+  ['failed clock lookups recover across readers', clockLookupRecovers],
+  ['first census runs asynchronously before the one-second tick', firstCensusIsImmediate],
+  ['circular sampler output cannot block terminal release', malformedSamplerRelease],
+  ['telemetry serialization failure preserves terminal release and its reason', telemetrySerializationFailure],
+  ['malformed sampler schemas become named unknown and hooks are stripped', malformedResourceSchema],
+  ['macOS retained identity loss is named incoherent', darwinRetainedIdentityLoss],
 ]
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

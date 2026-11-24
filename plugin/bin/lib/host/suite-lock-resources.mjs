@@ -3,7 +3,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { createProcfs } from './procfs.mjs'
 import { unknownSuiteResources } from '../suite-lock-resources.mjs'
 
-// At most one asynchronous census per second, never overlapping or awaited on release.
+// An asynchronous first census, then at most one per second; never awaited on release.
 /** @knipTestSeam Sampling-interval check uses a computed module import. */
 export const SUITE_RESOURCE_SAMPLE_MS = 1000
 const SUITE_RESOURCE_COMMAND_TIMEOUT_MS = 500
@@ -27,7 +27,8 @@ function linuxStat(pid, stat, ticks) {
   const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)
   const [ppid, user, system, birth, childUser, childSystem] = [fields[1], fields[11], fields[12], fields[19], fields[13], fields[14]].map(Number)
   if (fields.length < 20 || ![ppid, user, system, birth, childUser, childSystem].every(nonnegative)) throw new Error('invalid stat')
-  return { pid: Number(pid), ppid, identity: `${pid}:${birth}`, cpuMs: (user + system + childUser + childSystem) / ticks * 1000 }
+  return { pid: Number(pid), ppid, identity: `${pid}:${birth}`, cpuMs: (user + system + childUser + childSystem) / ticks * 1000,
+    childCpuMs: (childUser + childSystem) / ticks * 1000 }
 }
 
 async function linuxRows(procfs, ticks, signal) {
@@ -50,20 +51,47 @@ function linuxClockTicks(run) {
   // A lease's abort must not poison the process-wide cache. The command has its own timeout.
   if (!clockTickReads.has(run)) clockTickReads.set(run, Promise.resolve()
     .then(() => run('getconf', ['CLK_TCK']))
-    .then((text) => Number(text.trim())).catch(() => NaN))
+    .then((text) => Number(text.trim())).catch(() => NaN)
+    .then((ticks) => {
+      if (!Number.isSafeInteger(ticks) || ticks <= 0) clockTickReads.delete(run)
+      return ticks
+    }))
   return clockTickReads.get(run)
+}
+
+function coherentRetainedRows(rows, missing, retained) {
+  const current = new Map(rows.map((row) => [row.identity, row]))
+  const previous = new Map([...retained.values()].map((row) => [row.pid, row]))
+  const transfers = new Map()
+  for (const [identity, before] of retained) {
+    if (missing.has(String(before.pid))) return false
+    const after = current.get(identity)
+    if (after) {
+      if (after.cpuMs < before.cpuMs || after.childCpuMs < before.childCpuMs) return false
+      continue
+    }
+    const parent = previous.get(before.ppid)
+    if (!parent || !current.has(parent.identity)) return false
+    transfers.set(parent.identity, (transfers.get(parent.identity) ?? 0) + before.cpuMs)
+  }
+  // Only observed child-counter transfers explain a vanished identity; own CPU does not.
+  return [...transfers].every(([identity, cpu]) => {
+    const transferred = current.get(identity).childCpuMs - retained.get(identity).childCpuMs
+    return transferred > 0 && transferred >= cpu
+  })
 }
 
 async function linuxResourceTree(procfs, ticks, pid, retained, signal) {
   const { rows, missing } = await linuxRows(procfs, ticks, signal)
   // Separate stat reads cannot prove a coherent transfer to the parent's child counters.
-  if ([...retained].some((identity) => missing.has(identity.split(':')[0]))) return unknown('census-incoherent')
+  if (!coherentRetainedRows(rows, missing, retained)) return unknown('census-incoherent')
   const processes = selectFamily(rows, pid, retained)
   for (const process of processes) {
     const options = { encoding: 'utf8', signal }
     const status = await procfs.readProcessStatus(process.pid, options)
     const current = linuxStat(process.pid, await procfs.readProcessStat(process.pid, options), ticks)
     if (current.identity !== process.identity) return unknown('pid-reused')
+    if (current.cpuMs < process.cpuMs || current.childCpuMs !== process.childCpuMs) return unknown('census-incoherent')
     const rss = /^VmRSS:\s+(\d+)\s+kB\s*$/m.exec(status)
     if (!rss) throw new Error('RSS unavailable')
     process.memMiB = Number(rss[1]) / 1024
@@ -88,7 +116,7 @@ function selectFamily(rows, pid, retained) {
   }
   const family = rows.filter((row) => selected.has(row.pid))
   retained.clear()
-  for (const row of family) retained.add(row.identity)
+  for (const row of family) retained.set(row.identity, row)
   return family
 }
 
@@ -110,17 +138,26 @@ function darwinRows(text) {
   })
 }
 
+function darwinResourceTree(rows, pid, retained) {
+  const current = new Map(rows.map((row) => [row.identity, row]))
+  // ps -S exposes no separate child counters with which to prove a reap transfer.
+  if ([...retained].some(([identity, before]) => !current.has(identity) || current.get(identity).cpuMs < before.cpuMs)) {
+    return unknown('census-incoherent')
+  }
+  return { processes: selectFamily(rows, pid, retained) }
+}
+
 /** Linux: procfs CPU ticks + VmRSS; macOS: bounded ps census; Windows: named unknown.
  * A missing/denied/malformed source is never replaced by a plausible zero.
  * @knipTestSeam Computed import in suite-lock-resources.selftest.mjs.
  */
 export function createSuiteResourceReader({ platform = process.platform, read = readFile, list = readdir, run = runResourceCommand } = {}) {
   const procfs = createProcfs({ platform, readFile: read, readdir: list })
-  const retained = new Set()
+  const retained = new Map()
   return async (pid, { signal } = {}) => {
     if (!['linux', 'darwin'].includes(platform)) return unknown('unsupported-platform')
     try {
-      if (platform === 'darwin') return { processes: selectFamily(darwinRows(await run('/bin/ps', ['-S', '-axo', 'pid=,ppid=,rss=,time=,lstart='], { signal })), pid, retained) }
+      if (platform === 'darwin') return darwinResourceTree(darwinRows(await run('/bin/ps', ['-S', '-axo', 'pid=,ppid=,rss=,time=,lstart='], { signal })), pid, retained)
       const ticks = await linuxClockTicks(run)
       if (!Number.isSafeInteger(ticks) || ticks <= 0) return unknown('clock-ticks-unavailable')
       return await linuxResourceTree(procfs, ticks, pid, retained, signal)
@@ -193,7 +230,7 @@ export function createSuiteResourceSampler({ pid = process.pid, readTree = creat
     result = sampleResult(state, Math.max(0, now() - started))
     return result
   }
-  timer = schedule(sample, intervalMs)
+  timer = schedule(sample, 0)
   timer?.unref?.()
   return { sample, stop, ready: Promise.resolve() }
 }

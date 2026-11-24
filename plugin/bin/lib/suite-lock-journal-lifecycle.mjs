@@ -8,7 +8,7 @@ import { suiteLockRankOptions } from './suite-lock-priority.mjs'
 import { suiteLockBootClock } from './host/platform.mjs'
 import { suiteSignalExit } from './host/suite-lock-signals.mjs'
 import { startSuiteResourceSampler } from './host/suite-lock-resources.mjs'
-import { unknownSuiteResources } from './suite-lock-resources.mjs'
+import { normalizeSuiteResources, unknownSuiteResources } from './suite-lock-resources.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -134,13 +134,26 @@ function holderBootStart() {
 export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString(), ...holderBootStart() })
 
 export function finishSuiteResourceSample(lease, outcome) {
+  let resources
   try {
-    const resources = lease?.resourceSampler?.stop()
-    return resources ? { ...outcome, resources } : outcome
+    resources = lease?.resourceSampler?.stop()
   } catch {
-    const wallMs = Math.max(0, performance.now() - lease.resourceStarted)
-    return { ...outcome, resources: unknownSuiteResources(wallMs, 'sampler-stop-failed') }
+    return resourceSampleFailure(lease, outcome, 'sampler-stop-failed')
   }
+  if (resources === undefined) return outcome
+  try { return { ...outcome, resources: normalizeSuiteResources(resources) } }
+  catch { return resourceSampleFailure(lease, outcome, 'resources-unserializable') }
+}
+
+function resourceSampleFailure(lease, outcome, reason) {
+  const elapsed = performance.now() - lease?.resourceStarted
+  const wallMs = Number.isFinite(elapsed) ? Math.max(0, elapsed) : null
+  return { ...outcome, resources: normalizeSuiteResources(unknownSuiteResources(wallMs, reason)) }
+}
+
+function brokerResourceFrame(outcome) {
+  try { return outcome.resources ? `${JSON.stringify({ resources: outcome.resources })}\n` : '' }
+  catch { return `${JSON.stringify({ resourcesError: 'resources-unserializable' })}\n` }
 }
 
 export function finishBrokerLease(lease, outcome) {
@@ -148,7 +161,7 @@ export function finishBrokerLease(lease, outcome) {
   if (!lease.socket.destroyed) {
     // Keep the first frame small: older hosts stop buffering after 128 characters.
     const terminal = `${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`
-    const telemetry = outcome.resources ? `${JSON.stringify({ resources: outcome.resources })}\n` : ''
+    const telemetry = brokerResourceFrame(outcome)
     lease.socket.end(terminal + telemetry)
   }
   return true

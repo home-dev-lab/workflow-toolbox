@@ -1,6 +1,6 @@
 import { acquireSuiteLock, lightRunCommand, releaseSuiteLock } from '../suite-lock.mjs'
 import { staticLaneEnabled, staticRunCommand } from '../suite-lock-static.mjs'
-import { validSuiteResources } from '../suite-lock-resources.mjs'
+import { normalizeSuiteResources, unknownSuiteResources, validSuiteResources } from '../suite-lock-resources.mjs'
 
 const callbacks = new WeakMap()
 const leases = new WeakMap()
@@ -46,6 +46,11 @@ function recordBrokerJournalMessage(state, message) {
   // Duration stays host-measured: client timings are not trusted for S history.
   if (!Number.isInteger(state.outcome.exit) && Number.isInteger(message.exit)) state.outcome = { exit: message.exit, served: message.served !== false }
   if (Number.isInteger(state.outcome.exit) && validSuiteResources(message.resources)) state.outcome.resources = message.resources
+  if (Number.isInteger(state.outcome.exit) && message.resourcesError === 'resources-unserializable') {
+    const elapsed = performance.now() - state.startedMonotonic
+    const wallMs = Number.isFinite(elapsed) ? Math.max(0, elapsed) : null
+    state.outcome.resources = normalizeSuiteResources(unknownSuiteResources(wallMs, message.resourcesError))
+  }
 }
 
 export async function acquireBrokerJournalLease(options) {

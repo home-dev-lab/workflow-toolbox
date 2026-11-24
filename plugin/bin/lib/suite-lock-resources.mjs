@@ -9,7 +9,7 @@ export const SUITE_LIGHT_MAX_CORES = 1
 export const SUITE_LIGHT_MAX_MEM_MIB = 512
 
 const measured = (value) => Number.isFinite(value) && value >= 0
-const resourceValue = (value) => value === 'unknown' || measured(value)
+const resourceValue = (value) => value === null || value === 'unknown' || measured(value)
 
 export const unknownSuiteResources = (wallMs, reason) => ({ peakCores: 'unknown', peakMemMiB: 'unknown', wallMs, unknownReasons: [reason] })
 
@@ -18,8 +18,20 @@ export const suiteResourceReleaseOutcome = (outcome) => ({ ...outcome, exit: out
 
 export function validSuiteResources(value) {
   return value && resourceValue(value.peakCores) && resourceValue(value.peakMemMiB)
-    && measured(value.wallMs) && Array.isArray(value.unknownReasons)
+    && (value.wallMs === null || measured(value.wallMs)) && Array.isArray(value.unknownReasons)
     && value.unknownReasons.every((reason) => typeof reason === 'string' && /^[a-z-]{1,64}$/.test(reason))
+}
+
+/** Copy only schema fields, dropping prototypes, toJSON hooks and unrelated cycles.
+ * Historical rows may still contain the string sentinel; new sampler rows use null.
+ */
+export function normalizeSuiteResources(value) {
+  const { peakCores, peakMemMiB, wallMs, unknownReasons } = value
+  if (!Array.isArray(unknownReasons)) throw new Error('invalid resource reasons')
+  const normalized = { peakCores: peakCores === 'unknown' ? null : peakCores,
+    peakMemMiB: peakMemMiB === 'unknown' ? null : peakMemMiB, wallMs, unknownReasons: Array.from(unknownReasons) }
+  if (!validSuiteResources(normalized)) throw new Error('invalid resource sample')
+  return normalized
 }
 
 /** Pure: runs are release-row resources, not rounded status text.
