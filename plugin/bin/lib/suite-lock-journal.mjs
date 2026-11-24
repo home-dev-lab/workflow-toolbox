@@ -6,6 +6,7 @@ import { readSuiteLockRankState } from './host/suite-lock-rank-state.mjs'
 import { readLightCounter, readP0Counter, readQueueSnapshot } from './host/suite-lock-queue.mjs'
 import { ticketIsStale } from './host/suite-lock-liveness.mjs'
 import { firstTerminalPerLease } from './suite-lock-terminal-outcome.mjs'
+import { suiteResourceClasses } from './suite-lock-resources.mjs'
 
 export function journalCommand(argv) {
   const args = Array.isArray(argv) ? argv : []
@@ -143,6 +144,11 @@ export function readSuiteLockJournal(root, { since, until } = {}) {
   return { tickets, precedence, summary: journalSummary(tickets), invalidLines, ignoredDuplicateTerminals,
     censored: tickets.filter((ticket) => ticket.censored).length,
     grantsWithoutRequest: tickets.filter((ticket) => ticket.grant && !ticket.request).length }
+}
+
+export function readSuiteResourceClasses(root) {
+  try { return suiteResourceClasses(readSuiteLockJournal(root).tickets) }
+  catch { return {} } // Advisory history must not affect broker status or admission negotiation.
 }
 
 export function suiteLockJournalCli(args, root) {

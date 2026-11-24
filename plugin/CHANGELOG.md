@@ -7,6 +7,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Suite-lock journals record sampled process-tree CPU and resident-memory peaks, wall time and exits; status reports history-based job classes without changing admission.
+
 - `wt-suite-lock run --replace <ticket-number> -- <command> [args...]` can replace a
   queued exclusive CLI command without losing its rank. The original waiter executes
   the latest command with its existing working directory, environment and output

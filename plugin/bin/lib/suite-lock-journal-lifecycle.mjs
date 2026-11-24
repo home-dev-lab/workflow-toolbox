@@ -7,6 +7,7 @@ import { staticWaitDeadline } from './suite-lock-static-deadline.mjs'
 import { suiteLockRankOptions } from './suite-lock-priority.mjs'
 import { suiteLockBootClock } from './host/platform.mjs'
 import { suiteSignalExit } from './host/suite-lock-signals.mjs'
+import { startSuiteResourceSampler } from './host/suite-lock-resources.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -111,9 +112,11 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   const deadline = staticWaitDeadline(options)
   try {
     const lease = await acquire({ ...deadline.options, [CONTEXT]: context })
-    if (lease.inherited || lease.broker) return lease
+    if (lease.inherited || lease.offloaded) return lease
+    const resourceSampler = startSuiteResourceSampler(options)
+    if (lease.broker) return { ...lease, resourceSampler }
     suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel })
-    return { ...lease, journal: context.journal, staticDomain: options.staticDomain }
+    return { ...lease, resourceSampler, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)
     journalAcquisitionFailure(context, failure, deadline.options.signal)
@@ -128,8 +131,18 @@ function holderBootStart() {
 
 export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString(), ...holderBootStart() })
 
+export function finishSuiteResourceSample(lease, outcome) {
+  const resources = lease?.resourceSampler?.stop()
+  return resources ? { ...outcome, resources } : outcome
+}
+
 export function finishBrokerLease(lease, outcome) {
   lease.markReleased?.()
-  if (!lease.socket.destroyed) lease.socket.end(`${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`)
+  if (!lease.socket.destroyed) {
+    // Keep the first frame small: older hosts stop buffering after 128 characters.
+    const terminal = `${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`
+    const telemetry = outcome.resources ? `${JSON.stringify({ resources: outcome.resources })}\n` : ''
+    lease.socket.end(terminal + telemetry)
+  }
   return true
 }

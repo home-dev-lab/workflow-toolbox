@@ -1,8 +1,10 @@
 import { acquireSuiteLock, lightRunCommand, releaseSuiteLock } from '../suite-lock.mjs'
 import { staticLaneEnabled, staticRunCommand } from '../suite-lock-static.mjs'
+import { validSuiteResources } from '../suite-lock-resources.mjs'
 
 const callbacks = new WeakMap()
 const leases = new WeakMap()
+const BROKER_JOURNAL_FRAME_LIMIT = 2048
 
 function observeHoldBound(socket, state) {
   const write = socket.write
@@ -22,18 +24,28 @@ function observeHoldBound(socket, state) {
 export function observeBrokerJournalSocket(socket, handlers) {
   const state = { text: '', outcome: { lost: true, reason: 'broker connection closed without command exit' } }
   observeHoldBound(socket, state)
-  socket.on('data', (chunk) => {
-    if (state.text.length > 128) return
-    state.text += String(chunk)
-    if (!state.text.includes('\n')) return
-    try {
-      const message = JSON.parse(state.text.slice(0, state.text.indexOf('\n')))
-      // Duration stays host-measured (grant to release): a sandboxed client's own timing is not trusted for S history.
-      if (Number.isInteger(message.exit) && !state.expired) state.outcome = { exit: message.exit, served: message.served !== false }
-    } catch { /* An invalid terminal message remains a lost lease. */ }
-  })
+  socket.on('data', (chunk) => readBrokerJournalChunk(state, chunk))
   callbacks.set(handlers.onWait, state)
   return handlers
+}
+
+function readBrokerJournalChunk(state, chunk) {
+  const lines = (state.text + String(chunk)).split('\n')
+  state.text = lines.pop()
+  for (const line of lines) {
+    if (state.overflow) { state.overflow = false; continue }
+    if (line.length > BROKER_JOURNAL_FRAME_LIMIT) continue
+    try { recordBrokerJournalMessage(state, JSON.parse(line)) }
+    catch { /* An invalid frame supplies no exit or resource evidence. */ }
+  }
+  if (state.text.length > BROKER_JOURNAL_FRAME_LIMIT) { state.text = ''; state.overflow = true }
+}
+
+function recordBrokerJournalMessage(state, message) {
+  if (state.expired) return
+  // Duration stays host-measured: client timings are not trusted for S history.
+  if (!Number.isInteger(state.outcome.exit) && Number.isInteger(message.exit)) state.outcome = { exit: message.exit, served: message.served !== false }
+  if (Number.isInteger(state.outcome.exit) && validSuiteResources(message.resources)) state.outcome.resources = message.resources
 }
 
 export async function acquireBrokerJournalLease(options) {

@@ -111,7 +111,13 @@ export function formatSuiteLockStatus(current, holderText) {
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
   lines.push(...parkedStatusRows(current).map(parkedLine))
+  lines.push(...resourceClassLines(current.resourceClasses))
   return lines.map(displayText).join('\n') + '\n'
+}
+
+function resourceClassLines(classes = {}) {
+  const rounded = (value) => typeof value === 'number' ? value.toFixed(2) : 'unknown'
+  return Object.entries(classes).map(([key, value]) => `resources ${displayText(key)}: ${value.class}, ${rounded(value.cores)} cores, ${rounded(value.memMiB)} MiB (${value.basis})`)
 }
 
 export function suiteLockStatusJson(current) {
@@ -119,5 +125,6 @@ export function suiteLockStatusJson(current) {
   const status = current.legacyStatus ?? (Array.isArray(queue) ? null : OLDER_BROKER_QUEUE)
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
     ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
-    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)) }
+    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)),
+    ...(current.resourceClasses ? { resourceClasses: safeValue(current.resourceClasses) } : {}) }
 }
