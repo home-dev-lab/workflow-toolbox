@@ -1,5 +1,5 @@
 import { closeSync, constants, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { refuseEventSymlink } from './launcher-event-io.mjs'
@@ -42,7 +42,8 @@ export function eventPaths(id, options) {
   const pending = privateEventDirectory(path.join(box, 'pending'))
   const done = privateEventDirectory(path.join(box, 'done'))
   const tmp = privateEventDirectory(path.join(box, 'tmp'))
-  return { root, box, pending, done, tmp }
+  const keys = privateEventDirectory(path.join(box, 'keys'))
+  return { root, box, pending, done, tmp, keys }
 }
 
 export function eventNames(directory) {
@@ -58,22 +59,67 @@ export function readEvent(file) {
 }
 
 export function removeEventFile(file, options) {
-  try { unlinkSync(file) } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-cleanup-failed', error) }
+  try { unlinkSync(file); return true } catch (error) {
+    if (error.code === 'ENOENT') return true
+    eventReason(options, 'launcher-cleanup-failed', error)
+    return false
+  }
+}
+
+function keyFile(paths, key) {
+  return path.join(paths.keys, `${createHash('sha256').update(key).digest('hex')}.key`)
+}
+
+function reserveEvent(paths, stage, entry, options) {
+  const file = keyFile(paths, entry.key)
+  try { eventOperation('link', stage, file, options); return null }
+  catch (error) { if (error.code !== 'EEXIST') throw error }
+  return readEvent(file)
+}
+
+export function finishPublication(paths, entry, options) {
+  const source = path.join(paths.tmp, `${entry.name.slice(0, -5)}.ready`)
+  // A single rename consumes the source. Concurrent helpers cannot recreate it,
+  // even if the first reader has already claimed or acknowledged the destination.
+  try { eventOperation('rename', source, path.join(paths.pending, entry.name), options) }
+  catch (error) { if (error.code !== 'ENOENT') throw error }
+  return entry
+}
+
+function writePublication(fd, ready, entry) {
+  const text = JSON.stringify(entry)
+  writeFileSync(fd, text)
+  const source = openSync(ready, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
+  try { writeFileSync(source, text) } finally { closeSync(source) }
+}
+
+function publicationBase(attempt, options) {
+  return attempt === 0 ? (options.name?.() ?? eventName()) : eventName()
 }
 
 export function publishEvent(paths, entry, options) {
   for (let attempt = 0; attempt < 8; attempt++) {
-    const base = attempt === 0 ? (options.name?.() ?? eventName()) : eventName()
+    const base = publicationBase(attempt, options)
     const stage = path.join(paths.tmp, `${base}.tmp`), name = `${base}.json`
-    let fd
+    const ready = path.join(paths.tmp, `${base}.ready`)
+    let fd, reserved = false
     try { fd = openSync(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600) }
     catch (error) { if (error.code === 'EEXIST') { continue } throw error }
     try {
-      writeFileSync(fd, JSON.stringify(entry)); closeSync(fd); fd = undefined
-      eventOperation('link', stage, path.join(paths.pending, name), options)
-      // Retain the temporary hard link as an exclusive name reservation until retention.
-      return { ...entry, name }
-    } catch (error) { removeEventFile(stage, options); throw error }
+      writePublication(fd, ready, { ...entry, name }); closeSync(fd); fd = undefined
+      const previous = reserveEvent(paths, stage, entry, options)
+      if (previous) {
+        removeEventFile(stage, options); removeEventFile(ready, options)
+        return finishPublication(paths, previous, options)
+      }
+      reserved = true
+      // The key and retained staging link survive publication, claims and done.
+      return finishPublication(paths, { ...entry, name }, options)
+    } catch (error) {
+      // After reservation, leave the complete source for a later sweep to finish.
+      if (!reserved) { removeEventFile(stage, options); removeEventFile(ready, options) }
+      throw error
+    }
     finally { if (fd !== undefined) closeSync(fd) }
   }
   throw new Error('launcher-name-collision-exhausted')
@@ -86,8 +132,10 @@ export function pruneDone(paths, options) {
     try {
       const file = path.join(paths.done, name)
       if (lstatSync(file).mtimeMs < cutoff) {
-        removeEventFile(file, options)
+        const event = readEvent(file)
+        if (!removeEventFile(file, options)) continue
         removeEventFile(path.join(paths.tmp, `${name.slice(0, -5)}.tmp`), options)
+        removeEventFile(keyFile(paths, event.key), options)
       }
     } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-retention-failed', error) }
   }

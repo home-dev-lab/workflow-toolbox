@@ -158,7 +158,7 @@ for (const owner of ['missing', 'malformed', 'live']) {
   })
 }
 
-for (const target of ['root', 'launcher', 'pending', 'done', 'tmp']) {
+for (const target of ['root', 'launcher', 'pending', 'done', 'tmp', 'keys']) {
   test(`private storage refuses a ${target} symlink`, { skip: process.platform === 'win32' }, (t) => {
     const f = fixture(t), reasons = [], victim = path.join(f.root, 'victim')
     mkdirSync(victim)

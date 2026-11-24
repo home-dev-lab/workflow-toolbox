@@ -5,8 +5,8 @@ import path from 'node:path'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { completeLauncherWrite, writeLauncherLine } from './launcher-event-io.mjs'
 import { eventGraceElapsed } from './launcher-event-grace.mjs'
-import { eventNames, eventPaths, eventReason, ignoredLegacy, pruneDone, publishEvent, readEvent } from './launcher-maildir.mjs'
-import { acknowledgeClaim, claimEvent, recoverClaims, returnClaim } from './launcher-claims.mjs'
+import { eventNames, eventPaths, eventReason, finishPublication, ignoredLegacy, pruneDone, publishEvent, readEvent } from './launcher-maildir.mjs'
+import { acknowledgeClaim, claimEvent, claimWasPrinted, recoverClaims, returnClaim } from './launcher-claims.mjs'
 
 export const printLauncherEvent = writeLauncherLine
 
@@ -29,7 +29,11 @@ function storedEvents(paths, options) {
       const links = lstatSync(file).nlink
       if (!Number.isSafeInteger(links) || links < 1) throw new Error('launcher-link-count-unknown')
       if (links > 1) entries.push({ ...readEvent(file), name: `${name.slice(0, -4)}.json` })
-    } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-event-read-failed', error) }
+    } catch (error) {
+      if (error.code === 'ENOENT') continue
+      eventReason(options, 'launcher-event-read-failed', error)
+      throw Object.assign(new Error('launcher-deduplication-incomplete'), { code: 'launcher-deduplication-incomplete' })
+    }
   }
   return entries
 }
@@ -40,7 +44,7 @@ export function appendLauncherEvent(id, event, options = {}) {
     const paths = eventPaths(id, options)
     ignoredLegacy(paths, id, options); pruneDone(paths, options)
     const previous = storedEvents(paths, options).find((item) => item.key === event.key)
-    if (previous) return previous
+    if (previous) return finishPublication(paths, previous, options)
     return publishEvent(paths, { ...event, launcherAgentId: id, at: options.now ?? Date.now() }, options)
   } catch (error) { return eventReason(options, 'launcher-publish-failed', error) }
 }
@@ -65,7 +69,11 @@ export function takeLauncherEvent(id, options = {}) {
   const { paths, claim } = ready
   try { if (options.deliver) completeLauncherWrite(options.deliver, claim.event) }
   catch (error) { returnClaim(paths, claim, options); throw error }
-  acknowledgeClaim(paths, claim, options)
+  if (!acknowledgeClaim(paths, claim, options) && !claimWasPrinted(claim)) {
+    // Output completed, but storage cannot prove it. Do not report a normal waiter
+    // exit: recovery may replay this delivery-unknown claim after the reader dies.
+    throw new Error('launcher print acknowledgement unavailable')
+  }
   return claim.event
 }
 

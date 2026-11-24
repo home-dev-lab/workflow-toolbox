@@ -7,24 +7,33 @@ function readerIdentity(pid) {
   const exact = hostAdapter.readProcessIdentity(pid)
   if (exact.status === 'known') return exact.startIdentity
   if (hostAdapter.platform === 'linux') return null
-  return hostAdapter.readProcessSnapshot().processes?.find((item) => item.pid === pid)?.startIdentity ?? null
+  const value = hostAdapter.readProcessSnapshot().processes?.find((item) => item.pid === pid)?.startIdentity
+  return Number.isFinite(value) && value >= 0 ? `snapshot:${hostAdapter.platform}:${value}` : null
+}
+
+function identityKind(value) {
+  if (typeof value !== 'string') return null
+  if (/^linux:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}:\d+$/i.test(value)) return 'linux'
+  const match = /^snapshot:(darwin|win32|aix|freebsd|sunos):(\d+(?:\.\d+)?)$/.exec(value)
+  return match && Number.isFinite(Number(match[2])) ? `snapshot:${match[1]}` : null
 }
 
 export function readerDead(directory, options) {
   let owner
   try { owner = JSON.parse(readFileSync(path.join(directory, 'owner.json'), 'utf8')) }
   catch { eventReason(options, 'reader-owner-unknown'); return false }
-  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0) { eventReason(options, 'reader-owner-unknown'); return false }
+  if (!Number.isSafeInteger(owner?.pid) || owner.pid <= 0) { eventReason(options, 'reader-owner-unknown'); return false }
   const execution = hostAdapter.readProcessExecutionState(owner.pid)
   const live = execution.status === 'unknown' ? hostAdapter.readProcessLiveness(owner.pid) : execution
   if (live.status === 'gone') return true
   const actual = live.status === 'alive' ? readerIdentity(owner.pid) : null
-  if (actual != null && owner.startIdentity != null) return actual !== owner.startIdentity
+  const kind = identityKind(owner.startIdentity)
+  if (kind && kind === identityKind(actual)) return actual !== owner.startIdentity
   eventReason(options, 'reader-liveness-unknown')
   return false
 }
 
-export function claimDirectories(paths) {
+function claimDirectories(paths) {
   return readdirSync(paths.box).filter((name) => name.startsWith('claimed-')).map((name) => path.join(paths.box, name))
 }
 
@@ -33,13 +42,18 @@ export function recoverClaims(paths, options) {
     try {
       privateEventDirectory(directory)
       if (!eventNames(directory).length || !readerDead(directory, options)) continue
-      for (const name of eventNames(directory)) {
-        try { eventOperation('rename', path.join(directory, name), path.join(paths.pending, name), options) }
-        catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-recovery-failed', error) }
-      }
+      for (const name of eventNames(directory)) recoverClaim(paths, directory, name, options)
       cleanReader(directory, options)
     } catch (error) { eventReason(options, 'reader-owner-unknown', error) }
   }
+}
+
+function recoverClaim(paths, directory, name, options) {
+  const file = path.join(directory, name)
+  try {
+    if (printedAt(file) !== null) acknowledgeClaim(paths, { file, name }, options)
+    else eventOperation('rename', file, path.join(paths.pending, name), options)
+  } catch (error) { if (error.code !== 'ENOENT') eventReason(options, 'launcher-recovery-failed', error) }
 }
 
 export function claimEvent(paths, name, options) {
@@ -49,7 +63,8 @@ export function claimEvent(paths, name, options) {
   const file = path.join(directory, name)
   try { eventOperation('rename', path.join(paths.pending, name), file, options) }
   catch (error) { cleanReader(directory, options); if (error.code === 'ENOENT') { return null } throw error }
-  return { file, name, event: readEvent(file) }
+  try { return { file, name, event: readEvent(file) } }
+  catch (error) { returnClaim(paths, { file, name }, options); throw error }
 }
 
 export function returnClaim(paths, claim, options) {
@@ -59,18 +74,41 @@ export function returnClaim(paths, claim, options) {
 
 export function acknowledgeClaim(paths, claim, options) {
   const file = path.join(paths.done, claim.name)
-  try { eventOperation('rename', claim.file, file, options) }
+  try {
+    let at = printedAt(claim.file)
+    if (at === null) {
+      at = options.now ?? Date.now()
+      writeFileSync(`${claim.file}.printed`, JSON.stringify({ at }), { flag: 'wx', mode: 0o600 })
+    }
+    const now = new Date(options.now ?? Date.now())
+    // Stamp before exposing done to pruning, including after a recovery or interruption.
+    utimesSync(claim.file, now, now)
+    eventOperation('rename', claim.file, file, options)
+  }
   catch (error) { eventReason(options, 'launcher-acknowledge-failed', error); return false }
-  try { const now = new Date(options.now ?? Date.now()); utimesSync(file, now, now) }
-  catch (error) { eventReason(options, 'launcher-retention-failed', error) }
   cleanReader(path.dirname(claim.file), options)
   return true
 }
 
-export function cleanReader(directory, options) {
+function printedAt(file) {
+  try {
+    const value = JSON.parse(readFileSync(`${file}.printed`, 'utf8'))
+    if (!Number.isFinite(value?.at)) throw new Error('launcher-printed-marker-invalid')
+    return value.at
+  } catch (error) { if (error.code === 'ENOENT') { return null } throw error }
+}
+
+export function claimWasPrinted(claim) {
+  try { return printedAt(claim.file) !== null } catch { return false }
+}
+
+function cleanReader(directory, options) {
   // Only remove empty, completed reader directories. A claim or malformed owner is retained.
   try {
     if (eventNames(directory).length) return
+    for (const name of readdirSync(directory)) {
+      if (/^\d+-\d+-[A-Za-z0-9-]+\.json\.printed$/.test(name)) removeEventFile(path.join(directory, name), options)
+    }
     const names = readdirSync(directory)
     if (names.length !== 1 || names[0] !== 'owner.json') return
     removeEventFile(path.join(directory, 'owner.json'), options)

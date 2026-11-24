@@ -32,10 +32,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `wt-lane-wait --launcher-agent <id>` wakes a delegate's own background command
   on the first unconsumed event. Main-owned work keeps its session notices;
   unconsumed events fall back to main with an orphan attribution when their
-  launcher completes, goes missing or stops consuming. Publication uses exclusive
-  hard links without a publisher mutex; readers claim by rename and acknowledge
-  after synchronous output. Positively dead readers' claims are recovered, with
-  at-least-once replay across a print/acknowledgement crash. Gate and queue output,
+  launcher completes, goes missing or stops consuming. Publication reserves each
+  logical key with an exclusive hard link, then consumes a complete staging source
+  by rename; interrupted publication can be finished by a later sweep. Incomplete
+  deduplication scans fail closed. Readers claim by rename and retain a printed
+  marker after synchronous output, so failed done-renames do not replay on normal
+  waiter exit. Positively dead readers' unprinted claims are recovered; malformed
+  or incomparable birth identities never prove PID reuse. A crash between output
+  and its printed marker can replay; inability to store that marker reports
+  delivery unknown (exit 1). Acknowledgement timestamps precede the done-rename
+  so retention cannot immediately prune newly acknowledged old events. Gate and queue output,
   supervision notices and recovery WAKEs keep their existing main-owned channels.
 - The quota watcher now honors an inherited session config-directory flag before the config-directory environment variable, using that single decision for account fingerprints and its child probe. This prevents wrong-account cache acceptance or rejection when a wrapper pins or removes the config-directory variable.
 - The quota watcher now shares the hook's login cache for pool-named login sessions, resolves the session's global config before pinning its probe environment, and passes that config choice to the probe. Cache fingerprint checks and token-session cache ownership remain enforced.
