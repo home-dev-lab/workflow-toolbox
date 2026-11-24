@@ -941,7 +941,7 @@ function verifyFindings(rt: WorkflowRuntime, findings: Finding[], lens: string, 
   })
 }
 
-async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewOutput> {
+async function prepareRuntimes(rt00: WorkflowRuntime, input: PrReviewInput) {
   // Leaf-agent fence — the LOWEST-priority default, applied first/innermost so
   // it never clobbers a workflow-level perAgent blanket (below) or a per-role
   // agentType (each call site's own opts). Every agent this workflow spawns
@@ -985,27 +985,25 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // Synthesize below) so a workflow author's blanket override wins on either.
   const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0
   const leanRt = input.perAgent !== null ? withAgentDefaults(leanBase, input.perAgent) : leanBase
-  const warnings: string[] = []
-  let reviewersSpawned = 0
-  const reviewRecords = new Map<string, FindingsOutput | null>()
-  const verifyFailures = new Set<string>()
-  // One entry per lens whose verifyStage actually ran adversarialVerification
-  // (a dropped reviewer or an empty findings list contributes nothing) —
-  // folded into envelope.trail via collectTrail at Synthesize time.
-  const lensTrails: Array<{ trail: TrailRecord[] }> = []
+  return { rt, leanRt, leafFence, leanRouting }
+}
 
+function resolveStageEfforts(input: PrReviewInput) {
   // Resolve each stage's effort ONCE: a launch-time `args.effort.<role>`
   // override wins when valid, else the stage-class default declared above.
   // 'verify' is additionally floored at 'high' — see resolveVerifierEffort.
   const classifyEffort = resolveEffort(input.effort?.['classify'], CLASSIFY_EFFORT)
   const routeActEffort = resolveEffort(input.effort?.['route'], ROUTE_ACT_EFFORT)
-  // `let`: with effort.review === 'auto' this is re-resolved from the routed
+  // With effort.review === 'auto' this is re-resolved from the routed
   // change summary once it exists (post-Route) — see the auto-effort block.
-  let reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
+  const reviewEffort = resolveEffort(input.effort?.['review'], REVIEW_EFFORT)
   const verifyEffort = resolveVerifierEffort(input.effort?.['verify'], VERIFY_EFFORT_DEFAULT)
   const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel)
   const synthesizeEffort = resolveEffort(input.effort?.['synthesize'], SYNTHESIZE_EFFORT)
+  return { classifyEffort, routeActEffort, reviewEffort, verifyEffort, verifierModel, synthesizeEffort }
+}
 
+async function resolveReviewerRouting(rt: WorkflowRuntime, input: PrReviewInput) {
   // -------------------------------------------------------------------------
   // Phase 'Probe' (conditional) — resolve the reviewer routing BEFORE any
   // reviewer spawns. One schema-less probe through the requested type; any
@@ -1045,7 +1043,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     )
   }
   const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review)
+  return { resolvedReviewerType, probeReport, reviewerIsBridge, reviewModel }
+}
 
+async function resolveVerifierRouting(rt: WorkflowRuntime, input: PrReviewInput) {
   // Same probe-then-resolve treatment for the Verify fan's routing request
   // (agentTypes.verify) — mirrors the reviewerType block above exactly, so an
   // unavailable cross-family verifier refuses the launch (`required: true`)
@@ -1067,7 +1068,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       'pass repoRoot: <absolute path> in the launch args',
     )
   }
+  return { resolvedVerifierType, verifierProbeReport }
+}
 
+function reviewBridgeDirectives(input: PrReviewInput, reviewerIsBridge: boolean, resolvedReviewerType: string | null) {
   const reviewOpencodeDirectives = reviewerIsBridge
     ? opencodeWorkdirLine(resolvedReviewerType, input.repoRoot ?? '') +
       (input.opencodeModels?.review !== undefined
@@ -1077,6 +1081,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         ? `OPENCODE_VARIANT: ${input.opencodeVariants.review}\n\n`
         : '')
     : ''
+  return reviewOpencodeDirectives
+}
+
+function verifyBridgeDirectives(input: PrReviewInput, resolvedVerifierType: string | null) {
   const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType)
     ? opencodeWorkdirLine(resolvedVerifierType, input.repoRoot ?? '') +
       (input.opencodeModels?.verify !== undefined
@@ -1086,7 +1094,66 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         ? `OPENCODE_VARIANT: ${input.opencodeVariants.verify}\n\n`
         : '')
     : ''
+  return verifyOpencodeDirectives
+}
 
+async function prepareRun(rt00: WorkflowRuntime, input: PrReviewInput) {
+  const { rt, leanRt, leafFence, leanRouting } = await prepareRuntimes(rt00, input)
+  const warnings: string[] = []
+  const reviewersSpawned = 0
+  const reviewRecords = new Map<string, FindingsOutput | null>()
+  const verifyFailures = new Set<string>()
+  // One entry per lens whose verifyStage actually ran adversarialVerification
+  // (a dropped reviewer or an empty findings list contributes nothing) —
+  // folded into envelope.trail via collectTrail at Synthesize time.
+  const lensTrails: Array<{ trail: TrailRecord[] }> = []
+  const efforts = resolveStageEfforts(input)
+  const { resolvedReviewerType, probeReport, reviewerIsBridge, reviewModel } = await resolveReviewerRouting(rt, input)
+  const { resolvedVerifierType, verifierProbeReport } = await resolveVerifierRouting(rt, input)
+  const reviewOpencodeDirectives = reviewBridgeDirectives(input, reviewerIsBridge, resolvedReviewerType)
+  const verifyOpencodeDirectives = verifyBridgeDirectives(input, resolvedVerifierType)
+  return {
+    rt, leanRt, leafFence, leanRouting, input, warnings, reviewersSpawned,
+    reviewRecords, verifyFailures, lensTrails, ...efforts,
+    resolvedReviewerType, probeReport, reviewModel, resolvedVerifierType,
+    verifierProbeReport, reviewOpencodeDirectives, verifyOpencodeDirectives,
+  }
+}
+
+type RunContext = Awaited<ReturnType<typeof prepareRun>>
+
+function routeActions(routeActEffort: EffortAlias) {
+  return {
+    feature: {
+      schema: CHANGE_SUMMARY_SCHEMA,
+      prompt: actPrompt('FEATURE', 'what the feature does'),
+      effort: routeActEffort,
+    },
+    bugfix: {
+      schema: CHANGE_SUMMARY_SCHEMA,
+      prompt: actPrompt('BUGFIX', 'what was broken and how it is fixed', 're-derive from first principles.'),
+      effort: routeActEffort,
+    },
+    refactor: {
+      schema: CHANGE_SUMMARY_SCHEMA,
+      prompt: actPrompt('REFACTOR', 'what was refactored and why'),
+      effort: routeActEffort,
+    },
+    config: {
+      schema: CHANGE_SUMMARY_SCHEMA,
+      prompt: actPrompt('CONFIG', 'what config changed and its effect'),
+      effort: routeActEffort,
+    },
+    docs: {
+      schema: CHANGE_SUMMARY_SCHEMA,
+      prompt: actPrompt('DOCS', 'what documentation was updated'),
+      effort: routeActEffort,
+    },
+  }
+}
+
+async function routeChange(context: RunContext) {
+  const { rt, input, classifyEffort, routeActEffort, warnings } = context
   // -------------------------------------------------------------------------
   // Phase 'Route' — classifyAndAct
   //
@@ -1108,33 +1175,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       `${READ_ONLY_GIT}\n` +
       `Return { "category": "<one of the five categories>" }`,
     classifyEffort,
-    actions: {
-      feature: {
-        schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: actPrompt('FEATURE', 'what the feature does'),
-        effort: routeActEffort,
-      },
-      bugfix: {
-        schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: actPrompt('BUGFIX', 'what was broken and how it is fixed', 're-derive from first principles.'),
-        effort: routeActEffort,
-      },
-      refactor: {
-        schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: actPrompt('REFACTOR', 'what was refactored and why'),
-        effort: routeActEffort,
-      },
-      config: {
-        schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: actPrompt('CONFIG', 'what config changed and its effect'),
-        effort: routeActEffort,
-      },
-      docs: {
-        schema: CHANGE_SUMMARY_SCHEMA,
-        prompt: actPrompt('DOCS', 'what documentation was updated'),
-        effort: routeActEffort,
-      },
-    },
+    actions: routeActions(routeActEffort),
     phase: 'Route',
   })
 
@@ -1151,30 +1192,39 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
   const category = routedItem.category
   const changeSummary = routedItem.result
+  return { routeResult, category, changeSummary }
+}
 
+type RoutedChange = Awaited<ReturnType<typeof routeChange>>
+
+async function selectReviewEffort(context: RunContext, routed: RoutedChange) {
+  const { rt, warnings } = context
+  const { category, changeSummary } = routed
   // Auto-effort for the reviewer WORKERS (opt-in
   // via effort.review === 'auto'): now that the routed change summary exists,
   // deterministic signals (changed-file count, summary size) decide the clear
   // extremes in code; otherwise ONE best-model triage call scores the change
   // ("when unsure, score UP"). Fallback = the committed 'review' default.
   // The verify fan's 'high' floor is untouched (resolveVerifierEffort).
-  if (input.effort?.['review'] === 'auto') {
-    const selection = await autoSelectEffort(rt, [{
-      id: 'change',
-      brief: `${category} change: ${changeSummary.summary.slice(0, 400)}`,
-      signals: {
-        filesTouched: changeSummary.changedFiles.length,
-        specChars: changeSummary.summary.length,
-      },
-    }], { fallback: REVIEW_EFFORT, phase: 'Route', label: 'pr-review:auto-effort' })
-    for (const w of selection.warnings) {
-      warnings.push(w)
-      rt.log(`⚠ ${w}`)
-    }
-    reviewEffort = selection.efforts['change'] ?? REVIEW_EFFORT
-    rt.log(`pr-review: auto-effort selected '${reviewEffort}' for the review stage (${selection.decidedBy['change'] ?? 'fallback'})`)
+  const selection = await autoSelectEffort(rt, [{
+    id: 'change',
+    brief: `${category} change: ${changeSummary.summary.slice(0, 400)}`,
+    signals: {
+      filesTouched: changeSummary.changedFiles.length,
+      specChars: changeSummary.summary.length,
+    },
+  }], { fallback: REVIEW_EFFORT, phase: 'Route', label: 'pr-review:auto-effort' })
+  for (const w of selection.warnings) {
+    warnings.push(w)
+    rt.log(`⚠ ${w}`)
   }
+  context.reviewEffort = selection.efforts['change'] ?? REVIEW_EFFORT
+  rt.log(`pr-review: auto-effort selected '${context.reviewEffort}' for the review stage (${selection.decidedBy['change'] ?? 'fallback'})`)
+}
 
+function warnDegenerateSummary(context: RunContext, routed: RoutedChange) {
+  const { rt, warnings } = context
+  const { category, changeSummary } = routed
   // Degenerate-output guard (internal note): a schema-rejected agent can
   // capitulate into minimal junk that VALIDATES — the journal's `attempt` stays 1
   // (StructuredOutput retries are intra-conversation), so nothing else surfaces it.
@@ -1190,7 +1240,11 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     warnings.push(w)
     rt.log(`⚠ ${w}`)
   }
+}
 
+function warnEmptyChangedFiles(context: RunContext, routed: RoutedChange) {
+  const { rt, input, warnings } = context
+  const { category, changeSummary } = routed
   // Same guard class for changedFiles (review finding, run wf_0decbfe8-7e4):
   // an act agent that capitulates to `"changedFiles": []` is schema-valid and
   // otherwise indistinguishable from "no mapped module touched" — it silently
@@ -1209,7 +1263,11 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     warnings.push(w)
     rt.log(`⚠ ${w}`)
   }
+}
 
+function prepareReviewLenses(context: RunContext, routed: RoutedChange) {
+  const { rt, input, warnings } = context
+  const { category, changeSummary } = routed
   // -------------------------------------------------------------------------
   // Phase 'Review' + 'Verify' — pipeline form, NO barrier between them.
   //
@@ -1252,6 +1310,23 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // A diff that touches any .md (or a mapped doc surface) is treated as the
   // author engaging the docs: the alignment lens and the mechanical gates
   // cover the QUALITY of that engagement, so coverage stays silent there.
+  const coverageSurfaces = prepareCoverageSurfaces(rt, changeSummary, provenanceDocs)
+
+  const baseLenses = baseReviewLenses(category, changeSummary, warnings)
+  const hasTestFiles = changeSummary.changedFiles.some(isTestFile)
+  if (hasTestFiles) {
+    rt.log('lock-enumeration lens armed: routing reported at least one test file')
+  }
+  const lenses = [
+    ...baseLenses,
+    ...(provenanceDocs.length > 0 ? ['docs-alignment'] : []),
+    ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
+    ...(hasTestFiles ? ['lock-enumeration'] : []),
+  ]
+  return { lenses, provenanceDocs, provenanceSource, coverageSurfaces }
+}
+
+function prepareCoverageSurfaces(rt: WorkflowRuntime, changeSummary: ChangeSummary, provenanceDocs: readonly string[]) {
   const docsTouchedInDiff = changeSummary.changedFiles.some(
     (f) => f.endsWith('.md') || provenanceDocs.includes(f),
   )
@@ -1273,18 +1348,16 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     )
   }
 
-  const baseLenses = baseReviewLenses(category, changeSummary, warnings)
-  const hasTestFiles = changeSummary.changedFiles.some(isTestFile)
-  if (hasTestFiles) {
-    rt.log('lock-enumeration lens armed: routing reported at least one test file')
-  }
-  const lenses = [
-    ...baseLenses,
-    ...(provenanceDocs.length > 0 ? ['docs-alignment'] : []),
-    ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
-    ...(hasTestFiles ? ['lock-enumeration'] : []),
-  ]
+  return coverageSurfaces
+}
 
+type ReviewLenses = ReturnType<typeof prepareReviewLenses>
+
+async function reviewAndVerify(context: RunContext, routed: RoutedChange, reviewLenses: ReviewLenses) {
+  const { rt, input, verifierModel, resolvedVerifierType, verifyOpencodeDirectives, verifyEffort,
+    reviewRecords, verifyFailures } = context
+  const { changeSummary } = routed
+  const { lenses, provenanceDocs, coverageSurfaces } = reviewLenses
   // Proportionate-review ladder: 'full' (default)
   // runs the pipeline over EVERY lens below — one reviewer each, exactly the
   // per-lens code path (reviewItems === lenses, lens-scoped prompts).
@@ -1307,18 +1380,37 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     input, model: verifierModel, verifierType: resolvedVerifierType,
     directives: verifyOpencodeDirectives, effort: verifyEffort,
   }
+  const reviewStage = createReviewStage(context, reviewContext)
+  const verifyStage = createVerifyStage(context, verificationContext, lenses)
 
+  // Run review + verify pipeline concurrently across reviewItems (no barrier).
+  // 'full' mode: one pipeline slot for every armed lens.
+  // 'single-verifier' mode: one pipeline slot — the consolidated sentinel.
+  const pipelineResults = await rt.pipeline(
+    reviewItems as readonly unknown[],
+    reviewStage,
+    verifyStage,
+  )
+
+  const reconciled = reconcileReviews(reviewItems, pipelineResults, reviewRecords, verifyFailures)
+  return prepareReviewedFindings(reconciled)
+}
+
+function createReviewStage(context: RunContext, reviewContext: ReviewPromptContext) {
+  const { rt, reviewEffort, resolvedReviewerType, reviewModel, reviewOpencodeDirectives,
+    warnings, reviewRecords } = context
+  const { lenses } = reviewContext
   // reviewStage: for a given lens, spawn one reviewer agent with focused scope.
   // The stage receives the lens as originalItem (items = reviewItems: `lenses`
   // in 'full' mode, or the single CONSOLIDATED_LENS sentinel in
   // 'single-verifier' mode).
-  const reviewStage = async (
+  return async (
     _prev: unknown,
     originalItem: unknown,
   ): Promise<FindingsOutput | null> => {
     const lens = originalItem as string
 
-    reviewersSpawned++
+    context.reviewersSpawned++
 
     // Defence (1): schema enforces the findings shape at this consumed boundary.
     // Prompt is STRUCTURED MARKDOWN (## sections, bullets), not one \n-joined wall:
@@ -1350,11 +1442,14 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     reviewRecords.set(lens, usable)
     return usable
   }
+}
 
+function createVerifyStage(context: RunContext, verificationContext: VerificationContext, lenses: readonly string[]) {
+  const { rt, warnings, lensTrails, verifyFailures } = context
   // verifyStage: adversarialVerification on THAT reviewer's findings.
   // Why: a reviewer may hallucinate or misread the diff. The verifier is
   // instructed to re-derive from the actual diff, eliminating confirmation bias.
-  const verifyStage = async (
+  return async (
     prev: unknown,
     originalItem: unknown,
   ): Promise<Array<VerifiedClaim<FindingsOutput['findings'][number]>> | null> => {
@@ -1381,17 +1476,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       return uncheckedFindings(findings)
     }
   }
+}
 
-  // Run review + verify pipeline concurrently across reviewItems (no barrier).
-  // 'full' mode: one pipeline slot for every armed lens.
-  // 'single-verifier' mode: one pipeline slot — the consolidated sentinel.
-  const pipelineResults = await rt.pipeline(
-    reviewItems as readonly unknown[],
-    reviewStage,
-    verifyStage,
-  )
-
-  const reconciled = reconcileReviews(reviewItems, pipelineResults, reviewRecords, verifyFailures)
+function prepareReviewedFindings(reconciled: ReturnType<typeof reconcileReviews>) {
   const allVerifiedFindings = reconciled.findings
   const stats = findingStats(allVerifiedFindings)
   const coverage = reviewCoverage(reconciled, stats)
@@ -1419,7 +1506,14 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
       detail: vc.claim.detail,
       verdict: vc.verdict,
     }))
+  return { reconciled, stats, coverage, outputFindings, synthesisFindings }
+}
 
+type ReviewedChange = Awaited<ReturnType<typeof reviewAndVerify>>
+
+async function synthesizeReview(context: RunContext, routed: RoutedChange, reviewed: ReviewedChange, lenses: readonly string[]) {
+  const { rt, leanRt, synthesizeEffort, reviewRecords, warnings } = context
+  const { coverage, synthesisFindings } = reviewed
   // -------------------------------------------------------------------------
   // Phase 'Synthesize' — genuine barrier.
   //
@@ -1434,18 +1528,7 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
 
   rt.phase('Synthesize')
 
-  const synthesisPrompt =
-    `## Task\n` +
-    `You are synthesizing a code review for the change below (category: ${category}).\n\n` +
-    `**Target:**\n${targetBlock(input.target)}\n\n` +
-    routedContextBlock(changeSummary) +
-    `## Verified findings (non-refuted)\n` +
-    untrusted('synthesis-findings', JSON.stringify(synthesisFindings, null, 2)) + '\n\n' +
-    `## Output\n` +
-    `Produce an overall verdict: "approve" if no high-severity confirmed findings remain, ` +
-    `"request-changes" otherwise. Include a concise summary.\n` +
-    `A finding marked unverifiable or unverified-by-cap was not checked and may be real.\n` +
-    `Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`
+  const synthesisPrompt = buildSynthesisPrompt(context.input, routed, synthesisFindings)
 
   // Routed through leanRt: this prompt's entire content (change summary +
   // JSON-stringified verified findings) is already inline above — the agent
@@ -1470,7 +1553,32 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     warnings.push(gapLine)
     rt.log(gapLine)
   }
+  return { verdict, summary }
+}
 
+function buildSynthesisPrompt(input: PrReviewInput, routed: RoutedChange, synthesisFindings: VerifiedFinding[]) {
+  const { category, changeSummary } = routed
+  return `## Task\n` +
+    `You are synthesizing a code review for the change below (category: ${category}).\n\n` +
+    `**Target:**\n${targetBlock(input.target)}\n\n` +
+    routedContextBlock(changeSummary) +
+    `## Verified findings (non-refuted)\n` +
+    untrusted('synthesis-findings', JSON.stringify(synthesisFindings, null, 2)) + '\n\n' +
+    `## Output\n` +
+    `Produce an overall verdict: "approve" if no high-severity confirmed findings remain, ` +
+    `"request-changes" otherwise. Include a concise summary.\n` +
+    `A finding marked unverifiable or unverified-by-cap was not checked and may be real.\n` +
+    `Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`
+}
+
+function assembleReviewOutput(context: RunContext, routed: RoutedChange, reviewLenses: ReviewLenses,
+  reviewed: ReviewedChange, decision: Awaited<ReturnType<typeof synthesizeReview>>): PrReviewOutput {
+  const { input, resolvedReviewerType, probeReport, resolvedVerifierType, verifierProbeReport,
+    leafFence, leanRouting, reviewersSpawned, lensTrails, warnings } = context
+  const { category, routeResult } = routed
+  const { verdict, summary } = decision
+  const { outputFindings, coverage, stats, reconciled } = reviewed
+  const { provenanceDocs, provenanceSource, coverageSurfaces } = reviewLenses
   return {
     category,
     verdict,
@@ -1497,6 +1605,18 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     envelope: { trail: collectTrail(routeResult, ...lensTrails) },
     warnings,
   }
+}
+
+async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrReviewOutput> {
+  const context = await prepareRun(rt00, input)
+  const routed = await routeChange(context)
+  if (input.effort?.['review'] === 'auto') await selectReviewEffort(context, routed)
+  warnDegenerateSummary(context, routed)
+  warnEmptyChangedFiles(context, routed)
+  const reviewLenses = prepareReviewLenses(context, routed)
+  const reviewed = await reviewAndVerify(context, routed, reviewLenses)
+  const decision = await synthesizeReview(context, routed, reviewed, reviewLenses.lenses)
+  return assembleReviewOutput(context, routed, reviewLenses, reviewed, decision)
 }
 
 // ---------------------------------------------------------------------------

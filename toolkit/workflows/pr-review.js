@@ -3291,7 +3291,7 @@ ${READ_ONLY_GIT}`;
       phase: "Verify"
     });
   }
-  async function run(rt00, input) {
+  async function prepareRuntimes(rt00, input) {
     rt00.phase("Fence");
     const { rt: rt0, report: leafFence } = await withLeafFence(rt00, {
       phase: "Fence",
@@ -3308,17 +3308,18 @@ ${READ_ONLY_GIT}`;
     });
     const rt = input.perAgent !== null ? withAgentDefaults(rt0, input.perAgent) : rt0;
     const leanRt = input.perAgent !== null ? withAgentDefaults(leanBase, input.perAgent) : leanBase;
-    const warnings = [];
-    let reviewersSpawned = 0;
-    const reviewRecords = /* @__PURE__ */ new Map();
-    const verifyFailures = /* @__PURE__ */ new Set();
-    const lensTrails = [];
+    return { rt, leanRt, leafFence, leanRouting };
+  }
+  function resolveStageEfforts(input) {
     const classifyEffort = resolveEffort(input.effort?.["classify"], CLASSIFY_EFFORT);
     const routeActEffort = resolveEffort(input.effort?.["route"], ROUTE_ACT_EFFORT);
-    let reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
+    const reviewEffort = resolveEffort(input.effort?.["review"], REVIEW_EFFORT);
     const verifyEffort = resolveVerifierEffort(input.effort?.["verify"], VERIFY_EFFORT_DEFAULT);
     const verifierModel = resolveVerifierModel(input.perAgent?.model, input.verifierModel);
     const synthesizeEffort = resolveEffort(input.effort?.["synthesize"], SYNTHESIZE_EFFORT);
+    return { classifyEffort, routeActEffort, reviewEffort, verifyEffort, verifierModel, synthesizeEffort };
+  }
+  async function resolveReviewerRouting(rt, input) {
     let resolvedReviewerType = null;
     let probeReport = null;
     if (input.reviewerType !== null) {
@@ -3334,6 +3335,9 @@ ${READ_ONLY_GIT}`;
       );
     }
     const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review);
+    return { resolvedReviewerType, probeReport, reviewerIsBridge, reviewModel };
+  }
+  async function resolveVerifierRouting(rt, input) {
     let resolvedVerifierType = null;
     let verifierProbeReport = null;
     if (input.verifierType !== null) {
@@ -3348,16 +3352,88 @@ ${READ_ONLY_GIT}`;
         `pr-review: verify role routed to bridge type '${resolvedVerifierType}' requires repoRoot \u2014 pass repoRoot: <absolute path> in the launch args`
       );
     }
+    return { resolvedVerifierType, verifierProbeReport };
+  }
+  function reviewBridgeDirectives(input, reviewerIsBridge, resolvedReviewerType) {
     const reviewOpencodeDirectives = reviewerIsBridge ? opencodeWorkdirLine(resolvedReviewerType, input.repoRoot ?? "") + (input.opencodeModels?.review !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.review}
 
 ` : "") + (input.opencodeVariants?.review !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.review}
 
 ` : "") : "";
+    return reviewOpencodeDirectives;
+  }
+  function verifyBridgeDirectives(input, resolvedVerifierType) {
     const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType) ? opencodeWorkdirLine(resolvedVerifierType, input.repoRoot ?? "") + (input.opencodeModels?.verify !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.verify}
 
 ` : "") + (input.opencodeVariants?.verify !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.verify}
 
 ` : "") : "";
+    return verifyOpencodeDirectives;
+  }
+  async function prepareRun(rt00, input) {
+    const { rt, leanRt, leafFence, leanRouting } = await prepareRuntimes(rt00, input);
+    const warnings = [];
+    const reviewersSpawned = 0;
+    const reviewRecords = /* @__PURE__ */ new Map();
+    const verifyFailures = /* @__PURE__ */ new Set();
+    const lensTrails = [];
+    const efforts = resolveStageEfforts(input);
+    const { resolvedReviewerType, probeReport, reviewerIsBridge, reviewModel } = await resolveReviewerRouting(rt, input);
+    const { resolvedVerifierType, verifierProbeReport } = await resolveVerifierRouting(rt, input);
+    const reviewOpencodeDirectives = reviewBridgeDirectives(input, reviewerIsBridge, resolvedReviewerType);
+    const verifyOpencodeDirectives = verifyBridgeDirectives(input, resolvedVerifierType);
+    return {
+      rt,
+      leanRt,
+      leafFence,
+      leanRouting,
+      input,
+      warnings,
+      reviewersSpawned,
+      reviewRecords,
+      verifyFailures,
+      lensTrails,
+      ...efforts,
+      resolvedReviewerType,
+      probeReport,
+      reviewModel,
+      resolvedVerifierType,
+      verifierProbeReport,
+      reviewOpencodeDirectives,
+      verifyOpencodeDirectives
+    };
+  }
+  function routeActions(routeActEffort) {
+    return {
+      feature: {
+        schema: CHANGE_SUMMARY_SCHEMA,
+        prompt: actPrompt("FEATURE", "what the feature does"),
+        effort: routeActEffort
+      },
+      bugfix: {
+        schema: CHANGE_SUMMARY_SCHEMA,
+        prompt: actPrompt("BUGFIX", "what was broken and how it is fixed", "re-derive from first principles."),
+        effort: routeActEffort
+      },
+      refactor: {
+        schema: CHANGE_SUMMARY_SCHEMA,
+        prompt: actPrompt("REFACTOR", "what was refactored and why"),
+        effort: routeActEffort
+      },
+      config: {
+        schema: CHANGE_SUMMARY_SCHEMA,
+        prompt: actPrompt("CONFIG", "what config changed and its effect"),
+        effort: routeActEffort
+      },
+      docs: {
+        schema: CHANGE_SUMMARY_SCHEMA,
+        prompt: actPrompt("DOCS", "what documentation was updated"),
+        effort: routeActEffort
+      }
+    };
+  }
+  async function routeChange(context) {
+    const { rt, input, classifyEffort, routeActEffort, warnings } = context;
     rt.phase("Route");
     const routeResult = await classifyAndAct(rt, {
       items: [input.target],
@@ -3368,33 +3444,7 @@ ${targetBlock(target)}
 ${READ_ONLY_GIT}
 Return { "category": "<one of the five categories>" }`,
       classifyEffort,
-      actions: {
-        feature: {
-          schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: actPrompt("FEATURE", "what the feature does"),
-          effort: routeActEffort
-        },
-        bugfix: {
-          schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: actPrompt("BUGFIX", "what was broken and how it is fixed", "re-derive from first principles."),
-          effort: routeActEffort
-        },
-        refactor: {
-          schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: actPrompt("REFACTOR", "what was refactored and why"),
-          effort: routeActEffort
-        },
-        config: {
-          schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: actPrompt("CONFIG", "what config changed and its effect"),
-          effort: routeActEffort
-        },
-        docs: {
-          schema: CHANGE_SUMMARY_SCHEMA,
-          prompt: actPrompt("DOCS", "what documentation was updated"),
-          effort: routeActEffort
-        }
-      },
+      actions: routeActions(routeActEffort),
       phase: "Route"
     });
     for (const w of routeResult.warnings) warnings.push(w);
@@ -3406,34 +3456,49 @@ Return { "category": "<one of the five categories>" }`,
     }
     const category = routedItem.category;
     const changeSummary = routedItem.result;
-    if (input.effort?.["review"] === "auto") {
-      const selection = await autoSelectEffort(rt, [{
-        id: "change",
-        brief: `${category} change: ${changeSummary.summary.slice(0, 400)}`,
-        signals: {
-          filesTouched: changeSummary.changedFiles.length,
-          specChars: changeSummary.summary.length
-        }
-      }], { fallback: REVIEW_EFFORT, phase: "Route", label: "pr-review:auto-effort" });
-      for (const w of selection.warnings) {
-        warnings.push(w);
-        rt.log(`\u26A0 ${w}`);
+    return { routeResult, category, changeSummary };
+  }
+  async function selectReviewEffort(context, routed) {
+    const { rt, warnings } = context;
+    const { category, changeSummary } = routed;
+    const selection = await autoSelectEffort(rt, [{
+      id: "change",
+      brief: `${category} change: ${changeSummary.summary.slice(0, 400)}`,
+      signals: {
+        filesTouched: changeSummary.changedFiles.length,
+        specChars: changeSummary.summary.length
       }
-      reviewEffort = selection.efforts["change"] ?? REVIEW_EFFORT;
-      rt.log(`pr-review: auto-effort selected '${reviewEffort}' for the review stage (${selection.decidedBy["change"] ?? "fallback"})`);
+    }], { fallback: REVIEW_EFFORT, phase: "Route", label: "pr-review:auto-effort" });
+    for (const w of selection.warnings) {
+      warnings.push(w);
+      rt.log(`\u26A0 ${w}`);
     }
+    context.reviewEffort = selection.efforts["change"] ?? REVIEW_EFFORT;
+    rt.log(`pr-review: auto-effort selected '${context.reviewEffort}' for the review stage (${selection.decidedBy["change"] ?? "fallback"})`);
+  }
+  function warnDegenerateSummary(context, routed) {
+    const { rt, warnings } = context;
+    const { category, changeSummary } = routed;
     const junkAreas = changeSummary.riskAreas.length > 0 && changeSummary.riskAreas.every((r) => r.trim().length <= 2);
     if (junkAreas || changeSummary.summary.trim().length < 12) {
       const w = `route: degenerate change summary from the ${category} act stage (summary="${changeSummary.summary.slice(0, 40)}", riskAreas=${JSON.stringify(changeSummary.riskAreas.slice(0, 4))}) \u2014 reviewer seeding lost; findings still re-derive from the actual diff`;
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
+  }
+  function warnEmptyChangedFiles(context, routed) {
+    const { rt, input, warnings } = context;
+    const { category, changeSummary } = routed;
     const looksLikeGitRange = /[0-9a-f]{6,40}|\bHEAD\b|\.\./.test(input.target);
     if (changeSummary.changedFiles.length === 0 && looksLikeGitRange) {
       const w = `route: empty changedFiles from the ${category} act stage on a range-shaped target \u2014 likely schema capitulation; the docs-alignment lens is DISARMED for this run (docs-coverage arms off addedPublicSurface, a separate field \u2014 though a capitulating agent has likely emptied both; stale prose anchors remain covered by the mechanical docs-contract gate)`;
       warnings.push(w);
       rt.log(`\u26A0 ${w}`);
     }
+  }
+  function prepareReviewLenses(context, routed) {
+    const { rt, input, warnings } = context;
+    const { category, changeSummary } = routed;
     const provenanceSource = input.provenance !== null ? "input" : "bundled";
     const provenanceDocs = docsForChangedFiles(
       changeSummary.changedFiles,
@@ -3444,6 +3509,21 @@ Return { "category": "<one of the five categories>" }`,
         `docs-alignment lens armed: ${provenanceDocs.length} mapped doc surface(s) for this change (${provenanceSource} manifest)`
       );
     }
+    const coverageSurfaces = prepareCoverageSurfaces(rt, changeSummary, provenanceDocs);
+    const baseLenses = baseReviewLenses(category, changeSummary, warnings);
+    const hasTestFiles = changeSummary.changedFiles.some(isTestFile);
+    if (hasTestFiles) {
+      rt.log("lock-enumeration lens armed: routing reported at least one test file");
+    }
+    const lenses = [
+      ...baseLenses,
+      ...provenanceDocs.length > 0 ? ["docs-alignment"] : [],
+      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : [],
+      ...hasTestFiles ? ["lock-enumeration"] : []
+    ];
+    return { lenses, provenanceDocs, provenanceSource, coverageSurfaces };
+  }
+  function prepareCoverageSurfaces(rt, changeSummary, provenanceDocs) {
     const docsTouchedInDiff = changeSummary.changedFiles.some(
       (f) => f.endsWith(".md") || provenanceDocs.includes(f)
     );
@@ -3457,17 +3537,21 @@ Return { "category": "<one of the five categories>" }`,
         `docs-coverage lens silent: ${changeSummary.addedPublicSurface.length} added public surface(s) but doc files are part of this change \u2014 the docs-alignment lens and the mechanical gates cover that path`
       );
     }
-    const baseLenses = baseReviewLenses(category, changeSummary, warnings);
-    const hasTestFiles = changeSummary.changedFiles.some(isTestFile);
-    if (hasTestFiles) {
-      rt.log("lock-enumeration lens armed: routing reported at least one test file");
-    }
-    const lenses = [
-      ...baseLenses,
-      ...provenanceDocs.length > 0 ? ["docs-alignment"] : [],
-      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : [],
-      ...hasTestFiles ? ["lock-enumeration"] : []
-    ];
+    return coverageSurfaces;
+  }
+  async function reviewAndVerify(context, routed, reviewLenses) {
+    const {
+      rt,
+      input,
+      verifierModel,
+      resolvedVerifierType,
+      verifyOpencodeDirectives,
+      verifyEffort,
+      reviewRecords,
+      verifyFailures
+    } = context;
+    const { changeSummary } = routed;
+    const { lenses, provenanceDocs, coverageSurfaces } = reviewLenses;
     const isConsolidated = input.mode === "single-verifier";
     const reviewItems = isConsolidated ? [CONSOLIDATED_LENS] : lenses;
     const reviewContext = { input, changeSummary, lenses, provenanceDocs, coverageSurfaces };
@@ -3478,9 +3562,30 @@ Return { "category": "<one of the five categories>" }`,
       directives: verifyOpencodeDirectives,
       effort: verifyEffort
     };
-    const reviewStage = async (_prev, originalItem) => {
+    const reviewStage = createReviewStage(context, reviewContext);
+    const verifyStage = createVerifyStage(context, verificationContext, lenses);
+    const pipelineResults = await rt.pipeline(
+      reviewItems,
+      reviewStage,
+      verifyStage
+    );
+    const reconciled = reconcileReviews(reviewItems, pipelineResults, reviewRecords, verifyFailures);
+    return prepareReviewedFindings(reconciled);
+  }
+  function createReviewStage(context, reviewContext) {
+    const {
+      rt,
+      reviewEffort,
+      resolvedReviewerType,
+      reviewModel,
+      reviewOpencodeDirectives,
+      warnings,
+      reviewRecords
+    } = context;
+    const { lenses } = reviewContext;
+    return async (_prev, originalItem) => {
       const lens = originalItem;
-      reviewersSpawned++;
+      context.reviewersSpawned++;
       const result = await rt.agent(
         reviewOpencodeDirectives + reviewerPrompt(lens, reviewContext),
         {
@@ -3504,7 +3609,10 @@ Return { "category": "<one of the five categories>" }`,
       reviewRecords.set(lens, usable);
       return usable;
     };
-    const verifyStage = async (prev, originalItem) => {
+  }
+  function createVerifyStage(context, verificationContext, lenses) {
+    const { rt, warnings, lensTrails, verifyFailures } = context;
+    return async (prev, originalItem) => {
       const lens = originalItem;
       const reviewOutput = prev;
       if (reviewOutput === null) return null;
@@ -3523,12 +3631,8 @@ Return { "category": "<one of the five categories>" }`,
         return uncheckedFindings(findings);
       }
     };
-    const pipelineResults = await rt.pipeline(
-      reviewItems,
-      reviewStage,
-      verifyStage
-    );
-    const reconciled = reconcileReviews(reviewItems, pipelineResults, reviewRecords, verifyFailures);
+  }
+  function prepareReviewedFindings(reconciled) {
     const allVerifiedFindings = reconciled.findings;
     const stats = findingStats(allVerifiedFindings);
     const coverage = reviewCoverage(reconciled, stats);
@@ -3546,20 +3650,13 @@ Return { "category": "<one of the five categories>" }`,
       detail: vc.claim.detail,
       verdict: vc.verdict
     }));
+    return { reconciled, stats, coverage, outputFindings, synthesisFindings };
+  }
+  async function synthesizeReview(context, routed, reviewed, lenses) {
+    const { rt, leanRt, synthesizeEffort, reviewRecords, warnings } = context;
+    const { coverage, synthesisFindings } = reviewed;
     rt.phase("Synthesize");
-    const synthesisPrompt = `## Task
-You are synthesizing a code review for the change below (category: ${category}).
-
-**Target:**
-${targetBlock(input.target)}
-
-` + routedContextBlock(changeSummary) + `## Verified findings (non-refuted)
-` + untrusted("synthesis-findings", JSON.stringify(synthesisFindings, null, 2)) + `
-
-## Output
-Produce an overall verdict: "approve" if no high-severity confirmed findings remain, "request-changes" otherwise. Include a concise summary.
-A finding marked unverifiable or unverified-by-cap was not checked and may be real.
-Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`;
+    const synthesisPrompt = buildSynthesisPrompt(context.input, routed, synthesisFindings);
     const synthesisAgent = await leanRt.agent(synthesisPrompt, {
       schema: SYNTHESIS_SCHEMA,
       label: "pr-review:synthesize",
@@ -3576,6 +3673,41 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       warnings.push(gapLine);
       rt.log(gapLine);
     }
+    return { verdict, summary };
+  }
+  function buildSynthesisPrompt(input, routed, synthesisFindings) {
+    const { category, changeSummary } = routed;
+    return `## Task
+You are synthesizing a code review for the change below (category: ${category}).
+
+**Target:**
+${targetBlock(input.target)}
+
+` + routedContextBlock(changeSummary) + `## Verified findings (non-refuted)
+` + untrusted("synthesis-findings", JSON.stringify(synthesisFindings, null, 2)) + `
+
+## Output
+Produce an overall verdict: "approve" if no high-severity confirmed findings remain, "request-changes" otherwise. Include a concise summary.
+A finding marked unverifiable or unverified-by-cap was not checked and may be real.
+Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" }`;
+  }
+  function assembleReviewOutput(context, routed, reviewLenses, reviewed, decision) {
+    const {
+      input,
+      resolvedReviewerType,
+      probeReport,
+      resolvedVerifierType,
+      verifierProbeReport,
+      leafFence,
+      leanRouting,
+      reviewersSpawned,
+      lensTrails,
+      warnings
+    } = context;
+    const { category, routeResult } = routed;
+    const { verdict, summary } = decision;
+    const { outputFindings, coverage, stats, reconciled } = reviewed;
+    const { provenanceDocs, provenanceSource, coverageSurfaces } = reviewLenses;
     return {
       category,
       verdict,
@@ -3602,6 +3734,17 @@ Return { "verdict": "approve"|"request-changes", "summary": "<concise summary>" 
       envelope: { trail: collectTrail(routeResult, ...lensTrails) },
       warnings
     };
+  }
+  async function run(rt00, input) {
+    const context = await prepareRun(rt00, input);
+    const routed = await routeChange(context);
+    if (input.effort?.["review"] === "auto") await selectReviewEffort(context, routed);
+    warnDegenerateSummary(context, routed);
+    warnEmptyChangedFiles(context, routed);
+    const reviewLenses = prepareReviewLenses(context, routed);
+    const reviewed = await reviewAndVerify(context, routed, reviewLenses);
+    const decision = await synthesizeReview(context, routed, reviewed, reviewLenses.lenses);
+    return assembleReviewOutput(context, routed, reviewLenses, reviewed, decision);
   }
   var pr_review_workflow_default = defineWorkflow({
     meta: {

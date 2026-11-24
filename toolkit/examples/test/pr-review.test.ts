@@ -597,7 +597,9 @@ describe('pr-review null reviewer handling', () => {
     // dropped counter must still reflect the null reviewer
     expect(result.stats.dropped).toBeGreaterThan(0)
   })
+})
 
+describe('pr-review null reviewer handling — full coverage', () => {
   it('keeps the full-coverage output clean and unchanged when every launched lens returns', async () => {
     const rt = new FakeRuntime({
       onAgent: ({ prompt }: { prompt: string; index: number }) => {
@@ -705,61 +707,69 @@ describe('pr-review finding refutation', () => {
 // (keep-unverified-rather-than-drop).
 // ---------------------------------------------------------------------------
 
+interface CapReviewState {
+  reviewerCallCount: number
+  verifierCallCount: number
+  synthesisPrompt: string
+}
+
+function capReviewAgent(state: CapReviewState, sevenFindings: Array<{ title: string; file: string; severity: string; detail: string }>) {
+  return ({ prompt }: { prompt: string; index: number }) => {
+    const p = prompt.toLowerCase()
+
+    // (1) Adversarial verifier — count calls to pin that cap-cut claims
+    //     spawn NO verifier agents (5 kept claims x 3 votes = 15 calls).
+    if (p.includes('adversarially verify')) {
+      state.verifierCallCount++
+      return { verdict: 'confirmed', reason: 'Re-derived from the diff' }
+    }
+
+    // (2) Synthesis — capture the prompt to assert cap-cut findings
+    //     survive into the synthesis input (only 'refuted' is excluded).
+    if (p.includes('synthesizing a code review')) {
+      state.synthesisPrompt = prompt
+      return { verdict: 'request-changes', summary: 'Several findings to address' }
+    }
+
+    // (3) Reviewers — first lens yields 7 findings, the others none, so
+    //     exactly ONE verification call sees more claims than the cap.
+    if (p.includes('you are a specialized code reviewer')) {
+      state.reviewerCallCount++
+      if (state.reviewerCallCount === 1) return { findings: sevenFindings }
+      return { findings: [] }
+    }
+
+    // (4) Act stage (change summary)
+    if (p.includes('you are reviewing a')) {
+      return { summary: 'Wide-reaching bugfix', riskAreas: ['core'], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+    }
+
+    // (5) Classifier
+    if (p.includes('classify it into exactly one category')) {
+      return { category: 'bugfix' }
+    }
+
+    return { summary: 'Default summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+  }
+}
+
+function capReviewFixture() {
+  const state: CapReviewState = { reviewerCallCount: 0, verifierCallCount: 0, synthesisPrompt: '' }
+  // 7 findings from ONE reviewer → with maxVerifyClaims: 5 the first 5 are
+  // verified and the last 2 come back as 'unverified-by-cap' with votes: [].
+  const sevenFindings = Array.from({ length: 7 }, (_, i) => ({
+    title: `cap-finding-${i + 1}`,
+    file: `src/file-${i + 1}.ts`,
+    severity: 'medium',
+    detail: `Detail for finding ${i + 1}`,
+  }))
+  const rt = new FakeRuntime({ onAgent: capReviewAgent(state, sevenFindings) })
+  return { state, rt }
+}
+
 describe('pr-review cap-truncated findings (unverified-by-cap)', () => {
   it('labels cap-cut findings unverified-by-cap and keeps them in synthesis input', async () => {
-    let reviewerCallCount = 0
-    let verifierCallCount = 0
-    let synthesisPrompt = ''
-
-    // 7 findings from ONE reviewer → with maxVerifyClaims: 5 the first 5 are
-    // verified and the last 2 come back as 'unverified-by-cap' with votes: [].
-    const sevenFindings = Array.from({ length: 7 }, (_, i) => ({
-      title: `cap-finding-${i + 1}`,
-      file: `src/file-${i + 1}.ts`,
-      severity: 'medium',
-      detail: `Detail for finding ${i + 1}`,
-    }))
-
-    const rt = new FakeRuntime({
-      onAgent: ({ prompt }: { prompt: string; index: number }) => {
-        const p = prompt.toLowerCase()
-
-        // (1) Adversarial verifier — count calls to pin that cap-cut claims
-        //     spawn NO verifier agents (5 kept claims x 3 votes = 15 calls).
-        if (p.includes('adversarially verify')) {
-          verifierCallCount++
-          return { verdict: 'confirmed', reason: 'Re-derived from the diff' }
-        }
-
-        // (2) Synthesis — capture the prompt to assert cap-cut findings
-        //     survive into the synthesis input (only 'refuted' is excluded).
-        if (p.includes('synthesizing a code review')) {
-          synthesisPrompt = prompt
-          return { verdict: 'request-changes', summary: 'Several findings to address' }
-        }
-
-        // (3) Reviewers — first lens yields 7 findings, the others none, so
-        //     exactly ONE verification call sees more claims than the cap.
-        if (p.includes('you are a specialized code reviewer')) {
-          reviewerCallCount++
-          if (reviewerCallCount === 1) return { findings: sevenFindings }
-          return { findings: [] }
-        }
-
-        // (4) Act stage (change summary)
-        if (p.includes('you are reviewing a')) {
-          return { summary: 'Wide-reaching bugfix', riskAreas: ['core'], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
-        }
-
-        // (5) Classifier
-        if (p.includes('classify it into exactly one category')) {
-          return { category: 'bugfix' }
-        }
-
-        return { summary: 'Default summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
-      },
-    })
-
+    const { state, rt } = capReviewFixture()
     const result = await wf.run(rt, JSON.stringify({ target: 'HEAD~2..HEAD' }))
 
     // All 7 findings surface — claims are never dropped by the cap.
@@ -788,13 +798,13 @@ describe('pr-review cap-truncated findings (unverified-by-cap)', () => {
     expect(confirmed.length).toBe(5)
 
     // Cap-cut claims spawned NO verifier agents: 5 kept claims x 3 votes.
-    expect(verifierCallCount).toBe(15)
+    expect(state.verifierCallCount).toBe(15)
 
     // Survival into synthesis: the synthesis prompt embeds the non-refuted
     // findings as JSON — the cap-cut findings (and their verdict) must be in.
-    expect(synthesisPrompt).toContain('cap-finding-6')
-    expect(synthesisPrompt).toContain('cap-finding-7')
-    expect(synthesisPrompt).toContain('unverified-by-cap')
+    expect(state.synthesisPrompt).toContain('cap-finding-6')
+    expect(state.synthesisPrompt).toContain('cap-finding-7')
+    expect(state.synthesisPrompt).toContain('unverified-by-cap')
   })
 })
 
@@ -2340,34 +2350,38 @@ describe('pr-review mode ladder', () => {
 // embeds it (reviewer, verifier, synthesizer).
 // ---------------------------------------------------------------------------
 
+function targetRenderingRuntime(prompts: string[]) {
+  return new FakeRuntime({
+    onAgent: ({ prompt }: { prompt: string; index: number }) => {
+      prompts.push(prompt)
+      const p = prompt.toLowerCase()
+      if (p.includes('availability probe')) return 'PROBE_OK'
+      if (p.includes('adversarially verify')) {
+        return { verdict: 'confirmed', reason: 'Verified: null check is indeed missing' }
+      }
+      if (p.includes('synthesizing a code review')) {
+        return { verdict: 'request-changes', summary: 'Critical finding must be addressed' }
+      }
+      if (p.includes('you are a specialized code reviewer')) {
+        return {
+          findings: [
+            { title: 'Missing null check', file: 'src/payment.ts', severity: 'high', detail: 'no null check' },
+          ],
+        }
+      }
+      if (p.includes('you are reviewing a')) {
+        return { summary: 'Fixes null pointer', riskAreas: ['payment'], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+      }
+      if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
+      return { summary: 'Change summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
+    },
+  })
+}
+
 describe('pr-review target rendering — multi-line target is fenced, never inline-backtick-wrapped', () => {
   it('fences a multi-line target in the reviewer, verifier and synthesizer prompts', async () => {
     const prompts: string[] = []
-    const rt = new FakeRuntime({
-      onAgent: ({ prompt }: { prompt: string; index: number }) => {
-        prompts.push(prompt)
-        const p = prompt.toLowerCase()
-        if (p.includes('availability probe')) return 'PROBE_OK'
-        if (p.includes('adversarially verify')) {
-          return { verdict: 'confirmed', reason: 'Verified: null check is indeed missing' }
-        }
-        if (p.includes('synthesizing a code review')) {
-          return { verdict: 'request-changes', summary: 'Critical finding must be addressed' }
-        }
-        if (p.includes('you are a specialized code reviewer')) {
-          return {
-            findings: [
-              { title: 'Missing null check', file: 'src/payment.ts', severity: 'high', detail: 'no null check' },
-            ],
-          }
-        }
-        if (p.includes('you are reviewing a')) {
-          return { summary: 'Fixes null pointer', riskAreas: ['payment'], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
-        }
-        if (p.includes('classify it into exactly one category')) return { category: 'bugfix' }
-        return { summary: 'Change summary', riskAreas: [], changedFiles: ['src/app.ts'], addedPublicSurface: [] }
-      },
-    })
+    const rt = targetRenderingRuntime(prompts)
 
     // A Path-B style target: embeds the repo path → a multi-line paragraph,
     // NOT a short git range. This is exactly the value that broke rendering.
