@@ -202,6 +202,7 @@ function mixedVote(prompt: string, nextPartialVote: () => number): unknown {
       return undefined
     })
     const result = await runFloor(rt, 'single-verifier')
+    expect(result.verdict).toBe('incomplete')
     expect(result.findings).toEqual([{ ...floorFinding(), verdict: 'unverifiable' }])
     expect(result.coverage).toMatchObject({ verifyFailed: ['consolidated'] })
     expect(result.summary).toContain('consolidated (lenses: root-cause, regression-risk, test-coverage, maintainability)')
@@ -219,7 +220,7 @@ function mixedVote(prompt: string, nextPartialVote: () => number): unknown {
     expect(result.warnings).toEqual([])
     expect(result).not.toHaveProperty('coverage')
   })
-  it.each([['src/auth.ts'], ['Dockerfile'], ['docs/example.ts'], ['page.mdx'], []].map(changedFiles => ({ changedFiles })))('L6 arms code lenses for docs inventory $changedFiles', async ({ changedFiles }) => {
+  it.each([['src/auth.ts'], ['Dockerfile'], ['docs/example.ts'], ['page.mdx'], ['CMakeLists.txt'], ['requirements.txt'], []].map(changedFiles => ({ changedFiles })))('L6 arms code lenses for docs inventory $changedFiles', async ({ changedFiles }) => {
     const rt = floorRuntime(({ prompt }) => {
       if (prompt.includes('classify it into exactly one category')) return { category: 'docs' }
       if (prompt.includes('You are reviewing a')) return { summary: 'Documentation category with uncertain code', riskAreas: [], changedFiles, addedPublicSurface: [] }
@@ -235,7 +236,7 @@ function mixedVote(prompt: string, nextPartialVote: () => number): unknown {
   it('L6 preservation control: prose-only docs keeps exactly the base lenses', async () => {
     const rt = floorRuntime(({ prompt }) => {
       if (prompt.includes('classify it into exactly one category')) return { category: 'docs' }
-      if (prompt.includes('You are reviewing a')) return { summary: 'Prose documentation only', riskAreas: [], changedFiles: ['README.md', 'docs/guide.md', 'guide.MARKDOWN', 'guide.RST', 'guide.txt', 'guide.ADOC'], addedPublicSurface: [] }
+      if (prompt.includes('You are reviewing a')) return { summary: 'Prose documentation only', riskAreas: [], changedFiles: ['README.md', 'docs/guide.md', 'guide.MARKDOWN', 'guide.RST', 'guide.ADOC'], addedPublicSurface: [] }
       return undefined
     })
     const result = await runFloor(rt)
@@ -1763,6 +1764,25 @@ describe('pr-review effort defaults and overrides', () => {
     const verifies = verifyCalls(rt)
     expect(verifies.length).toBeGreaterThan(0)
     for (const c of verifies) expect(c.opts?.effort).toBe('high')              // VERIFY_EFFORT_DEFAULT (also the floor)
+  })
+})
+
+describe('pr-review review auto-effort', () => {
+  it('passes the triage-selected effort to every reviewer and logs the selection', async () => {
+    const rt = floorRuntime(({ prompt, opts }) => {
+      if (opts?.label === 'pr-review:auto-effort') return { scores: [{ id: 'change', score: 5, reason: 'Cross-cutting review' }] }
+      if (prompt.includes('You are reviewing a')) return {
+        summary: 'Updates behavior across three collaborating modules', riskAreas: ['cross-module behavior'],
+        changedFiles: ['src/app.ts', 'src/cache.ts', 'src/parser.ts'], addedPublicSurface: [],
+      }
+      return undefined
+    })
+    await wf.run(rt, JSON.stringify({ target: 'change description', effort: { review: 'auto' } }))
+    expect(rt.calls.filter(c => c.opts?.label === 'pr-review:auto-effort')).toHaveLength(1)
+    const reviews = rt.calls.filter(c => c.opts?.label?.startsWith('pr-review:reviewer:'))
+    expect(reviews.length).toBeGreaterThan(0)
+    for (const call of reviews) expect(call.opts?.effort).toBe('xhigh')
+    expect(rt.logs).toContain("pr-review: auto-effort selected 'xhigh' for the review stage (triage)")
   })
 })
 

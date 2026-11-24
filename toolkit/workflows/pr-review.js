@@ -3015,7 +3015,7 @@ ${synthesis.summary}`, gapLine };
     const base = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
     if (category !== "docs") return base;
     const changedFiles = changeSummary.changedFiles;
-    const nonProse = changedFiles.filter((path) => !/\.(?:md|markdown|rst|txt|adoc)$/i.test(path)).length;
+    const nonProse = changedFiles.filter((path) => !/\.(?:md|markdown|rst|adoc)$/i.test(path)).length;
     if (changedFiles.length > 0 && nonProse === 0) return base;
     const reason = changedFiles.length === 0 ? "file list was empty (inventory unknown)" : `${nonProse} non-prose file(s)`;
     warnings.push(`route: category docs but ${reason}; added lenses correctness, security`);
