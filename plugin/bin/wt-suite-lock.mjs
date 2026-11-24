@@ -32,6 +32,7 @@ import { claimParkAttempt, parkSignalExit, watchParkChildSignals } from './lib/h
 import { suiteLockPrecedenceCli } from './lib/suite-lock-precedence.mjs'
 import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
 import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
+import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
@@ -52,6 +53,7 @@ const USAGE = `Usage:
   Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
+  --light runs a plain, existing one-file Node test directly without a ticket; use run -- to keep it queued (overrun warning after 60 seconds).
   A light run over several test files or a whole suite is warned (WT_SUITE_LOCK_LIGHT_SCOPE=warn, the default) or
   refused (=refuse) with the command to run instead (WT_SUITE_LOCK_HEAVY_JOB names a heavy-job wrapper); light-scope lists firings.
   Release priority is reserved for the main session's release and merge-train gates.`
@@ -111,6 +113,7 @@ async function run(args) {
     const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
     if (inherited === 75) return 75
     if (inherited) return await spawnCommand(command, null, null, parkChildEnvironment(park))
+    if (directLightRun({ light, staticRun, park, command })) return await runDirectCommand(() => spawnCommand(command, null, null, parkChildEnvironment(park)))
     return await queueAndRun(command, { waitS, staleS, light, staticRun, priority, project, size, park, attempt })
   } finally { try { publishParkOutcome(park, attempt.outcome) } finally { releaseAttempt() } }
 }

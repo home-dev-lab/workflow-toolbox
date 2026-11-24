@@ -220,7 +220,11 @@ export default tseslint.config(
       'plugin/bin/lib/suite-lock-light-scope.mjs', '../plugin/bin/lib/suite-lock-light-scope.mjs',
       'plugin/bin/lib/host/suite-lock-light-scope-log.mjs', '../plugin/bin/lib/host/suite-lock-light-scope-log.mjs',
       'toolkit/test-support/suite-lease.global-setup.mjs', 'test-support/suite-lease.global-setup.mjs',
-      'toolkit/packages/build/test/suite-lock-light-scope.test.ts', 'packages/build/test/suite-lock-light-scope.test.ts'],
+      'toolkit/packages/build/test/suite-lock-light-scope.test.ts', 'packages/build/test/suite-lock-light-scope.test.ts',
+      'plugin/bin/lib/suite-lock-direct-run.mjs', '../plugin/bin/lib/suite-lock-direct-run.mjs',
+      'plugin/bin/lib/host/suite-lock-direct-file.mjs', '../plugin/bin/lib/host/suite-lock-direct-file.mjs',
+      'toolkit/packages/build/test/suite-lock-direct-run.test.ts', 'packages/build/test/suite-lock-direct-run.test.ts',
+      'toolkit/packages/build/test/helpers/suite-lock-direct-scenarios.mjs', 'packages/build/test/helpers/suite-lock-direct-scenarios.mjs'],
     rules: {
       complexity: ['error', 10],
       'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
