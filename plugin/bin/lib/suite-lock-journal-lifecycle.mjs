@@ -7,6 +7,8 @@ import { staticWaitDeadline } from './suite-lock-static-deadline.mjs'
 import { suiteLockRankOptions } from './suite-lock-priority.mjs'
 import { suiteLockBootClock } from './host/platform.mjs'
 import { suiteSignalExit } from './host/suite-lock-signals.mjs'
+import { startSuiteResourceSampler } from './host/suite-lock-resources.mjs'
+import { normalizeSuiteResources, unknownSuiteResources } from './suite-lock-resources.mjs'
 
 const CONTEXT = Symbol('suite journal context')
 const records = new WeakMap()
@@ -111,9 +113,12 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
   const deadline = staticWaitDeadline(options)
   try {
     const lease = await acquire({ ...deadline.options, [CONTEXT]: context })
-    if (lease.inherited || lease.broker) return lease
+    if (lease.inherited || lease.offloaded) return lease
+    const resourceStarted = performance.now()
+    const resourceSampler = startSuiteResourceSampler(options)
+    if (lease.broker) return { ...lease, resourceSampler, resourceStarted }
     suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel })
-    return { ...lease, journal: context.journal, staticDomain: options.staticDomain }
+    return { ...lease, resourceSampler, resourceStarted, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)
     journalAcquisitionFailure(context, failure, deadline.options.signal)
@@ -128,8 +133,36 @@ function holderBootStart() {
 
 export const journalHolder = (record, options, now) => ({ ...record, startedAt: options.startedAt ?? new Date(now).toISOString(), ...holderBootStart() })
 
+export function finishSuiteResourceSample(lease, outcome) {
+  let resources
+  try {
+    resources = lease?.resourceSampler?.stop()
+  } catch {
+    return resourceSampleFailure(lease, outcome, 'sampler-stop-failed')
+  }
+  if (resources === undefined) return outcome
+  try { return { ...outcome, resources: normalizeSuiteResources(resources) } }
+  catch { return resourceSampleFailure(lease, outcome, 'resources-unserializable') }
+}
+
+function resourceSampleFailure(lease, outcome, reason) {
+  const elapsed = performance.now() - lease?.resourceStarted
+  const wallMs = Number.isFinite(elapsed) ? Math.max(0, elapsed) : null
+  return { ...outcome, resources: normalizeSuiteResources(unknownSuiteResources(wallMs, reason)) }
+}
+
+function brokerResourceFrame(outcome) {
+  try { return outcome.resources ? `${JSON.stringify({ resources: outcome.resources })}\n` : '' }
+  catch { return `${JSON.stringify({ resourcesError: 'resources-unserializable' })}\n` }
+}
+
 export function finishBrokerLease(lease, outcome) {
   lease.markReleased?.()
-  if (!lease.socket.destroyed) lease.socket.end(`${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`)
+  if (!lease.socket.destroyed) {
+    // Keep the first frame small: older hosts stop buffering after 128 characters.
+    const terminal = `${JSON.stringify({ exit: outcome.exit ?? 0, served: outcome.served === true })}\n`
+    const telemetry = brokerResourceFrame(outcome)
+    lease.socket.end(terminal + telemetry)
+  }
   return true
 }

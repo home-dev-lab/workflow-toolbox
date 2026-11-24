@@ -16,8 +16,9 @@ import { observeSuiteQueuePlace, suiteQueueAdvanced } from './suite-lock-progres
 import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
 import { requestBrokerLease } from './suite-lock-broker-client.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
-import { suiteJournalEvent } from './suite-lock-journal.mjs'
-import { acquireJournalLease, finishBrokerLease, handBackJournalLease, journalHolder, journalWaiterRecord, notePublishedLease } from './suite-lock-journal-lifecycle.mjs'
+import { readSuiteResourceClasses, suiteJournalEvent } from './suite-lock-journal.mjs'
+import { suiteResourceReleaseOutcome } from './suite-lock-resources.mjs'
+import { acquireJournalLease, finishBrokerLease, finishSuiteResourceSample, handBackJournalLease, journalHolder, journalWaiterRecord, notePublishedLease } from './suite-lock-journal-lifecycle.mjs'
 import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, parkQueueMetadata, parkStatusEntries, suiteLeaseWithPark, takeParkTicket } from './suite-lock-park.mjs'
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
@@ -87,6 +88,7 @@ export function readSuiteLockStatus(options = {}) {
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
   const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
+  snapshot.resourceClasses = readSuiteResourceClasses(current.root)
   snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
@@ -580,6 +582,7 @@ function requestBrokerSuiteLock(socketPath, options) {
 
 export function releaseSuiteLock(lease, outcome = {}) {
   if (lease?.inherited) return true
+  outcome = finishSuiteResourceSample(lease, outcome)
   if (lease?.broker) {
     return finishBrokerLease(lease, outcome)
   }
@@ -587,6 +590,7 @@ export function releaseSuiteLock(lease, outcome = {}) {
   if (!current.held) return true
   if (!sameInstance(current.holder, lease.holder)) return false
   outcome = suiteLockReleaseOutcome(lease, outcome)
+  outcome = suiteResourceReleaseOutcome(outcome)
   return retrySuiteSection(lease.root, () => {
     const confirmed = readSuiteLock({ root: lease.root })
     if (!confirmed.held) return true

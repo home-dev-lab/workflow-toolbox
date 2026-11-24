@@ -11,7 +11,7 @@ vi.mock('../../../../plugin/bin/lib/host/suite-lock-host.mjs', async (original) 
 class Socket extends EventEmitter {
   destroyed = false
   write = vi.fn()
-  end = vi.fn(() => { this.destroy() })
+  end = vi.fn<(line?: string) => void>(() => { this.destroy() })
   destroy() { this.destroyed = true; this.emit('close') }
 }
 
@@ -50,7 +50,13 @@ it('closes a granted broker connection without spawning after a signal', async (
     socket.emit('data', 'granted broker-lease\n')
     process.emit('SIGHUP')
     expect(await result).toBe(129)
-    expect(socket.end).toHaveBeenCalledWith(`${JSON.stringify({ exit: 129, served: false })}\n`)
+    expect(socket.end).toHaveBeenCalledOnce()
+    const frames = socket.end.mock.calls[0]?.[0]?.trim().split('\n').map((line) => JSON.parse(line))
+    // The resource selftest executes develop's 128-character parser at every chunk size.
+    expect(frames).toEqual([
+      { exit: 129, served: false },
+      { resources: { peakCores: null, peakMemMiB: null, wallMs: expect.any(Number), unknownReasons: ['insufficient-samples'] } },
+    ])
   } finally { socket.destroy(); await result.catch(() => {}) }
   expect(process.listenerCount('SIGHUP')).toBe(before)
 })

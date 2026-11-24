@@ -94,24 +94,34 @@ function lightHoldLine(current) {
   return `light lease past its class: pid ${pidNumber(current.holder?.pid) ?? 'unknown'} held ${formatSuiteLockDuration(current.ageMs)}, above the ${finite(current.lightHoldBoundS) ?? 'unknown'} s bound (${displayArgv(safeArgv(current.holder?.argv))}); the lock never pre-empts a holder`
 }
 
+function appendHoldWarnings(current, lines) {
+  if (current.longHold) lines.push(longHoldLine(current))
+  if (current.lightPastClass && !current.stale) lines.push(lightHoldLine(current))
+}
+
 function orderLines(current) {
   if (current.order === 'compatible') return ['queue compatibility order: exact older-client ordering while a live ticket has no level']
   if (current.levelOrder === 'bounded-p0') return ['queue legacy order: bounded P0 with aging; size bonus, project precedence and alternation inactive']
   return current.order === 'levels' && current.levelOrder === 'legacy' ? [LEGACY_LEVEL_ORDER] : []
 }
 
-export function formatSuiteLockStatus(current, holderText) {
+export function formatSuiteLockStatus(current, holderText, { resources = false } = {}) {
   const queue = Array.isArray(current.queue) ? current.queue : []
   const waiting = queue.filter((entry) => !entry.stale).length
   const free = waiting ? `suite lock free; ${waiting} wait` : 'suite lock free'
   const lines = [current.legacyStatus ?? (current.held ? holderHeadline(current, holderText) : free)]
-  if (current.longHold) lines.push(longHoldLine(current))
-  if (current.lightPastClass && !current.stale) lines.push(lightHoldLine(current))
+  appendHoldWarnings(current, lines)
   lines.push(...orderLines(current))
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
   lines.push(...parkedStatusRows(current).map(parkedLine))
+  if (resources) lines.push(...resourceClassLines(current.resourceClasses))
   return lines.map(displayText).join('\n') + '\n'
+}
+
+function resourceClassLines(classes = {}) {
+  const rounded = (value) => typeof value === 'number' ? value.toFixed(2) : 'unknown'
+  return Object.entries(classes).map(([key, value]) => `resources ${displayText(key)}: ${value.class}, ${rounded(value.cores)} cores, ${rounded(value.memMiB)} MiB (${value.basis})`)
 }
 
 export function suiteLockStatusJson(current) {
@@ -119,5 +129,6 @@ export function suiteLockStatusJson(current) {
   const status = current.legacyStatus ?? (Array.isArray(queue) ? null : OLDER_BROKER_QUEUE)
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
     ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
-    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)) }
+    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)),
+    ...(current.resourceClasses ? { resourceClasses: safeValue(current.resourceClasses) } : {}) }
 }

@@ -42,7 +42,7 @@ const USAGE = `Usage:
   Replacement keeps rank and uses the original waiter's cwd, environment, streams and exit recipient; refused once the waiter closes replacement acceptance before starting.
   node wt-suite-lock.mjs journal [--json] [--since <ISO>]
   node wt-suite-lock.mjs light-scope [--json]
-  node wt-suite-lock.mjs status [--json]
+  node wt-suite-lock.mjs status [--json] [--resources]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   node wt-suite-lock.mjs precedence set --project NAME --until ISO --source ID | clear --project NAME | list
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
@@ -260,12 +260,12 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
 
 async function status(args) {
   const json = args.includes('--json')
-  const unknown = args.filter((arg) => arg !== '--json')
+  const unknown = args.filter((arg) => arg !== '--json' && arg !== '--resources')
   if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`)
   const viaBroker = Boolean(process.env.WT_SUITE_LOCK_BROKER)
   const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLockStatus()
   if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(current), ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
-  else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder)))
+  else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder), { resources: args.includes('--resources') }))
   if (!json) process.stdout.write(staticLaneStatusLines(current))
   return 0
 }
