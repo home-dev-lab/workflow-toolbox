@@ -94,6 +94,11 @@ function lightHoldLine(current) {
   return `light lease past its class: pid ${pidNumber(current.holder?.pid) ?? 'unknown'} held ${formatSuiteLockDuration(current.ageMs)}, above the ${finite(current.lightHoldBoundS) ?? 'unknown'} s bound (${displayArgv(safeArgv(current.holder?.argv))}); the lock never pre-empts a holder`
 }
 
+function appendHoldWarnings(current, lines) {
+  if (current.longHold) lines.push(longHoldLine(current))
+  if (current.lightPastClass && !current.stale) lines.push(lightHoldLine(current))
+}
+
 function orderLines(current) {
   if (current.order === 'compatible') return ['queue compatibility order: exact older-client ordering while a live ticket has no level']
   if (current.levelOrder === 'bounded-p0') return ['queue legacy order: bounded P0 with aging; size bonus, project precedence and alternation inactive']
@@ -105,8 +110,7 @@ export function formatSuiteLockStatus(current, holderText, { resources = false }
   const waiting = queue.filter((entry) => !entry.stale).length
   const free = waiting ? `suite lock free; ${waiting} wait` : 'suite lock free'
   const lines = [current.legacyStatus ?? (current.held ? holderHeadline(current, holderText) : free)]
-  if (current.longHold) lines.push(longHoldLine(current))
-  if (current.lightPastClass && !current.stale) lines.push(lightHoldLine(current))
+  appendHoldWarnings(current, lines)
   lines.push(...orderLines(current))
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
