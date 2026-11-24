@@ -265,6 +265,17 @@ function installCommandForwarding(forward, timing) {
   return stopSignals
 }
 
+function spawnOwnedCommand(command, marker, envOverrides, group) {
+  return spawn(command[0], command.slice(1), {
+    stdio: 'inherit',
+    ...spawnParkEnvironment(marker, envOverrides, process.env),
+    // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
+    // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
+    shell: spawnNeedsShell(command[0]),
+    ...coveredCommandSpawnOptions({ broker: group }),
+  })
+}
+
 function spawnCommand(command, leaseLost = null, marker = null, envOverrides, timing = {}) {
   return new Promise((resolve, reject) => {
     const refusal = windowsShimArgumentRefusal(command)
@@ -272,14 +283,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
     // Broker and resource leases isolate their owned command groups on POSIX.
     const group = Boolean(leaseLost)
     const started = performance.now()
-    const child = spawn(command[0], command.slice(1), {
-      stdio: 'inherit',
-      ...spawnParkEnvironment(marker, envOverrides, process.env),
-      // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
-      // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
-      shell: spawnNeedsShell(command[0]),
-      ...coveredCommandSpawnOptions({ broker: group }),
-    })
+    const child = spawnOwnedCommand(command, marker, envOverrides, group)
     let forwardedSignal = null
     let lockLost = false
     let treeStopped = null
