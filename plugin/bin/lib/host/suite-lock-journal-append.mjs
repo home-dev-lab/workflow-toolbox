@@ -39,7 +39,9 @@ function rotateBeforeAppend(root, file) {
 export function appendSuiteLockJournal(root, event) {
   try {
     const line = Buffer.from(`${JSON.stringify(event)}\n`)
-    if (line.length >= 4096) throw new Error('journal line too large')
+    // Reservation releases may name arbitrarily many overlapping leases. Their
+    // writers share the reservation section; O_APPEND keeps each write contiguous.
+    if (line.length >= 4096 && !Array.isArray(event.overlaps)) throw new Error('journal line too large')
     const file = path.join(root, 'journal.jsonl')
     rotateBeforeAppend(root, file)
     const fd = openSync(file, APPEND_OPTIONS.flag, APPEND_OPTIONS.mode)

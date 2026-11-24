@@ -151,6 +151,12 @@ export function readSuiteResourceClasses(root) {
   catch { return {} } // Advisory history must not affect broker status or admission negotiation.
 }
 
+/** Complete-run windows need terminal append order, not request or wall-clock order. */
+export function readSuiteResourceRuns(root) {
+  return parsedJournal(root).records.filter((event) => event.event === 'release')
+    .map((release) => ({ cmd: release.cmd, release }))
+}
+
 export function suiteLockJournalCli(args, root) {
   if (root.startsWith('broker:')) throw new Error('journal reader requires the host lock root; run wt-suite-lock journal --json on the host')
   let since

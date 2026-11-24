@@ -116,7 +116,15 @@ export function formatSuiteLockStatus(current, holderText, { resources = false }
   lines.push(...queue.map(queueLine))
   lines.push(...parkedStatusRows(current).map(parkedLine))
   if (resources) lines.push(...resourceClassLines(current.resourceClasses))
+  lines.push(...reservationStatusLines(current))
   return lines.map(displayText).join('\n') + '\n'
+}
+
+function reservationStatusLines(current) {
+  const lines = []
+  if (current.reservations?.holders.length) lines.push(`reservation holders: ${current.reservations.holders.length}; inspect wt-suite-lock status --json`)
+  if (current.reservations?.memory?.unknown) lines.push(`memory watchdog unknown: ${current.reservations.memory.unknown}; admission closed`)
+  return lines
 }
 
 function resourceClassLines(classes = {}) {
@@ -130,5 +138,10 @@ export function suiteLockStatusJson(current) {
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
     ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
     ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)),
-    ...(current.resourceClasses ? { resourceClasses: safeValue(current.resourceClasses) } : {}) }
+    ...optionalResourceStatus(current) }
+}
+
+function optionalResourceStatus(current) {
+  return { ...(current.resourceClasses ? { resourceClasses: safeValue(current.resourceClasses) } : {}),
+    ...(current.reservations ? { reservations: safeValue(current.reservations) } : {}) }
 }

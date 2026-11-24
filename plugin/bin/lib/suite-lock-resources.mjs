@@ -50,11 +50,15 @@ export function classifySuiteJob(runs, declared = 'heavy') {
 export function suiteResourceClasses(tickets) {
   const groups = new Map()
   for (const ticket of tickets) {
-    if (typeof ticket.cmd !== 'string') continue
-    if (!groups.has(ticket.cmd)) groups.set(ticket.cmd, { runs: [], declared: 'heavy' })
-    const group = groups.get(ticket.cmd)
+    const cmd = releasedCommand(ticket)
+    if (typeof cmd !== 'string') continue
+    if (!groups.has(cmd)) groups.set(cmd, { runs: [], declared: 'heavy' })
+    const group = groups.get(cmd)
     group.declared = ticket.light === true || ticket.kind === 'light' || ticket.kind === 'static' ? 'light' : 'heavy'
     if (ticket.release?.resources) group.runs.push(ticket.release.resources)
   }
   return Object.fromEntries([...groups].map(([key, group]) => [key, classifySuiteJob(group.runs, group.declared)]))
 }
+
+// An accepted queued replacement may change the identity after the request row.
+const releasedCommand = (ticket) => ticket.release?.cmd ?? ticket.cmd
