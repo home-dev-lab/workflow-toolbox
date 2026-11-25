@@ -39,7 +39,9 @@ writeFileSync(path.join(scratch, 'bin/lib/host/suite-lock-machine.mjs'),
 export function readSuiteMachine() {
   try { return JSON.parse(fs.readFileSync(process.env.WT_SUITE_LOCK_DIR + '/machine.json', 'utf8')) } catch { return ${JSON.stringify(machine)} }
 }
-export const reservationHostSupported = (platform = process.platform) => ['linux', 'darwin'].includes(platform)\n`)
+export const reservationHostSupported = (platform = process.platform) => ['linux', 'darwin'].includes(platform)
+export const isWsl = () => false
+export const startWindowsMemoryReader = () => { throw new Error('unexpected Windows reader in fixture') }\n`)
 const children = new Set()
 after(() => { for (const child of children) child.kill('SIGKILL'); rmSync(scratch, { recursive: true, force: true }) })
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20))
@@ -57,6 +59,24 @@ function history(root, cores = 1, memMiB = 100) {
     ts: new Date().toISOString(), exit: 0, overlaps: [], resources: { peakCores: cores, peakMemMiB: memMiB,
       wallMs: 1000, unknownReasons: [] } }))
   writeFileSync(path.join(root, 'journal.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n')
+  warmSupervisor(root)
+}
+
+// Sharing assertions need a fresh supervisor: round-five cold starts grant exclusively.
+function warmSupervisor(root) {
+  mkdirSync(root, { recursive: true })
+  const generation = `${path.basename(root)}-supervised`
+  const child = spawn(process.execPath, [path.join(scratch, 'bin/lib/host/suite-lock-watchdog.mjs'), root, generation],
+    { stdio: 'ignore' })
+  children.add(child)
+  writeFileSync(path.join(root, 'reservations.json'), JSON.stringify({ version: 1, generation, holders: [], bypasses: {},
+    createdAt: Date.now(), watchdog: { pid: child.pid, pidNamespace: currentPidNamespace(), heartbeat: 0 } }))
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    if (reservations.readReservationState(root).watchdog.heartbeat > 0) return
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  }
+  assert.fail('fixture watchdog must be warm before testing shared admission')
 }
 
 function legacyHead(root, queued, acquired, release) {
@@ -124,6 +144,7 @@ reservationTest('resource history follows completion append order rather than re
   const rows = [row('long', 'request'), ...Array.from({ length: 10 }, (_, i) => row(`short-${i}`, 'request')),
     ...Array.from({ length: 10 }, (_, i) => row(`short-${i}`, 'release')), row('long', 'release', 2)]
   writeFileSync(path.join(root, 'journal.jsonl'), rows.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+  warmSupervisor(root)
   const lease = await acquireSuiteLock({ root, reservation: true, readMachine: () => machine,
     waitS: 2, pollMs: 10, argv: ['fixture'], env: {} })
   try {
@@ -431,6 +452,7 @@ reservationTest('thirty-three measured heavy leases fit without a holder-count c
 
 for (const sensitive of [false, true]) reservationTest(`same-name light jobs use history, not their name: sensitive=${sensitive}`, async () => {
   const root = path.join(scratch, `sensitivity-${sensitive}`)
+  if (!sensitive) warmSupervisor(root)
   if (sensitive) {
     history(root)
     const rows = readFileSync(path.join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
@@ -502,6 +524,8 @@ reservationTest('a job that repeatedly exceeds memory alone ends after three req
     for (let attempt = 1; attempt <= 4; attempt++) {
       await until(() => { try { return readFileSync(marker, 'utf8') === String(attempt) } catch { return false } }, 'bounded attempt must start')
       assert.equal(reservations.readReservationState(root).holders.length, 1)
+      await until(() => Date.now() - (reservations.readReservationState(root).lastStopConfirmedAt ?? 0) > 5000,
+        'successive memory stops must respect the settle window', 7000)
       reservations.watchReservationMemory(root, { ...machine, availableMiB: 0 })
     }
     await until(() => run.child.exitCode !== null, 'memory retries must stop after three requeues (four attempts)')
@@ -628,7 +652,7 @@ test('real memory stop escalates TERM to KILL then requeues the same ranked tick
   } finally { if (children.has(child)) { child.kill('SIGTERM'); await ended; children.delete(child) } }
 })
 
-test('watchdog death stops its own managed child and journals the named failure', { skip: process.platform === 'win32' }, async () => {
+test('watchdog death keeps its managed child running and elects a replacement', { skip: process.platform === 'win32' }, async () => {
   const root = path.join(scratch, 'watchdog-death')
   history(root)
   const marker = path.join(scratch, 'watchdog-death-started')
@@ -642,11 +666,12 @@ test('watchdog death stops its own managed child and journals the named failure'
     await until(() => { try { return readFileSync(marker, 'utf8') === 'started' } catch { return false } }, 'managed child must start')
     const state = reservations.readReservationState(root)
     process.kill(state.watchdog.pid, 'SIGKILL') // This watchdog was started by this fixture's CLI.
-    await until(() => child.exitCode !== null, 'watchdog loss must stop the owned group', 15000)
-    assert.equal(await ended, 75)
+    await until(() => reservations.readReservationState(root).watchdog.pid !== state.watchdog.pid,
+      'holder launcher must replace a dead watchdog without stopping work', 15000)
+    assert.equal(child.exitCode, null, 'watchdog loss must keep the owned group running')
     const rows = readFileSync(path.join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
     const release = rows.find((row) => row.leaseId === state.holders[0].leaseId && row.event === 'release')
-    assert.equal(release?.cause, 'watchdog-unavailable', 'watchdog failure must not masquerade as a timing-sensitive red')
+    assert.equal(release, undefined, 'watchdog loss must publish no stop terminal')
   } finally { if (children.has(child)) { child.kill('SIGTERM'); await ended; children.delete(child) } }
 })
 
