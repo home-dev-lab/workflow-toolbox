@@ -77,13 +77,23 @@ const roundSevenReference = {
 }`,
   },
 }
+// Round 5 changed the policy of these two functions on purpose, so the traces recorded before it no longer
+// describe them in the cases below. Each case is set aside by name, tied to the behaviour test that locks the
+// new contract, and must still differ from the recording: an entry that matches again is an error.
+const POLL_POLICY = 'Round 5 hands the reservation state to the machine reading and rechecks fresh sensors and the admission plan before publishing a grant; stale or unknown sensors plan an exclusive fallback.'
+const POLL_LOCK = 'R5 publication rechecks the sensors after beforePublish'
+const WATCHDOG_POLICY = 'Round 5 makes the elected watchdog confirm its ownership first and take machine samples from the Windows memory reader it owns.'
+const WATCHDOG_LOCK = 'watchdog main owns and closes its WSL reader'
 const policyExclusions = [
-  { function: 'pollReservationLease', variant: { mode: 'ok' },
-    policy: 'Round 5 rechecks fresh sensors and the admission plan before publishing a grant.',
-    lock: 'R5 publication rechecks the sensors after beforePublish' },
-  { function: 'main', variant: { mode: 'ok' },
-    policy: 'Round 5 gives the elected WSL watchdog ownership of the streaming Windows memory reader.',
-    lock: 'watchdog main owns and closes its WSL reader' },
+  ...['ok', 'stale', 'unknown', 'floor', 'not-head', 'replacement-waits'].map((mode) =>
+    ({ function: 'pollReservationLease', variant: { mode }, policy: POLL_POLICY, lock: POLL_LOCK })),
+  ...['ok', 'unknown', 'idle', 'busy'].map((mode) =>
+    ({ function: 'main', variant: { mode }, policy: WATCHDOG_POLICY, lock: WATCHDOG_LOCK })),
+]
+const AUTHORIZED_EXCLUSIONS = [
+  'pollReservationLease:ok', 'pollReservationLease:stale', 'pollReservationLease:unknown', 'pollReservationLease:floor',
+  'pollReservationLease:not-head', 'pollReservationLease:replacement-waits',
+  'main:ok', 'main:unknown', 'main:idle', 'main:busy',
 ]
 const helpers = ['holderAgeExpired', 'unpublishedLockDisappeared', 'sameLegacyInstance', 'queueClassFields',
   'coveredBrokerToken', 'windowsExecutableInDirectories', 'hasWindowsPath', 'reservationStatusLines',
@@ -146,8 +156,8 @@ if (process.argv.includes('--capture')) {
 } else {
   const reference = JSON.parse(readFileSync(referenceFile, 'utf8'))
   test('quality extraction preserves values, errors, reads, writes, this and outgoing call order', async () => {
-    assert.deepEqual(policyExclusions.map(({ function: name, variant }) => [name, variant]),
-      [['pollReservationLease', { mode: 'ok' }], ['main', { mode: 'ok' }]], 'policy exclusions must remain exactly the two authorized cases')
+    assert.deepEqual(policyExclusions.map(({ function: name, variant }) => `${name}:${variant.mode}`),
+      AUTHORIZED_EXCLUSIONS, 'policy exclusions must remain exactly the ten authorized cases')
     const count = await compareTargets(reference, targets)
     console.log(`DIFFERENTIAL_CASES=${count} FUNCTIONS=${Object.values(targets).flat().length}`)
   })
