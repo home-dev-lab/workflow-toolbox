@@ -26,8 +26,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- The artifact server and its session holder set distinct runtime process titles
-  (`wt-artifact-srv` and `wt-artifact-hol`), allowing Linux memory-pressure tools to
+- The artifact server, its session holder and the Observatory server set distinct runtime process titles
+  (`wt-artifact-srv`, `wt-artifact-hol` and `wt-observe-srv`), allowing Linux memory-pressure tools to
   distinguish them from other Node processes without renaming their children.
 - pr-review no longer approves while any finding went unchecked: a failed Verify stage keeps its findings as unverified instead of dropping them, cap-cut and all-null-vote findings count as unchecked, a reviewer reply without a findings list counts as a missing review, an approve with any gap becomes incomplete with the unchecked count in the summary, a docs routing that touches non-prose files adds the correctness and security lenses with a warning (.txt files count as code, not prose), and untrusted PR text and findings are fenced in every prompt (reduced-dag variant included)
 - The quota watcher now honors an inherited session config-directory flag before the config-directory environment variable, using that single decision for account fingerprints and its child probe. This prevents wrong-account cache acceptance or rejection when a wrapper pins or removes the config-directory variable.

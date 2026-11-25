@@ -1,9 +1,10 @@
 // node plugin/bin/wt-observe.selftest.mjs — known-answer coverage for the checkout
 // orientation and non-main refusal before the real observatory is ever launched.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const repo = new URL('../..', import.meta.url).pathname
 const cli = join(repo, 'plugin/bin/wt-observe.mjs')
@@ -39,8 +40,9 @@ try {
   write(join(root, 'package.json'), '{}\n')
   write(join(root, 'apps/observe-ui/package.json'), '{"name":"@workflow-toolbox/observe-ui"}\n')
   write(join(root, 'apps/observe-ui/dist/assets/index-selftest.js'), 'selftest\n')
-  write(join(root, 'node_modules/tsx/package.json'), '{"main":"cli.js"}\n')
-  write(join(root, 'node_modules/tsx/cli.js'), "require(require('node:path').resolve(process.cwd(), process.argv[2]))\n")
+  mkdirSync(join(root, 'node_modules'), { recursive: true })
+  const tsxPackage = createRequire(join(repo, 'toolkit/package.json')).resolve('tsx/package.json')
+  symlinkSync(dirname(tsxPackage), join(root, 'node_modules/tsx'), 'junction')
   write(join(root, 'apps/observe-ui/server/dev-api.ts'), [
     "const http = require('node:http')",
     "const port = Number(process.env.OBSERVE_UI_SERVER_PORT)",

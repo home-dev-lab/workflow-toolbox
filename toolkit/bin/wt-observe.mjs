@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync as readdirSync3, realpathSync as realpathSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { delimiter, dirname as dirname2, join as join7, resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // packages/debugger/src/observe-lifecycle.ts
 import { join } from "node:path";
@@ -1798,7 +1798,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
       throw new Error(`observe base ${base} has no resolvable 'tsx' \u2014 run pnpm install in ${base}`);
     }
   })();
-  const child = spawn(process.execPath, [tsxCli, "apps/observe-ui/server/dev-api.ts", ...flags.watch ? ["--watch"] : []], {
+  const child = spawn(process.execPath, [tsxCli, fileURLToPath(import.meta.url), "--internal-serve", "apps/observe-ui/server/dev-api.ts", ...flags.watch ? ["--watch"] : []], {
     cwd: base,
     env: {
       ...process.env,
@@ -2783,9 +2783,22 @@ async function main(argv = process.argv.slice(2)) {
     return 1;
   }
 }
+async function runObserveServer() {
+  const entry = resolvePath(process.argv[3]);
+  process.argv.splice(1, 2);
+  process.argv[1] = entry;
+  try {
+    process.title = "wt-observe-srv";
+  } catch {
+  }
+  await import(pathToFileURL(entry).href);
+}
 var entryGuardUrl = new URL("./lib/host/entry-guard.mjs", import.meta.url);
 var { isInvokedDirectly } = await import(entryGuardUrl.href);
-if (isInvokedDirectly(import.meta.url)) process.exitCode = await main();
+if (isInvokedDirectly(import.meta.url)) {
+  if (process.argv[2] === "--internal-serve") await runObserveServer();
+  else process.exitCode = await main();
+}
 export {
   main,
   scanRunsForPrune

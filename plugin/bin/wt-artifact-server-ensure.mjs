@@ -23,9 +23,6 @@ import {
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
-// Runtime assignment updates Linux comm without passing a title to child processes.
-try { process.title = 'wt-artifact-hol' } catch {}
-
 const HELP = `wt-artifact-server-ensure - register this session with the shared artifact server
 
 Usage:
@@ -713,6 +710,8 @@ function registerMonitor() {
 
 async function main() {
   if (!resolveWorkflowToolboxOption('artifact_server').value) return
+  // Runtime assignment updates Linux comm without passing a title to child processes.
+  try { process.title = 'wt-artifact-hol' } catch {}
   let firstPort
   try {
     firstPort = registerMonitor()

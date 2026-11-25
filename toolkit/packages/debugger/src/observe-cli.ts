@@ -49,7 +49,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve as resolvePath } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   classifyHealth,
   decideStart,
@@ -487,7 +487,7 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
       throw new Error(`observe base ${base} has no resolvable 'tsx' — run pnpm install in ${base}`)
     }
   })()
-  const child = spawn(process.execPath, [tsxCli, 'apps/observe-ui/server/dev-api.ts', ...(flags.watch ? ['--watch'] : [])], {
+  const child = spawn(process.execPath, [tsxCli, fileURLToPath(import.meta.url), '--internal-serve', 'apps/observe-ui/server/dev-api.ts', ...(flags.watch ? ['--watch'] : [])], {
     cwd: base,
     env: {
       ...process.env,
@@ -1899,7 +1899,20 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 }
 
+// tsx runs this bootstrap in the server process. Keep the title local to that
+// role, and restore the companion entry's argv before loading it (including --watch).
+async function runObserveServer(): Promise<void> {
+  const entry = resolvePath(process.argv[3]!)
+  process.argv.splice(1, 2)
+  process.argv[1] = entry
+  try { process.title = 'wt-observe-srv' } catch { /* Best-effort on unsupported hosts. */ }
+  await import(pathToFileURL(entry).href)
+}
+
 // The shared guard handles symlinks and fails closed when either path is unavailable.
 const entryGuardUrl = new URL('./lib/host/entry-guard.mjs', import.meta.url)
 const { isInvokedDirectly } = await import(entryGuardUrl.href)
-if (isInvokedDirectly(import.meta.url)) process.exitCode = await main()
+if (isInvokedDirectly(import.meta.url)) {
+  if (process.argv[2] === '--internal-serve') await runObserveServer()
+  else process.exitCode = await main()
+}
