@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from '../../../test-support/bounded-hook-spawn.mjs'
 import { it } from 'vitest'
 // @ts-expect-error executable JavaScript fixtures
 import { terminalReviewCases, withTerminalRoot } from './suite-lock-terminal-review-cases.mjs'

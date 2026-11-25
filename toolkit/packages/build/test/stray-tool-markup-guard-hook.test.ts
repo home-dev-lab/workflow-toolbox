@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'

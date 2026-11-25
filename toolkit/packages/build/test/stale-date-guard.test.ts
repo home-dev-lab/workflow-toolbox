@@ -16,7 +16,7 @@
 //   3. a PROVENANCE date is never flagged, at any age
 // All three are required; any one missing means the guard is not done.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -21,7 +21,7 @@
 // NOTE: this drives the COMMITTED bundle. If you change stop-hook.ts / stop-state.ts, run
 // `pnpm debugger:build` first (the dev loop does) or this tests the stale artifact.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, copyFileSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'

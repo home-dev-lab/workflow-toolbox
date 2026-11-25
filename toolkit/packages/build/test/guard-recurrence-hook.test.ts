@@ -12,7 +12,7 @@
 // it switched off, taking its real recurrence case with it — so the silence cases are not
 // padding, they are what decides whether the mechanism survives its first week.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

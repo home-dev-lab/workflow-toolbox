@@ -15,7 +15,7 @@
 // read-only brief gets routed around, and a routed-around guard protects nothing — so "allows a
 // brief that merely NAMES a path to read" is a load-bearing assertion, not padding.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'

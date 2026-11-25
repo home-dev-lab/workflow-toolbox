@@ -1,6 +1,6 @@
-import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from 'node:child_process'
+import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
 import { dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -1646,7 +1646,7 @@ function registerOwnerNoticeCases() {
 function registerPlainDirectoryAttributionCases() {
   it.skipIf(process.platform !== 'linux')('attributes an allow-no-git lane from its plain-directory owner record [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30', true)
-    const runtime = join(f.root, 'fake-opencode-runtime.mjs'); copyFileSync(FAKE_OPENCODE, runtime)
+    const runtime = join(f.root, 'fake-opencode-runtime.mjs'); writeFileSync(runtime, readFileSync(FAKE_OPENCODE, 'utf8').replace("'../../../../test-support/bounded-hook-spawn.mjs'", JSON.stringify(new URL('../../../test-support/bounded-hook-spawn.mjs', import.meta.url).href)))
     writeFileSync(join(f.root, 'bin', 'opencode'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(runtime)} opencode "$@"\n`)
     const launch = run(f, ['--timeout', '60']); expect(launch.status, launch.stderr).toBe(0)
     const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
@@ -1973,7 +1973,10 @@ function registerSandboxGateCases() {
   it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips: bwrap unavailable or not root-owned, or zsh unavailable)', () => {
     const f = fixture('suite-lock-run-zsh')
     delete f.env.WT_LANE_SANDBOX
-    f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')
+    f.env.WT_LANE_SANDBOX_READ = [
+      join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures'),
+      join(ROOT, 'toolkit', 'test-support'),
+    ].join(':')
     const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'), 30_000)
     expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toContain('lane sandbox: bwrap')

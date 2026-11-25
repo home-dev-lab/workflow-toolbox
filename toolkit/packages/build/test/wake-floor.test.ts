@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

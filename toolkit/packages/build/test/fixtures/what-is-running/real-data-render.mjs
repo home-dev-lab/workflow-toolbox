@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../../../../../test-support/bounded-hook-spawn.mjs';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
 import { projectRootOf, readSnapshot, renderPane } from '../../../../../../plugin/hooks/hooks.js';

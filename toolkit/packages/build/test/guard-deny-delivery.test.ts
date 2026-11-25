@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'

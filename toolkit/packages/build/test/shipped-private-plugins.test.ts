@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import type { SpawnSyncReturns } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -296,7 +296,7 @@ describe('shipped private plugin binaries', () => {
       const binDir = join(REPO_ROOT, 'plugins', plugin, 'bin')
       const tests = readdirSync(binDir).filter((name) => name.endsWith('.test.mjs')).map((name) => join(binDir, name))
       expect(tests.length, `${plugin} ships no bin tests`).toBeGreaterThan(0)
-      const run = spawnSync(process.execPath, ['--test', '--test-timeout=60000', ...tests], { cwd: REPO_ROOT, encoding: 'utf8' })
+      const run = spawnSync(process.execPath, ['--test', '--test-timeout=60000', ...tests], { cwd: REPO_ROOT, encoding: 'utf8', timeout: SELFTEST_BUDGET_MS })
       expect(run.status, `${run.stdout}\n${run.stderr}`.slice(-12_000)).toBe(0)
     }, process.platform === 'win32' ? 90_000 : 45_000)
   }

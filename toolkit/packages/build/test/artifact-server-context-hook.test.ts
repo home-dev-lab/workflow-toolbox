@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createServer, type Server } from 'node:http'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'

@@ -15,7 +15,7 @@
 // keyed too broadly (on the config dir, say — the quota IS per account, so it is a tempting
 // key) would refuse a second PROJECT, leaving that project silently unwatched. That failure
 // looks exactly like success from inside the first project, which is why it is locked here.
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 // Model the Function Hook loader: plugin-owned ESM imports, URL metadata and
 // capabilities, with no process, require, Buffer, or Node-module imports in the sandbox.
 const LOADER = String.raw`
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from ${JSON.stringify(new URL('../../../test-support/bounded-hook-spawn.mjs', import.meta.url).href)};
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const context = vm.createContext({ URL });

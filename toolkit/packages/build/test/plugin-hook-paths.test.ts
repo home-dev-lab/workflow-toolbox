@@ -23,7 +23,7 @@
 // so here because a reader who assumed the first test covered the incident would delete the
 // shim as redundant.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

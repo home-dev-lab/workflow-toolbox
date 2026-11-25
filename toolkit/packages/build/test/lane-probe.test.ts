@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

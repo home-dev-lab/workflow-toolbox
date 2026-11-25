@@ -1,7 +1,7 @@
 // Run on a native host: node toolkit/packages/build/test/lane-queue-deadline.e2e.mjs
 // Every lock, model command, state file and process belongs to this temporary fixture.
 import assert from 'node:assert/strict'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'

@@ -10,7 +10,7 @@
 // `null`, or an object without a numeric pct) is said ONCE per run, in words, to be not reported by
 // the probe, and its crossing and reset history is kept, never cleared as if the window were gone.
 // Only a reading with no numeric window at all is DEGRADED.
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

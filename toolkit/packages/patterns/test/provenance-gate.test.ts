@@ -8,7 +8,7 @@
 // embedded scanner and the canonical signal fails here.
 
 import { describe, it, expect } from 'vitest'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

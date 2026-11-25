@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { EventEmitter } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error The plugin's standalone executable has no declaration surface.
 import { runVerifier } from '../../../../plugin/bin/wt-opencode-verify.mjs'

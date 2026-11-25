@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from '../../../../test-support/bounded-hook-spawn.mjs'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

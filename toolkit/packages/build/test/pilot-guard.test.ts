@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'

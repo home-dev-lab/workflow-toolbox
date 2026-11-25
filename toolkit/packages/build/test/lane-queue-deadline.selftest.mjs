@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'

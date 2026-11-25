@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { afterAll, it } from 'vitest'
 import { suiteAdmissionFixture } from './helpers/suite-lock-admission-fixture.js'
 // @ts-expect-error Executable shared scenarios have no TypeScript declarations.

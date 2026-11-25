@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../../../../../test-support/bounded-hook-spawn.mjs';
 import { readSnapshot } from '../../../../../../plugin/hooks/hooks.js';
 
 const home = process.env.HOME || process.env.USERPROFILE || process.cwd();

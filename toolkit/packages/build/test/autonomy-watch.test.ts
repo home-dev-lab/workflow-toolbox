@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'

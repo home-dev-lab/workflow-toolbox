@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn } from '../../../test-support/bounded-hook-spawn.mjs'
 import {
   chmodSync,
   existsSync,

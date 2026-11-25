@@ -8,7 +8,7 @@
 // written in the exact record shape the harness produces (assistant tool_use, `hook_cancelled`
 // attachment, user tool_result with `toolDenialKind`), and asserts exit code and stderr.
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
