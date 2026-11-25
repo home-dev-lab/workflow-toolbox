@@ -42,34 +42,12 @@ before waiter startup are delivered too. Use one waiter per launcher ID.
 exporting a delegate's identity into main. The host watcher publishes lane-exit events;
 keep that watcher running from the updated install.
 
-Events are individual files under `wt-launcher-events/<id>/pending/` beside the
-lane host-state root, created mode 0600 in private directories (on Windows, access follows the owner's
-state-directory ACL). Live delegate events stay out of main's watcher output.
-For an unconsumed event, if liveness says `complete:true`, main receives
-`orphaned-launcher=<id>` immediately; consumed events are never echoed to main.
-An absent liveness file gets a 120-second grace from its first observed absence.
-The main watcher revisits pending lane exits even if their lane record disappears.
-Even with live liveness, an event unconsumed for 57 minutes (one 55-minute waiter plus
-the 120-second grace) falls back to main. Keep re-arming the waiter on expiry.
-An orphan delivered to main is acknowledged separately from the historical notice
-archive, so archive eviction cannot hide a pending event or replay a handled one.
-An unreadable liveness file triggers a named routing diagnostic and main fallback.
-A failed publication reports `launcher-publish-failed` and is retried from the lane record;
-readers and sweeps also finish complete reserved sources after that record ages out.
+Read [launcher delivery operations](references/launcher-delivery.md) for event storage,
+orphan fallback, publication, reader leases and journal recovery. The waiter's exit code
+is its delivery verdict; it fails closed when it cannot record evidence.
 Publication and cleanup errors do not change the caller's exit status; a waiter reports
 exit 1 when output completed but its printed journal record could not be stored. A delegate must keep `complete:false` while
 waiting and mark it complete only after handling its final work events.
-Publishers write complete private temporary files with exclusive creation, then publish
-with a hard link that never overwrites an existing name. No publisher waits on a reader.
-Readers serialize on one populated writer directory per launcher, with PID and start
-identity ownership. Only positive process-death or comparable PID-reuse evidence permits
-reclaim; unknown ownership is retained. Publishers never take that reader lease. Events
-remain pending while one append-only `delivery.journal` records claim, printed and done.
-Length/checksum-framed records are synchronously appended and fsync'd. Both recipients
-complete synchronous stdout before recording printed; only a complete printed record
-authorizes acknowledgement. Unreadable evidence retains the claim for retry. A torn tail
-is truncated to its validated prefix and reported as `launcher-journal-torn-tail-retained`;
-that invocation does no delivery or acknowledgement, and the next invocation retries.
 Printed-record writes get three attempts (four for Windows sharing errors). Exhaustion
 reports delivery unknown, retains the claim and may replay. The precise duplicate bound
 is one extra output per crash or failed commit between stdout and a durable printed

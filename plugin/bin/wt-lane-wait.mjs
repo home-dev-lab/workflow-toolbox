@@ -31,14 +31,16 @@ function usage() {
   ].join('\n')
 }
 
+const waiterArgument = (value, fallback = null) => value ?? fallback
+
 function parseArguments(argv) {
   const out = { dir: null, pid: null, poll: DEFAULT_POLL, timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     switch (arg) {
-      case '--dir': out.dir = argv[++i] ?? null; break
-      case '--launcher-agent': out.launcherAgentId = argv[++i] ?? ''; break
-      case '--pid': out.pid = argv[++i] ?? null; break
+      case '--dir': out.dir = waiterArgument(argv[++i]); break
+      case '--launcher-agent': out.launcherAgentId = waiterArgument(argv[++i], ''); break
+      case '--pid': out.pid = waiterArgument(argv[++i]); break
       case '--poll': out.poll = Number(argv[++i]); break
       case '--timeout': out.timeout = Number(argv[++i]); break
       case '--help': case '-h': return { help: true }

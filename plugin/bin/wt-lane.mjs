@@ -179,44 +179,79 @@ function laneRunChoiceError(out) {
   return null
 }
 
-export function parse(argv) {
+// Keep the original check order: the attach probe also runs before --run-id and help.
+function readLaneArgument(argv, i, out) {
+  const arg = argv[i]
+  if (arg === '--dir') out.dir = argv[++i] ?? null
+  else if (arg === '--model') out.model = argv[++i] ?? null
+  else if (arg === '--brief') out.brief = argv[++i] ?? null
+  else if (arg === '--max-brief-age') out.maxBriefAge = Number(argv[++i])
+  else return readLaneTimingArgument(arg, argv, i, out)
+  return { i }
+}
+
+function readLaneTimingArgument(arg, argv, i, out) {
+  if (arg === '--acknowledge-stale-brief') out.acknowledgeStaleBrief = true
+  else if (Object.hasOwn(LANE_VALUE_OPTIONS, arg)) out[LANE_VALUE_OPTIONS[arg]] = laneOptionValue(arg, argv[++i])
+  else if (arg === '--timeout') out.timeout = Number(argv[++i])
+  else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
+  else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
+  else if (arg === '--idle-window') out.idleWindow = Number(argv[++i])
+  else if (arg === '--idle-timeout') out.idleTimeout = Number(argv[++i])
+  else if (arg === '--min-available-mib') out.minAvailableMib = Number(argv[++i])
+  else return readLaneOwnerArgument(arg, argv, i, out)
+  return { i }
+}
+
+function readLaneOwnerArgument(arg, argv, i, out) {
+  if (arg === '--owner') out.owner = argv[++i] ?? null
+  else if (arg === '--owner-token') out.ownerToken = argv[++i] ?? null
+  else if (arg === '--brief-cleanup-dir') out.briefCleanupDir = argv[++i] ?? null
+  else if (arg === '--log') out.log = argv[++i] ?? null
+  else return readLaneRoleArgument(arg, argv, i, out)
+  return { i }
+}
+
+function readLaneRoleArgument(arg, argv, i, out) {
+  if (arg === '--role') out.role = argv[++i] ?? null
+  else if (arg === '--variant') { out.variant = argv[++i] ?? null; out.variantExplicit = true }
+  else if (arg === '--allow-unknown-variant') out.allowUnknownVariant = true
+  else if (arg === '--allow-no-git') out.allowNoGit = true
+  else if (arg === '--allow-missing-install') out.allowMissingInstall = true
+  else if (arg === '--priority') out.priority = argv[++i] ?? null
+  else return readSpecialLaneArgument(arg, argv, i, out)
+  return { i }
+}
+
+function readSpecialLaneArgument(arg, argv, i, out) {
+  if (arg === '--lock-priority') { out.lockPriority = String(argv[++i] ?? ''); return { i } }
+  if (arg === '--attach' || arg.startsWith('--attach=')) return { result: { error: ATTACH_REMOVED } }
+  if (arg === '--run-id') { out.runId = argv[++i] ?? null; return { i } }
+  if (arg === '--help' || arg === '-h') return { result: { help: true } }
+  return { result: { error: `unknown argument: ${arg}` } }
+}
+
+function defaultLaneArguments() {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, idleWindow: DEFAULT_IDLE_WINDOW, idleTimeout: 0, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, launcherAgentId: launcherEnvIdentity(), briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low', lockPriority: null }
+  return { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, idleWindow: DEFAULT_IDLE_WINDOW, idleTimeout: 0, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, launcherAgentId: launcherEnvIdentity(), briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low', lockPriority: null }
+}
+
+export function parse(argv) {
+  const out = defaultLaneArguments()
   for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]
-    if (arg === '--dir') out.dir = argv[++i] ?? null
-    else if (arg === '--model') out.model = argv[++i] ?? null
-    else if (arg === '--brief') out.brief = argv[++i] ?? null
-    else if (arg === '--max-brief-age') out.maxBriefAge = Number(argv[++i])
-    else if (arg === '--acknowledge-stale-brief') out.acknowledgeStaleBrief = true
-    else if (Object.hasOwn(LANE_VALUE_OPTIONS, arg)) out[LANE_VALUE_OPTIONS[arg]] = laneOptionValue(arg, argv[++i])
-    else if (arg === '--timeout') out.timeout = Number(argv[++i])
-    else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
-    else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
-    else if (arg === '--idle-window') out.idleWindow = Number(argv[++i])
-    else if (arg === '--idle-timeout') out.idleTimeout = Number(argv[++i])
-    else if (arg === '--min-available-mib') out.minAvailableMib = Number(argv[++i])
-    else if (arg === '--owner') out.owner = argv[++i] ?? null
-    else if (arg === '--owner-token') out.ownerToken = argv[++i] ?? null
-    else if (arg === '--brief-cleanup-dir') out.briefCleanupDir = argv[++i] ?? null
-    else if (arg === '--log') out.log = argv[++i] ?? null
-    else if (arg === '--role') out.role = argv[++i] ?? null
-    else if (arg === '--variant') { out.variant = argv[++i] ?? null; out.variantExplicit = true }
-    else if (arg === '--allow-unknown-variant') out.allowUnknownVariant = true
-    else if (arg === '--allow-no-git') out.allowNoGit = true
-    else if (arg === '--allow-missing-install') out.allowMissingInstall = true
-    else if (arg === '--priority') out.priority = argv[++i] ?? null
-    else if (arg === '--lock-priority') out.lockPriority = String(argv[++i] ?? '')
-    else if (arg === '--attach' || arg.startsWith('--attach=')) return { error: ATTACH_REMOVED }
-    else if (arg === '--run-id') out.runId = argv[++i] ?? null
-    else if (arg === '--help' || arg === '-h') return { help: true }
-    else return { error: `unknown argument: ${arg}` }
+    const next = readLaneArgument(argv, i, out)
+    if (next.result) return next.result
+    i = next.i
   }
   if (!out.dir || !out.model || !out.brief) return { error: 'missing required --dir, --model, or --brief' }
   const timingError = validateLaneTiming(out)
   if (timingError) return { error: timingError }
   const choiceError = laneChoiceError(out)
   if (choiceError) return { error: choiceError }
+  return resolveLanePaths(out)
+}
+
+function resolveLanePaths(out) {
   out.dir = path.resolve(out.dir)
   out.requestedDir = out.dir
   try { out.dir = realpathSync(out.dir) } catch { /* preserve the existing not-a-directory diagnostic */ }
@@ -225,10 +260,20 @@ export function parse(argv) {
     if (candidate && (!path.isAbsolute(candidate) || candidate.split(/[\\/]/).includes('..'))) return { error: `${flag} must be absolute and contain no parent traversal` }
   }
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
+  return resolveLaneWritablePaths(out)
+}
+
+function laneWritableLocationError(out, writable) {
+  if (out.briefCleanupDir && (laneWritablePath(out.dir, out.briefCleanupDir) || writable(out.briefCleanupDir))) return '--brief-cleanup-dir must be outside the lane worktree and every lane-writable root'
+  if (out.log && (laneWritablePath(out.dir, out.log) || writable(out.log))) return '--log must be outside the lane worktree and every lane-writable root'
+  return null
+}
+
+function resolveLaneWritablePaths(out) {
   let writable
   try { writable = laneWritableForLaunch({ cwd: out.dir, args: ['--dir', out.dir], env: process.env, optionEnv: process.env }) } catch (error) { return { error: `cannot validate lane writable roots: ${error.message}` } }
-  if (out.briefCleanupDir && (laneWritablePath(out.dir, out.briefCleanupDir) || writable(out.briefCleanupDir))) return { error: '--brief-cleanup-dir must be outside the lane worktree and every lane-writable root' }
-  if (out.log && (laneWritablePath(out.dir, out.log) || writable(out.log))) return { error: '--log must be outside the lane worktree and every lane-writable root' }
+  const error = laneWritableLocationError(out, writable)
+  if (error) return { error }
   const explicitLog = out.log && path.resolve(out.log)
   if (explicitLog && explicitLog.startsWith(`${laneHostStateRoot()}${path.sep}`) && !explicitLog.startsWith(`${laneHostDir(out.dir)}${path.sep}`)) return { error: '--log cannot target another worktree host directory' }
   out.log = path.resolve(out.log ?? path.join(laneHostDir(out.dir), 'run.log'))

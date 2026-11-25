@@ -9,7 +9,7 @@ export function eventGraceElapsed(file, active, grace, options = {}) {
   const seen = options.observations ?? observations
   if (!active) {
     seen.delete(file)
-    try { unlinkSync(file) } catch (error) { if (error.code !== 'ENOENT') throw error }
+    removeEventGrace(file)
     return 0
   }
   const wall = options.now ?? Date.now()
@@ -19,6 +19,10 @@ export function eventGraceElapsed(file, active, grace, options = {}) {
   const elapsed = restoreEventGrace(file, wall, grace)
   seen.set(file, { at: monotonic, elapsed })
   return elapsed
+}
+
+function removeEventGrace(file) {
+  try { unlinkSync(file) } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 
 function restoreEventGrace(file, wall, grace) {
