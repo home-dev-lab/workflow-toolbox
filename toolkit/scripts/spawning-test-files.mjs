@@ -5,7 +5,7 @@ import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
-const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process', '../../../test-support/bounded-hook-spawn.mjs'])
+const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process', '../../../test-support/bounded-hook-spawn.mjs', '../../test-support/bounded-hook-spawn.mjs'])
 const PROCESS_FUNCTIONS = new Set([
   'exec',
   'execFile',
@@ -280,6 +280,75 @@ export const spawningTestFiles = [
   'scripts/test/wt-observer.test.ts',
   'scripts/test/wt-wake-channel.test.ts',
 ]
+
+// Audited subprocess targets include symlinks, copied scripts, preloads and generated launchers.
+// Pin their imports rather than claiming static target inference can follow those runtime paths.
+export const boundedHookTestFiles = [
+  'packages/build/test/adopt-ssh-sign-retry.test.ts',
+  'packages/build/test/helpers/suite-lock-currency-fixes.selftest.mjs',
+  'packages/build/test/sdk-pilot-lifecycle-server.test.ts',
+  'packages/build/test/signatures-workflow-step.test.ts',
+  'packages/build/test/suite-lock-home.test.ts',
+  'packages/build/test/ts-language-server-watches.test.ts',
+  'scripts/test/host-entry-guard.test.ts',
+]
+
+function callsNamespaceSync(source, name) {
+  let found = false
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const callee = node.expression
+      if (ts.isIdentifier(callee.expression) && callee.expression.text === name
+        && ['spawnSync', 'execFileSync', 'execSync'].includes(callee.name.text)) found = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return found
+}
+
+function nativeClauseUsesSync(clause, source) {
+  if (!clause || clause.isTypeOnly) return false
+  if (clause.name && callsNamespaceSync(source, clause.name.text)) return true
+  const bindings = clause.namedBindings
+  if (!bindings) return false
+  if (ts.isNamespaceImport(bindings)) return callsNamespaceSync(source, bindings.name.text)
+  return bindings.elements.some(element => !element.isTypeOnly
+    && ['spawnSync', 'execFileSync', 'execSync'].includes(element.propertyName?.text ?? element.name.text))
+}
+
+function importsNativeSync(node, source) {
+  if (!ts.isImportDeclaration(node)) return false
+  if (!ts.isStringLiteral(node.moduleSpecifier)) return false
+  if (!['child_process', 'node:child_process'].includes(node.moduleSpecifier.text)) return false
+  return nativeClauseUsesSync(node.importClause, source)
+}
+
+function embeddedSource(node) {
+  if (ts.isStringLiteralLike(node)) return node.text
+  if (ts.isTemplateExpression(node)) return node.head.text + node.templateSpans.map(span => `__fixture_expression__${span.literal.text}`).join('')
+  return ''
+}
+
+export function nativeSynchronousImportLines(source, depth = 0) {
+  if (depth > 8) return []
+  const parsed = ts.createSourceFile('fixture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const lines = []
+  const visit = (node) => {
+    const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1
+    if (importsNativeSync(node, parsed)) lines.push(line)
+    const embedded = embeddedSource(node)
+    if (embedded.includes('child_process') && nativeSynchronousImportLines(embedded, depth + 1).length) lines.push(line)
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  return [...new Set(lines)].sort((left, right) => left - right)
+}
+
+export function scanNativeHookTestImports(root = ROOT) {
+  return boundedHookTestFiles.flatMap(file => nativeSynchronousImportLines(readFileSync(resolve(root, file), 'utf8'))
+    .map(line => `${file}:${line}`))
+}
 
 function testFilesUnder(directory) {
   const entries = readdirSync(directory, { withFileTypes: true })

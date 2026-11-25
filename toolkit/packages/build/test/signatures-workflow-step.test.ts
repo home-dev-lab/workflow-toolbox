@@ -14,7 +14,7 @@
 // duplicate, which would drift silently) and replays it under `bash -e`, GitHub's own
 // invocation shape, against scratch git repos built to exercise each of the three defects.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
