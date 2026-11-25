@@ -612,7 +612,11 @@ class ArtifactService {
   }
 }
 
-async function serve() { return new ArtifactService().start() }
+async function serve() {
+  // Runtime assignment updates Linux comm; unsupported hosts keep their default name.
+  try { process.title = 'wt-artifact-srv' } catch {}
+  return new ArtifactService().start()
+}
 
 function validateRegistration(value) {
   if (!value || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Array.isArray(value.roots) ||
@@ -708,7 +712,8 @@ function artifactStopProcessRefusal(state) {
   if (process.platform === 'linux') {
     let commandLine = ''
     try { commandLine = hostProcfs.readCommandLine(state.pid, 'utf8') } catch {}
-    if (!commandLine.includes('wt-artifact-server.mjs')) {
+    // process.title replaces Linux argv storage; legacy servers still expose the script path.
+    if (!commandLine.includes('wt-artifact-server.mjs') && commandLine.replaceAll('\0', '') !== 'wt-artifact-srv') {
       return artifactStopIdentityRefusal()
     }
   }

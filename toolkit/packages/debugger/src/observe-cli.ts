@@ -43,10 +43,9 @@
 // or by walking up from cwd — the same interim posture as the card's
 // "Distribution" item (build-from-repo until @workflow-toolbox/observe-ui ships).
 
-import { spawn, execFileSync } from 'node:child_process'
-import { createRequire } from 'node:module'
+import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,6 +89,7 @@ import {
   type SourceSearchResult,
 } from './source-resolve.js'
 import { resolveConfigDir, resolveDir } from './config-dir.js'
+import { isInvokedDirectly, runObserveServer, requireObserveRoot, openLogFileAt, readLogSliceFrom, logTail, spawnObserveChild } from './observe-server-bootstrap.js'
 import { findObserveRoot } from './observe-checkout.js'
 import {
   selectRuns,
@@ -190,22 +190,6 @@ function bestEffortPortHolders(port: number): number[] {
 }
 
 // ── spawn target (interim: a local checkout) ────────────────────────────────────
-
-// ── logfile (one rotation generation) ───────────────────────────────────────────
-
-/** The actual open+rotate logic, parameterized by the ALREADY-COMPUTED log path — shared by
- *  every caller (just observeServerLogPath's path now, post verb-unification). */
-function openLogFileAt(path: string): number {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-  try {
-    if (existsSync(path) && statSync(path).size > LOG_ROTATE_BYTES) {
-      renameSync(path, `${path}.1`)
-    }
-  } catch {
-    // rotation is best-effort
-  }
-  return openSync(path, 'a', 0o600)
-}
 
 // ── pidfile IO ──────────────────────────────────────────────────────────────────
 
@@ -445,16 +429,9 @@ function resolveLaunchAgentsDir(): string | null {
 }
 
 async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly string[], remotes: readonly RemoteEntry[], flags: StartFlags): Promise<{ health: Health; token: string }> {
-  const base = findObserveRoot(process.cwd(), process.env)
-  if (base === null) {
-    throw new Error(
-      'cannot locate the observe server (no checkout found from cwd; set DWT_OBSERVE_ROOT). ' +
-        'Until the Workflow Observatory binary distribution ships, wt-observe start needs a ' +
-        'workflow-observatory checkout (or a legacy workflow-toolbox one) on this machine.',
-    )
-  }
+  const base = requireObserveRoot()
   const logPath = observeServerLogPath(stateRoot)
-  const log = openLogFileAt(logPath)
+  const log = openLogFileAt(logPath, LOG_ROTATE_BYTES)
   // Size BEFORE the child writes anything: the port-banner parser must only
   // see THIS spawn's output — the log is append-mode, and a stale banner from
   // a previous server would otherwise announce the wrong port (card
@@ -470,74 +447,7 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
   // in the 0600 pidfile. The browser receives it through the served page only.
   const token = randomBytes(24).toString('hex')
   const launchAgentsDir = resolveLaunchAgentsDir()
-  // --watch: the server owns a vite build watcher child (dev-api.ts reaps it on every
-  // exit path), so UI edits rebuild live — the dev loop the bare start deliberately skips.
-  // --enable-launch: boot-time live-launch opt-in (dev-api.ts reads the env) — the
-  // DELIBERATE per-start gesture that replaces "re-POST /api/launch-enable after every
-  // restart" without ever persisting the opt-in across starts.
-  // Spawn target = node + tsx's OWN JS entry, resolved from the checkout — NOT
-  // `spawn('pnpm', ...)`: on Windows the pnpm/.bin shims are .cmd files, which Node
-  // (>=18.20, CVE-2024-27980) refuses to spawn without shell:true, and shell:true
-  // reopens quoting of paths-with-spaces. node + a resolved .mjs runs identically on
-  // every OS (cross-OS I3, card #1813359570421023938).
-  const tsxCli = ((): string => {
-    try {
-      return createRequire(join(base, 'package.json')).resolve('tsx/cli')
-    } catch {
-      throw new Error(`observe base ${base} has no resolvable 'tsx' — run pnpm install in ${base}`)
-    }
-  })()
-  const child = spawn(process.execPath, [tsxCli, 'apps/observe-ui/server/dev-api.ts', ...(flags.watch ? ['--watch'] : [])], {
-    cwd: base,
-    env: {
-      ...process.env,
-      // Both env vars are set regardless of cardinality: dev-api.ts only switches to
-      // multi-source mode when OBSERVE_SOURCES resolves to 2+ UNIQUE entries (its own
-      // `parsedSources.length >= 2` check) — with exactly 1 resolved source it falls
-      // straight through to CLAUDE_CONFIG_DIR, so setting both here is always correct and
-      // needs no cardinality branch on this side either.
-      CLAUDE_CONFIG_DIR: sourceDirs[0]!,
-      // path.delimiter, not ':' — a colon inside 'C:\...' would shred Windows paths;
-      // dev-api.ts splits with the same constant (same machine, same value).
-      OBSERVE_SOURCES: sourceDirs.join(delimiter),
-      OBSERVE_UI_SERVER_PORT: String(port),
-      OBSERVE_UI_TOKEN: token,
-      // Remote-hub mounts (hub federation) — JSON, not delimiter-joined: URLs carry
-      // colons everywhere. Only set when configured, so a remote-less start's env is
-      // byte-identical to before.
-      ...(remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {}),
-      ...(flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: '1' } : {}),
-      // Candidate fix 4 — --no-resume: PARK every pending A3
-      // boot-sweep resume this boot instead of dispatching it (dev-api.ts reads this and
-      // sets AppOptions.bootResumesDisabled). Unset = resume normally (unchanged default).
-      ...(flags.noResume ? { OBSERVE_UI_NO_RESUME: '1' } : {}),
-      // The agents-only shim plugin the server loads into every DELEGATED SDK
-      // session (SDK `plugins` option), so `workflow-toolbox:lean`/`leaf` resolve
-      // there despite the sessions' deliberate `settingSources: []` (without it
-      // the fences always probe "not found" and degrade — found live 2026-07-13).
-      // An explicit user-set value wins; absent shim (older checkout) = unset,
-      // the server then launches exactly as before.
-      ...(process.env['OBSERVE_LAUNCH_PLUGIN_DIRS'] === undefined && launchAgentsDir !== null
-        ? { OBSERVE_LAUNCH_PLUGIN_DIRS: launchAgentsDir }
-        : {}),
-    },
-    detached: true,
-    windowsHide: true, // win32: detached must not flash a console window
-    stdio: ['ignore', log, log],
-  })
-  // Both failure signals are OBSERVED, not assumed: an async spawn error (e.g. a
-  // missing node executable → ENOENT) must reject cleanly, and a child that dies right
-  // away (EADDRINUSE, tsx load error) must fail FAST with the log tail — not mask
-  // itself as a silent 30s readiness timeout.
-  let spawnError: Error | null = null
-  let exited: { code: number | null; signal: NodeJS.Signals | null } | null = null
-  child.once('error', (e) => {
-    spawnError = e
-  })
-  child.once('exit', (code, signal) => {
-    exited = { code, signal }
-  })
-  child.unref()
+  const { child, spawnState } = spawnObserveChild({ base, entryUrl: import.meta.url, port, sourceDirs, remotes, flags, token, launchAgentsDir, log })
 
   // The port bind is the mutex: wait for /api/health to answer OURS. A lost
   // concurrent-start race surfaces here as the WINNER's health — which we adopt.
@@ -553,7 +463,7 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
     // Accept EITHER health shape (the readiness poll must not assume cardinality).
     isReady: (v): v is Health =>
       typeof v === 'object' && (Array.isArray((v as Health).sources) || typeof (v as Health).configDir === 'string'),
-    spawnState: () => ({ error: spawnError, exited }),
+    spawnState,
     kill: () => {
       if (typeof child.pid === 'number') {
         try {
@@ -568,29 +478,6 @@ async function spawnServer(stateRoot: string, port: number, sourceDirs: readonly
     logTail: () => logTail(logPath),
   })
   return { health: h, token }
-}
-
-/** The log slice written after `offset` BYTES (append-mode log — earlier
- *  content belongs to previous servers). Byte-accurate: slices the raw buffer,
- *  not the decoded string. */
-function readLogSliceFrom(path: string, offset: number): string {
-  try {
-    const buf = readFileSync(path)
-    return buf.subarray(Math.min(offset, buf.length)).toString('utf8')
-  } catch {
-    return ''
-  }
-}
-
-/** Last few log lines, labelled — the actionable cause of most spawn failures. */
-function logTail(logPath: string, lines = 5): string {
-  try {
-    const text = readFileSync(logPath, 'utf8')
-    const tail = text.split('\n').filter(Boolean).slice(-lines).join('\n')
-    return tail.length > 0 ? `log tail (${logPath}):\n${tail}` : `log is empty (${logPath})`
-  } catch {
-    return `log unreadable (${logPath})`
-  }
 }
 
 /** `wt-observe start` — resolves the source set (see resolveStartSources), then runs the
@@ -1899,7 +1786,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 }
 
-// The shared guard handles symlinks and fails closed when either path is unavailable.
-const entryGuardUrl = new URL('./lib/host/entry-guard.mjs', import.meta.url)
-const { isInvokedDirectly } = await import(entryGuardUrl.href)
-if (isInvokedDirectly(import.meta.url)) process.exitCode = await main()
+// The bootstrap shares the symlink-aware, fail-closed direct-invocation guard.
+if (isInvokedDirectly(import.meta.url)) {
+  if (process.argv[2] === '--internal-serve') await runObserveServer()
+  else process.exitCode = await main()
+}

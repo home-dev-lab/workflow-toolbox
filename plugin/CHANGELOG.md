@@ -10,6 +10,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 - Suite lock journal: the per-job CPU and memory figures changed meaning. CPU of a child that exited is no longer counted a second time when its parent reaps it, and memory is now the sum of each live process's resident high-water mark, so it can read higher than before. A process caught while it exits, after it has released its memory, counts as zero and no longer turns the whole measurement into an unknown. Rows written before and after this release are not directly comparable.
+- Suite lock journal: the per-job CPU and memory figures changed meaning. CPU of a child that exited is no longer counted a second time when its parent reaps it, and memory is now the sum of each live process's resident high-water mark, so it can read higher than before. Rows written before and after this release are not directly comparable.
+### Fixed
+
+- The artifact server, its session holder and the Observatory server set distinct runtime process titles
+  (`wt-artifact-srv`, `wt-artifact-hol` and `wt-observe-srv`), allowing Linux memory-pressure tools to
+  distinguish them from other Node processes without renaming their children.
 
 ## [0.202.0] - 2026-11-24
 

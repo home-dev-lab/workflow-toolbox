@@ -193,6 +193,7 @@ export const spawningTestFiles = [
   'packages/build/test/second-opinion-admission.test.ts',
   'packages/build/test/second-opinion.test.ts',
   'packages/build/test/secret-guard-native-helpers.test.ts',
+  'packages/build/test/server-process-title.test.ts',
   'packages/build/test/service-watch.test.ts',
   'packages/build/test/session-env-dedup-hook.test.ts',
   'packages/build/test/session-role.test.ts',

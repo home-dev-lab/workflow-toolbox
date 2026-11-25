@@ -43,7 +43,7 @@ describe('committed debugger bins — rebuild byte-identity', () => {
       const committedBins = readdirSync(BIN_DIR)
         .filter((f) => f.endsWith('.mjs'))
         .sort()
-      const rebuiltBins = bundles.map((b) => b.out).sort()
+      const rebuiltBins = bundles.map((b) => b.out).filter((out) => !out.includes('/')).sort()
       expect(
         committedBins,
         'bin/*.mjs set drifted from DEBUGGER_ENTRIES (orphan or missing bundle) — run `pnpm debugger:build`',

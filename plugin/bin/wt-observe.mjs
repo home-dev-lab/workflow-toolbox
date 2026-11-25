@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
 // packages/debugger/src/observe-cli.ts
-import { spawn, execFileSync as execFileSync2 } from "node:child_process";
-import { createRequire } from "node:module";
+import { execFileSync as execFileSync2 } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync as readdirSync3, realpathSync as realpathSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync as readdirSync3, realpathSync as realpathSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { delimiter, dirname as dirname2, join as join7, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -450,7 +449,7 @@ var defaultProbeSpawn = (argv, { timeoutMs }) => new Promise((resolve3) => {
   });
 });
 async function probeProviders(registry, opts = {}) {
-  const spawn2 = opts.spawn ?? defaultProbeSpawn;
+  const spawn = opts.spawn ?? defaultProbeSpawn;
   const seen = /* @__PURE__ */ new Set();
   const jobs = [];
   for (const providers of Object.values(registry.providers)) {
@@ -464,7 +463,7 @@ async function probeProviders(registry, opts = {}) {
         (async () => {
           if (argv.length === 0) return [name, false];
           try {
-            const r = await spawn2(argv, { timeoutMs });
+            const r = await spawn(argv, { timeoutMs });
             return [name, !r.timedOut && r.error === void 0 && r.code === 0];
           } catch {
             return [name, false];
@@ -1522,6 +1521,9 @@ async function resolveSource(healthSources, wanted, fetchSourcesList, sleep) {
   return { prefix: `/s/${pick.key}`, key: pick.key, label: pick.label };
 }
 
+// packages/debugger/src/observe-cli.ts
+import { isInvokedDirectly, runObserveServer, requireObserveRoot, openLogFileAt, readLogSliceFrom, logTail, spawnObserveChild } from "./lib/host/observe-server-bootstrap.mjs";
+
 // packages/debugger/src/observe-checkout.ts
 import { existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
 import { dirname, join as join6 } from "node:path";
@@ -1615,16 +1617,6 @@ function bestEffortPortHolders(port) {
   } catch {
     return [];
   }
-}
-function openLogFileAt(path) {
-  mkdirSync3(dirname2(path), { recursive: true, mode: 448 });
-  try {
-    if (existsSync4(path) && statSync2(path).size > LOG_ROTATE_BYTES) {
-      renameSync3(path, `${path}.1`);
-    }
-  } catch {
-  }
-  return openSync(path, "a", 384);
 }
 function readPidfileAt(path) {
   try {
@@ -1774,14 +1766,9 @@ function resolveLaunchAgentsDir() {
   return null;
 }
 async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
-  const base = findObserveRoot(process.cwd(), process.env);
-  if (base === null) {
-    throw new Error(
-      "cannot locate the observe server (no checkout found from cwd; set DWT_OBSERVE_ROOT). Until the Workflow Observatory binary distribution ships, wt-observe start needs a workflow-observatory checkout (or a legacy workflow-toolbox one) on this machine."
-    );
-  }
+  const base = requireObserveRoot();
   const logPath = observeServerLogPath(stateRoot);
-  const log = openLogFileAt(logPath);
+  const log = openLogFileAt(logPath, LOG_ROTATE_BYTES);
   const logStartOffset = (() => {
     try {
       return statSync2(logPath).size;
@@ -1791,59 +1778,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
   })();
   const token = randomBytes(24).toString("hex");
   const launchAgentsDir = resolveLaunchAgentsDir();
-  const tsxCli = (() => {
-    try {
-      return createRequire(join7(base, "package.json")).resolve("tsx/cli");
-    } catch {
-      throw new Error(`observe base ${base} has no resolvable 'tsx' \u2014 run pnpm install in ${base}`);
-    }
-  })();
-  const child = spawn(process.execPath, [tsxCli, "apps/observe-ui/server/dev-api.ts", ...flags.watch ? ["--watch"] : []], {
-    cwd: base,
-    env: {
-      ...process.env,
-      // Both env vars are set regardless of cardinality: dev-api.ts only switches to
-      // multi-source mode when OBSERVE_SOURCES resolves to 2+ UNIQUE entries (its own
-      // `parsedSources.length >= 2` check) — with exactly 1 resolved source it falls
-      // straight through to CLAUDE_CONFIG_DIR, so setting both here is always correct and
-      // needs no cardinality branch on this side either.
-      CLAUDE_CONFIG_DIR: sourceDirs[0],
-      // path.delimiter, not ':' — a colon inside 'C:\...' would shred Windows paths;
-      // dev-api.ts splits with the same constant (same machine, same value).
-      OBSERVE_SOURCES: sourceDirs.join(delimiter),
-      OBSERVE_UI_SERVER_PORT: String(port),
-      OBSERVE_UI_TOKEN: token,
-      // Remote-hub mounts (hub federation) — JSON, not delimiter-joined: URLs carry
-      // colons everywhere. Only set when configured, so a remote-less start's env is
-      // byte-identical to before.
-      ...remotes.length > 0 ? { OBSERVE_REMOTES: JSON.stringify(remotes) } : {},
-      ...flags.enableLaunch ? { OBSERVE_UI_ENABLE_LAUNCH: "1" } : {},
-      // Candidate fix 4 — --no-resume: PARK every pending A3
-      // boot-sweep resume this boot instead of dispatching it (dev-api.ts reads this and
-      // sets AppOptions.bootResumesDisabled). Unset = resume normally (unchanged default).
-      ...flags.noResume ? { OBSERVE_UI_NO_RESUME: "1" } : {},
-      // The agents-only shim plugin the server loads into every DELEGATED SDK
-      // session (SDK `plugins` option), so `workflow-toolbox:lean`/`leaf` resolve
-      // there despite the sessions' deliberate `settingSources: []` (without it
-      // the fences always probe "not found" and degrade — found live 2026-07-13).
-      // An explicit user-set value wins; absent shim (older checkout) = unset,
-      // the server then launches exactly as before.
-      ...process.env["OBSERVE_LAUNCH_PLUGIN_DIRS"] === void 0 && launchAgentsDir !== null ? { OBSERVE_LAUNCH_PLUGIN_DIRS: launchAgentsDir } : {}
-    },
-    detached: true,
-    windowsHide: true,
-    // win32: detached must not flash a console window
-    stdio: ["ignore", log, log]
-  });
-  let spawnError = null;
-  let exited = null;
-  child.once("error", (e) => {
-    spawnError = e;
-  });
-  child.once("exit", (code, signal) => {
-    exited = { code, signal };
-  });
-  child.unref();
+  const { child, spawnState } = spawnObserveChild({ base, entryUrl: import.meta.url, port, sourceDirs, remotes, flags, token, launchAgentsDir, log });
   const h = await awaitSpawnedServerReady({
     requestedPort: port,
     timeoutMs: flags.healthTimeoutMs,
@@ -1851,7 +1786,7 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
     probe: (p) => probeHealth(p),
     // Accept EITHER health shape (the readiness poll must not assume cardinality).
     isReady: (v) => typeof v === "object" && (Array.isArray(v.sources) || typeof v.configDir === "string"),
-    spawnState: () => ({ error: spawnError, exited }),
+    spawnState,
     kill: () => {
       if (typeof child.pid === "number") {
         try {
@@ -1865,24 +1800,6 @@ async function spawnServer(stateRoot, port, sourceDirs, remotes, flags) {
     logTail: () => logTail(logPath)
   });
   return { health: h, token };
-}
-function readLogSliceFrom(path, offset) {
-  try {
-    const buf = readFileSync6(path);
-    return buf.subarray(Math.min(offset, buf.length)).toString("utf8");
-  } catch {
-    return "";
-  }
-}
-function logTail(logPath, lines = 5) {
-  try {
-    const text = readFileSync6(logPath, "utf8");
-    const tail = text.split("\n").filter(Boolean).slice(-lines).join("\n");
-    return tail.length > 0 ? `log tail (${logPath}):
-${tail}` : `log is empty (${logPath})`;
-  } catch {
-    return `log unreadable (${logPath})`;
-  }
 }
 async function cmdStart(ctx, sourceDirs, remotes, flags) {
   for (let round = 0; round < 3; round++) {
@@ -2783,9 +2700,10 @@ async function main(argv = process.argv.slice(2)) {
     return 1;
   }
 }
-var entryGuardUrl = new URL("./lib/host/entry-guard.mjs", import.meta.url);
-var { isInvokedDirectly } = await import(entryGuardUrl.href);
-if (isInvokedDirectly(import.meta.url)) process.exitCode = await main();
+if (isInvokedDirectly(import.meta.url)) {
+  if (process.argv[2] === "--internal-serve") await runObserveServer();
+  else process.exitCode = await main();
+}
 export {
   main,
   scanRunsForPrune
