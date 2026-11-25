@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { checkSpawningTestFiles, scanSpawningTestFiles, spawningTestFiles } from '../spawning-test-files.mjs'
+import { checkSpawningTestFiles, scanNativeHookTestImports, scanSpawningTestFiles, spawningTestFiles } from '../spawning-test-files.mjs'
 import { laneSandboxContext, noteInsideLaneSandbox } from '../../test-support/lane-sandbox-context.js'
 import { scanAmbientState } from '../ambient-state-census.mjs'
 import { scanFixedWaits } from '../fixed-wait-census.mjs'
@@ -30,7 +30,14 @@ function omittedExportEntries(stale: string[], testName: string): string[] {
 const WHOLE_TREE_SCAN_TIMEOUT_MS = 120_000
 
 describe('process-spawning test scheduling', () => {
-  it.each(['spawnSync', 'execFileSync'])('retains scheduling and audit detection through bounded %s', (method) => {
+  it('keeps audited hook and plugin-bin children on bounded imports, including generated fixture source', () => {
+    expect(scanNativeHookTestImports()).toEqual([])
+  })
+
+  it.each(['spawnSync', 'execFileSync'].flatMap(method => [
+    [method, '../../../test-support/bounded-hook-spawn.mjs'],
+    [method, '../../test-support/bounded-hook-spawn.mjs'],
+  ]))('retains scheduling and audit detection through bounded %s from %s', (method, boundedModule) => {
     const fixture = mkdtempSync(resolve(tmpdir(), 'bounded-spawn-census-'))
     try {
       for (const dir of ['packages/build/test', 'examples/test', 'scripts/test']) mkdirSync(resolve(fixture, dir), { recursive: true })
@@ -41,7 +48,7 @@ describe('process-spawning test scheduling', () => {
       expect(before[0]).toEqual(['packages/build/test/hook.test.ts'])
       expect(before[1]).toHaveLength(1)
       expect(before[2]).toHaveLength(1)
-      writeFileSync(file, source('../../../test-support/bounded-hook-spawn.mjs'))
+      writeFileSync(file, source(boundedModule))
       expect([scanSpawningTestFiles(fixture), scanAmbientState(fixture), scanFixedWaits(fixture)]).toEqual(before)
     } finally { rmSync(fixture, { recursive: true, force: true }) }
   })

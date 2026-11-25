@@ -1,15 +1,105 @@
 import assert from 'node:assert/strict'
 import { spawnSync as nativeSpawnSync, execFileSync as nativeExecFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
+import ts from 'typescript'
+import { nativeSynchronousImportLines, scanNativeHookTestImports, scanSpawningTestFiles } from '../../../scripts/spawning-test-files.mjs'
+import { scanAmbientState } from '../../../scripts/ambient-state-census.mjs'
+import { scanFixedWaits } from '../../../scripts/fixed-wait-census.mjs'
 
 const moduleUrl = process.env.WT_HOOK_SPAWN_TEST_MODULE
   ? pathToFileURL(process.env.WT_HOOK_SPAWN_TEST_MODULE).href
   : new URL('../../../test-support/bounded-hook-spawn.mjs', import.meta.url).href
 const bounded = await import(moduleUrl)
+
+test('audited hook and plugin-bin subprocess tests use bounded imports, including generated launchers', () => {
+  assert.deepEqual(scanNativeHookTestImports(), [], 'audited hook/plugin-bin tests must not import native synchronous child processes')
+})
+
+test('the audited import lock recognizes aliases and emitted fixture imports without matching comments or mocks', () => {
+  for (const source of [
+    "import { spawnSync as run } from 'node:child_process'",
+    "import { execFileSync } from 'child_process'",
+    "import { execSync } from 'node:child_process'",
+    "import * as cp from 'node:child_process'; cp.spawnSync('node')",
+    "import cp from 'node:child_process'; cp.execSync('node')",
+    'const source = `import { spawnSync } from "node:child_process"; spawnSync(${target})`',
+    'const source = "import { spawnSync } from \'node:child_process\'"',
+  ]) assert.deepEqual(nativeSynchronousImportLines(source), [1], source)
+  for (const source of [
+    "// import { spawnSync } from 'node:child_process'",
+    "import { spawn } from 'node:child_process'",
+    "import type { SpawnSyncOptions } from 'node:child_process'",
+    "import { spawnSync } from '../../test-support/bounded-hook-spawn.mjs'",
+    "const cp = require('node:child_process'); cp.spawnSync = () => ({status: 0})",
+    "import cp from 'node:child_process'; cp.spawnSync = () => ({status: 0})",
+  ]) assert.deepEqual(nativeSynchronousImportLines(source), [], source)
+})
+
+test('both bounded import depths retain spawning, ambient-state and fixed-wait census coverage', () => {
+  const root = mkdtempSync(join(tmpdir(), 'bounded-census-parity-'))
+  try {
+    for (const dir of ['packages/build/test', 'examples/test', 'scripts/test']) mkdirSync(join(root, dir), { recursive: true })
+    for (const method of ['spawnSync', 'execFileSync']) {
+      const file = join(root, 'scripts/test/child.test.ts')
+      const source = module => `import { ${method} as run } from '${module}'\nrun('node', ['hook.mjs'], { env: { ...process.env }, timeout: 1000 })`
+      writeFileSync(file, source('node:child_process'))
+      const scan = () => [scanSpawningTestFiles(root), scanAmbientState(root), scanFixedWaits(root)]
+      const before = scan()
+      assert.deepEqual(before.map(findings => findings.length), [1, 1, 1])
+      for (const module of ['../../test-support/bounded-hook-spawn.mjs', '../../../test-support/bounded-hook-spawn.mjs']) {
+        writeFileSync(file, source(module))
+        assert.deepEqual(scan(), before, `${method}: ${module}`)
+      }
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+function generatedLauncherTemplates() {
+  const source = readFileSync(new URL('./sdk-pilot-lifecycle-server.test.ts', import.meta.url), 'utf8')
+  const parsed = ts.createSourceFile('launchers.ts', source, ts.ScriptTarget.Latest, true)
+  const templates = []
+  const visit = node => {
+    if (ts.isCallExpression(node) && ['rawLauncher', 'launcher'].includes(node.expression.getText(parsed))) {
+      const template = node.arguments[0]
+      if (template && ts.isTemplateExpression(template) && template.getText(parsed).includes('BOUNDED_SPAWN_URL')) templates.push(template.getText(parsed))
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  return templates
+}
+
+function runRelocatedLauncher(template) {
+  const root = mkdtempSync(join(tmpdir(), 'bounded-launcher-import-'))
+  try {
+    mkdirSync(join(root, '.lane'))
+    const cli = join(root, 'fake-cli.mjs'), file = join(root, 'launcher.mjs')
+    const log = join(root, 'run.log'), brief = join(root, 'brief.md'), report = join(root, 'report.md')
+    writeFileSync(cli, 'process.stdout.write("pid=0\\n")')
+    writeFileSync(log, 'LANE_NONCE=fixture\n')
+    writeFileSync(brief, `Write the report to \`${report}\``)
+    const render = new Function('BOUNDED_SPAWN_URL', 'fakeSource', 'realLauncher', 'hermeticPath', 'helperSource', 'old', `return ${template}`)
+    writeFileSync(file, render(moduleUrl, '', cli, () => process.env.PATH, 'process.exit(0)', cli))
+    const result = nativeSpawnSync(process.execPath, [file, '--dir', root, '--log', log, '--brief', brief], {
+      cwd: root, encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL',
+    })
+    assert.equal(result.error, undefined)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(result.stderr, '')
+    if (existsSync(report)) assert.equal(readFileSync(report, 'utf8'), 'report\n')
+    else assert.equal(result.stdout, 'pid=0\n')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
+test('all generated synchronous lifecycle launchers resolve the bounded helper from temporary directories', () => {
+  const templates = generatedLauncherTemplates()
+  assert.equal(templates.length, 4, 'every generated synchronous launcher must carry its relocatable helper URL')
+  for (const template of templates) runRelocatedLauncher(template)
+})
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'bounded-hook-spawn-'))

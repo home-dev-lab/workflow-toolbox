@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'

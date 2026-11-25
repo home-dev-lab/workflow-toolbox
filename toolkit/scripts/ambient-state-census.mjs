@@ -5,7 +5,7 @@ import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
-const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process', '../../../test-support/bounded-hook-spawn.mjs'])
+const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process', '../../../test-support/bounded-hook-spawn.mjs', '../../test-support/bounded-hook-spawn.mjs'])
 const PROCESS_FUNCTIONS = new Set(['exec', 'execFile', 'execFileSync', 'execSync', 'fork', 'spawn', 'spawnSync'])
 const SEAL_KEYS = ['NPM_CONFIG_PREFIX', 'HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_PLUGIN_DATA']
 
