@@ -14,7 +14,9 @@ const targets = {
   'host/suite-lock-machine.mjs': ['readSuiteMachine'],
   'host/suite-lock-reservations.mjs': ['pollReservationLease'],
   'host/suite-lock-watchdog.mjs': ['main'],
-  '../wt-suite-lock.mjs': ['queueAndRun', 'forward'],
+  // Explicit default-off admission changes queueAndRun's contract in round 5;
+  // its switch, identity and environment are covered by the identity process locks.
+  '../wt-suite-lock.mjs': ['forward'],
 }
 const helpers = ['holderAgeExpired', 'unpublishedLockDisappeared', 'sameLegacyInstance', 'queueClassFields',
   'coveredBrokerToken', 'windowsExecutableInDirectories', 'hasWindowsPath', 'reservationStatusLines',
@@ -89,7 +91,7 @@ if (process.argv.includes('--capture')) {
         }
       }
     }
-    console.log(`DIFFERENTIAL_CASES=${count} FUNCTIONS=13`)
+    console.log(`DIFFERENTIAL_CASES=${count} FUNCTIONS=12`)
   })
 }
 

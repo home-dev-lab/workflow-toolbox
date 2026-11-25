@@ -43,25 +43,24 @@ test('unknown heavy stays whole-machine exclusive; incomplete history falls back
   assert.equal(value.cores, 1.00000001 * 1.25, 'reserve full precision with 25% margin')
   assert.equal(value.memMiB, 512.00000001 * 1.25)
   assert.equal(api.reservationForJob([...runs.slice(0, 2), { release: { resources: null } }], 'heavy', capacity).mode, 'exclusive')
-  assert.equal(api.reservationForJob([], 'light', capacity).cores, 1)
+  assert.equal(api.reservationForJob([], 'light', capacity).cores, 4)
 })
 
-test('partial observations do not erase a mature catalogue or shrink its complete-run window', () => {
-  const partial = { release: { resources: null } }
+test('new successful incomplete observations revoke mature reservations within the release window', () => {
+  const partial = { release: { exit: 0, resources: null } }
   const runs = [measured(1, 100), measured(2, 300), measured(0.5, 200), partial]
   const value = api.reservationForJob(runs, 'heavy', capacity)
-  assert.equal(value.mode, 'reservation', 'three complete observations must remain measured despite an unknown row')
-  assert.equal(value.cores, 2.5)
-  assert.equal(value.memMiB, 375)
+  assert.equal(value.mode, 'exclusive', 'a newer successful incomplete observation revokes measured status')
+  assert.equal(value.basis, 'declared')
   const window = [measured(100, 10000), ...Array.from({ length: 10 }, () => [partial, measured(1, 100)]).flat(), partial]
-  assert.equal(api.reservationForJob(window, 'heavy', capacity).cores, 1.25, 'the window counts complete runs, not release rows')
+  assert.equal(api.reservationForJob(window, 'heavy', capacity).basis, 'declared', 'the window counts resource release rows, including incomplete successes')
 })
 
 test('malformed resource reasons are not complete observations', () => {
   const malformed = measured(999, 99999)
   malformed.release.resources.unknownReasons = { length: 0 }
   const value = api.reservationForJob([measured(), measured(), measured(), malformed], 'heavy', capacity)
-  assert.equal(value.cores, 1.25, 'a non-array reason field must not become a measured resource peak')
+  assert.equal(value.basis, 'declared', 'a malformed successful sample revokes measured status')
 })
 
 test('timing evidence forces exclusion in both directions without name heuristics', () => {
@@ -74,12 +73,12 @@ test('timing evidence forces exclusion in both directions without name heuristic
   assert.deepEqual(api.admissionPlan([ticket(2)], [{ reservation: sensitive }], capacity, {}).admit, [])
   runs[0].release.overlaps = undefined
   runs[2].release.overlaps = undefined
-  assert.equal(api.reservationForJob(runs, 'heavy', capacity).mode, 'reservation', 'missing overlap history is not proof of an isolated pass')
+  assert.equal(api.reservationForJob(runs, 'heavy', capacity).basis, 'declared', 'missing overlap history is not proof of an isolated pass; two successes cannot train')
 })
 
 test('CPU overload admits nothing and requests no stop', () => {
   assert.deepEqual(api.admissionPlan?.([ticket(1)], [], { ...capacity, load: 4.00001 }, {}).admit, [], 'overload closes admission')
-  assert.equal(api.watchdogDecision?.([{ id: 1 }], { availableMiB: 1024, floorMiB: 512 }), null, 'CPU is never a stop trigger')
+  assert.equal(api.watchdogDecision?.([{ id: 1 }], { ...capacity, load: 4.00001, availableMiB: 1024, floorMiB: 512 }), null, 'CPU is never a stop trigger')
 })
 
 test('memory stop chooses lowest priority then youngest once and protects release', () => {
