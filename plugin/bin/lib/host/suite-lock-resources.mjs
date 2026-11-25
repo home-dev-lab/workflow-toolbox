@@ -102,14 +102,17 @@ function retainedCpuTotal(processes, retained, credits) {
   return processes.reduce((sum, row) => sum + row.cpuMs, 0) + [...credits.values()].reduce((sum, cpu) => sum + cpu, 0)
 }
 
-function emptyZombieStatus(status, zombie) {
-  return zombie && /^State:\s+Z\b/m.test(status) && !/^VmRSS:|^VmHWM:/m.test(status)
+// The kernel prints the Vm block only while the task owns an address space. An exiting
+// process drops it before its zombie state is set, so status and stat can both still say
+// running. A status with a State line and no Vm field at all is that process, not a broken source.
+function withoutAddressSpace(status) {
+  return /^State:\s+\S/m.test(status) && !/^Vm[A-Za-z]+:/m.test(status)
 }
 
-function linuxMemory(status, zombie) {
+function linuxMemory(status) {
   const rss = /^VmRSS:\s+(\d+)\s+kB\s*$/m.exec(status)
   const hwm = /^VmHWM:\s+(\d+)\s+kB\s*$/m.exec(status)
-  if (!rss && emptyZombieStatus(status, zombie)) return 0 // Zombies have no resident address space.
+  if (!rss && withoutAddressSpace(status)) return 0 // Nothing resident once the address space is released.
   if (!rss || (/^VmHWM:/m.test(status) && !hwm)) throw new Error('resident memory unavailable')
   const sizes = [rss[1], hwm?.[1] ?? rss[1]].map(Number)
   if (!sizes.every(nonnegative)) throw new Error('invalid resident memory')
@@ -132,7 +135,7 @@ async function linuxFamilyRow(procfs, ticks, before, signal) {
     const current = linuxStat(before.pid, await procfs.readProcessStat(before.pid, options), ticks)
     if (current.identity !== before.identity) return unknown('pid-reused')
     if (current.cpuMs < before.cpuMs || current.childCpuMs < before.childCpuMs) return unknown('census-incoherent')
-    return { ...current, memMiB: linuxMemory(status, current.zombie), ignoresChildCpu: ignoresChildCpu(status) }
+    return { ...current, memMiB: linuxMemory(status), ignoresChildCpu: ignoresChildCpu(status) }
   } catch (error) {
     if (['ENOENT', 'ESRCH'].includes(error.code)) return null // Exit races are not unavailable sources.
     throw error

@@ -9,7 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Suite lock: resource-reservation admission ships switched off. When the marker file admission-reservation.enabled exists in the lock root, jobs that carry a --job-class (or WT_SUITE_LOCK_JOB_CLASS) reserve the cores and memory their past runs measurably used, and several run at once while the sum fits; without the marker the queue keeps its exclusive behaviour unchanged. See docs/public/suite-lock-admission.md.
 
 ### Changed
-- Suite lock journal: the per-job CPU and memory figures changed meaning. CPU of a child that exited is no longer counted a second time when its parent reaps it, and memory is now the sum of each live process's resident high-water mark, so it can read higher than before. Rows written before and after this release are not directly comparable.
+- Suite lock journal: the per-job CPU and memory figures changed meaning. CPU of a child that exited is no longer counted a second time when its parent reaps it, and memory is now the sum of each live process's resident high-water mark, so it can read higher than before. A process caught while it exits, after it has released its memory, counts as zero and no longer turns the whole measurement into an unknown. Rows written before and after this release are not directly comparable.
 
 ## [0.202.0] - 2026-11-24
 

@@ -615,6 +615,29 @@ async function zombieAndUnavailableStatus() {
   }
 }
 
+async function exitingProcessWithoutAddressSpace() {
+  const { createSuiteResourceReader } = await hostModule()
+  // Both shapes were recorded on a real churning tree: the address space is released before the zombie state is set.
+  const windows = [
+    ['Name:\tbash\nState:\tR (running)\nSigIgn:\t0000000000000000\n', 'S'],
+    ['Name:\tbash\nState:\tZ (zombie)\nSigIgn:\t0000000000000000\n', 'S'],
+  ]
+  for (const [exiting, statState] of windows) {
+    const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1', '2'],
+      read: async (file) => {
+        if (file === '/proc/2/status') return exiting
+        if (file.endsWith('/status')) return 'VmRSS: 2048 kB\n'
+        return file === '/proc/1/stat' ? procStat(1, 0, 100) : procStat(2, 1, 50).replace(') S ', `) ${statState} `)
+      } })
+    const result = await reader(1)
+    assert.equal(result.unknown, undefined, 'a process on its exit path must not make the whole census unavailable')
+    assert.deepEqual(result.processes.map((row) => [row.pid, row.memMiB]), [[1, 2], [2, 0]], 'a released address space holds no resident memory')
+  }
+  const garbled = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1'],
+    read: async (file) => file.endsWith('/status') ? 'State:\tR (running)\nVmRSS:\tgarbled\n' : procStat(1, 0, 100) })
+  assert.equal((await garbled(1)).unknown, 'source-unavailable', 'a present but unreadable resident size must stay a named unknown')
+}
+
 async function ignoredChildCpuStaysCarried() {
   if (!Number.isInteger(constants.signals.SIGCHLD)) { console.log('SKIP ignored-child fixture requires a SIGCHLD constant'); return }
   const { createSuiteResourceReader } = await hostModule()
@@ -805,6 +828,7 @@ export const resourceCases = [
   ['malformed high-water memory is named unavailable', malformedHighWaterMemory],
   ['exit during the status read preserves observed CPU', exitDuringStatusRead],
   ['explicit zombies have no RSS; unavailable status remains unknown', zombieAndUnavailableStatus],
+  ['a process past its address space release counts zero resident memory', exitingProcessWithoutAddressSpace],
   ['SIGCHLD-ignored CPU remains carried across unrelated later reaps', ignoredChildCpuStaysCarried],
   ['parent-before-child reads prevent mixed-time CPU double counting', parentBeforeChildCounters],
 ]
