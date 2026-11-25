@@ -17,11 +17,16 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
   it('Darwin registration basename case protects the disk-named entry', () => {
     const f = setup(); const dir = repository(f)
     f.options.platform = 'darwin'; f.options.mounts = []
+    // Selecting Darwin must not invoke the machine's real lsof: this case tests
+    // registration spelling, and the fixture supplies its own process witness.
+    f.options.cwd = f.project
+    f.options.lsofRun = vi.fn(() => ({ status: 0, stdout: `p${process.pid}\nfcwd\nn${f.project}\n` }))
     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => args.includes('worktree')
       ? { status: 0, stdout: `worktree ${join(f.source, 'Clean')}\0locked\0\0` } : spawnSync(cmd, args, options)
     const report = sweep!.scanProject(f.options)
     expect(report.entries).toHaveLength(1)
     expect(report.entries[0]).toMatchObject({ path: dir, verdict: 'KEEP', reason: 'locked' })
+    expect(f.options.lsofRun).toHaveBeenCalledOnce()
   })
   it('fixture Git config is a readable regular file, isolated from host configuration', () => {
     const f = setup()
