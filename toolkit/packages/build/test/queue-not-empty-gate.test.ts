@@ -132,7 +132,35 @@ function blockText(r: { stdout: string }): string {
   }
 }
 
-describe('registeredWorktrees', () => {
+function registerRealWorktreeCase() {
+  it('enumerates a real repository and its linked worktree through git, without a wall-clock bound', () => {
+    const root = mkRoot('real-git-worktrees')
+    const repo = join(root, 'repo')
+    const lane = join(root, 'lane')
+    mkdirSync(repo)
+    const git = (args: string[]) => expect(spawnSync('git', ['-c', 'commit.gpgSign=false', ...args], { cwd: repo }).status).toBe(0)
+    git(['init', '--quiet'])
+    writeFileSync(join(repo, 'seed.txt'), 'seed', 'utf8')
+    git(['add', 'seed.txt'])
+    git(['-c', 'user.email=queue-gate@example.test', '-c', 'user.name=Queue Gate', 'commit', '--quiet', '-m', 'seed'])
+    git(['worktree', 'add', '--quiet', '-b', 'lane-branch', lane])
+    // The real spawn, with only the 1 s production timeout removed: this lock proves parsing of
+    // real git output, and a slow host must not decide it.
+    const untimedSpawn = (command: string, args: string[], options: Record<string, unknown>) => {
+      const untimed = { ...options }
+      delete untimed.timeout
+      return unboundedGitSpawn(command, args, untimed)
+    }
+    const scan = registeredWorktrees(repo, { spawnSyncImpl: untimedSpawn })
+    expect(scan.status).toBe('known')
+    // realpathSync.native, not realpathSync: on Windows the temp directory can be an 8.3 short
+    // name (C:\Users\RUNNER~1\…) that only the native call expands, while git reports the long one.
+    const canonical = (path: string) => realpathSync.native(path)
+    expect(scan.worktrees.map(canonical)).toEqual([canonical(repo), canonical(lane)])
+  })
+}
+
+function registerUnavailableWorktreeCases() {
   it('returns unknown when git is unavailable', () => {
     expect(registeredWorktrees('/repo', {
       spawnSyncImpl: () => ({ error: new Error('ENOENT'), status: null }),
@@ -144,6 +172,10 @@ describe('registeredWorktrees', () => {
       spawnSyncImpl: () => ({ signal: 'SIGTERM', status: null, stdout: '' }),
     })).toEqual({ status: 'unknown', worktrees: [] })
   })
+}
+
+describe('registeredWorktrees', () => {
+  registerUnavailableWorktreeCases()
 
   it('returns unknown for malformed git worktree output', () => {
     expect(registeredWorktrees('/repo', {
@@ -178,31 +210,7 @@ describe('registeredWorktrees', () => {
       .toEqual({ status: 'unknown', worktrees: [] })
   })
 
-  it('enumerates a real repository and its linked worktree through git, without a wall-clock bound', () => {
-    const root = mkRoot('real-git-worktrees')
-    const repo = join(root, 'repo')
-    const lane = join(root, 'lane')
-    mkdirSync(repo)
-    const git = (args: string[]) => expect(spawnSync('git', ['-c', 'commit.gpgSign=false', ...args], { cwd: repo }).status).toBe(0)
-    git(['init', '--quiet'])
-    writeFileSync(join(repo, 'seed.txt'), 'seed', 'utf8')
-    git(['add', 'seed.txt'])
-    git(['-c', 'user.email=queue-gate@example.test', '-c', 'user.name=Queue Gate', 'commit', '--quiet', '-m', 'seed'])
-    git(['worktree', 'add', '--quiet', '-b', 'lane-branch', lane])
-    // The real spawn, with only the 1 s production timeout removed: this lock proves parsing of
-    // real git output, and a slow host must not decide it.
-    const untimedSpawn = (command: string, args: string[], options: Record<string, unknown>) => {
-      const untimed = { ...options }
-      delete untimed.timeout
-      return unboundedGitSpawn(command, args, untimed)
-    }
-    const scan = registeredWorktrees(repo, { spawnSyncImpl: untimedSpawn })
-    expect(scan.status).toBe('known')
-    // realpathSync.native, not realpathSync: on Windows the temp directory can be an 8.3 short
-    // name (C:\Users\RUNNER~1\…) that only the native call expands, while git reports the long one.
-    const canonical = (path: string) => realpathSync.native(path)
-    expect(scan.worktrees.map(canonical)).toEqual([canonical(repo), canonical(lane)])
-  })
+  registerRealWorktreeCase()
 })
 
 describe('scanLiveLaneProcesses', () => {

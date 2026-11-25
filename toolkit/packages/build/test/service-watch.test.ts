@@ -507,33 +507,64 @@ describe('wt-service-watch: --help documents the cadence knobs', () => {
   })
 })
 
+function configDirWithFlag(project: string, degraded: boolean): string {
+  const configDir = join(project, '.claude-config')
+  mkdirSync(configDir, { recursive: true })
+  if (degraded) {
+    writeFileSync(
+      join(configDir, '.wt-service-degraded.json'),
+      JSON.stringify({
+        since: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        indicator: 'major',
+        components: ['Claude API (api.anthropic.com)'],
+        incident: null,
+        writtenBy: 1,
+        writtenAt: new Date().toISOString(),
+      }),
+    )
+  }
+  return configDir
+}
+
+function projectSlug(dir: string): string {
+  return dir.replace(/[^A-Za-z0-9-]/g, '-')
+}
+
+function makeStaleTranscript(configDir: string, project: string, sessionId: string, agentFile: string) {
+  const dir = join(configDir, 'projects', projectSlug(project), sessionId, 'subagents')
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, agentFile)
+  writeFileSync(file, '{}')
+  // Push the mtime into the past so it is already "stale" at arming — this
+  // keeps the baseline-suppression logic out of the way; the test cares
+  // about service-flag suppression, not arc-watch's own baseline rules.
+  const old = new Date(Date.now() - 20 * 60_000)
+  utimesSync(file, old, old)
+  return file
+}
+
+function registerRelayArcCase() {
+  it('a relay arc watcher prints the skip line and leaves its state directory empty', () => {
+    const root = tmpRoot('wt-arc-watch-relay-')
+    const project = join(root, 'project')
+    const configDir = join(root, 'config')
+    mkdirSync(project, { recursive: true })
+    mkdirSync(configDir, { recursive: true })
+    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, WT_SESSION_ROLE: 'RELAY' },
+      timeout: 5_000, killSignal: 'SIGKILL',
+    })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe("ARC WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(root)).toEqual(['config', 'project'])
+  })
+}
+
 describe('wt-arc-watch: suppresses emission while the service flag is live, resumes without backlog', () => {
   function projectDir(): string {
     return tmpRoot('wt-arc-watch-project-')
-  }
-
-  function configDirWithFlag(project: string, degraded: boolean): string {
-    const configDir = join(project, '.claude-config')
-    mkdirSync(configDir, { recursive: true })
-    if (degraded) {
-      writeFileSync(
-        join(configDir, '.wt-service-degraded.json'),
-        JSON.stringify({
-          since: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          indicator: 'major',
-          components: ['Claude API (api.anthropic.com)'],
-          incident: null,
-          writtenBy: 1,
-          writtenAt: new Date().toISOString(),
-        }),
-      )
-    }
-    return configDir
-  }
-
-  function projectSlug(dir: string): string {
-    return dir.replace(/[^A-Za-z0-9-]/g, '-')
   }
 
   // These tests exercise the SERVICE-FLAG suppression path, not arc-watch's
@@ -550,19 +581,6 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
     const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: configDir }
     delete env.CLAUDE_CODE_SESSION_ID
     return env
-  }
-
-  function makeStaleTranscript(configDir: string, project: string, sessionId: string, agentFile: string) {
-    const dir = join(configDir, 'projects', projectSlug(project), sessionId, 'subagents')
-    mkdirSync(dir, { recursive: true })
-    const file = join(dir, agentFile)
-    writeFileSync(file, '{}')
-    // Push the mtime into the past so it is already "stale" at arming — this
-    // keeps the baseline-suppression logic out of the way; the test cares
-    // about service-flag suppression, not arc-watch's own baseline rules.
-    const old = new Date(Date.now() - 20 * 60_000)
-    utimesSync(file, old, old)
-    return file
   }
 
   it('a live flag suppresses ALL stdout (including the ARMED banner)', () => {
@@ -598,22 +616,28 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
     expect(res.stdout).not.toContain('STALE: sess-1/agent-a.jsonl')
   })
 
-  it('a relay arc watcher prints the skip line and leaves its state directory empty', () => {
-    const root = tmpRoot('wt-arc-watch-relay-')
-    const project = join(root, 'project')
-    const configDir = join(root, 'config')
-    mkdirSync(project, { recursive: true })
-    mkdirSync(configDir, { recursive: true })
-    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project], {
-      encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, WT_SESSION_ROLE: 'RELAY' },
-      timeout: 5_000, killSignal: 'SIGKILL',
-    })
-    expect(res.status).toBe(0)
-    expect(res.stdout).toBe("ARC WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
-    expect(readdirSync(root)).toEqual(['config', 'project'])
-  })
+  registerRelayArcCase()
 })
+
+function freshConfigDir(project: string): string {
+  const configDir = join(project, '.claude-config')
+  mkdirSync(configDir, { recursive: true })
+  return configDir
+}
+
+function registerSilentDelegationCase(projectDir: () => string) {
+  it('a session with a known id and no delegation yet stays fully silent', () => {
+    const project = projectDir()
+    const configDir = freshConfigDir(project)
+
+    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project, '--poll', '5', '--stale', '1'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_SESSION_ID: 'relay-session-under-test' },
+      timeout: 3_000, killSignal: 'SIGKILL', // the watcher loops forever; sampling confirms silence, not exit
+    })
+    expect(res.stdout).toBe('')
+  })
+}
 
 describe('wt-arc-watch: gated on THIS session\'s own first delegation, not on process start', () => {
   // What this protects: 2026-07-30, a read-only relay (front desk) armed
@@ -631,27 +655,7 @@ describe('wt-arc-watch: gated on THIS session\'s own first delegation, not on pr
     return tmpRoot('wt-arc-watch-gate-project-')
   }
 
-  function freshConfigDir(project: string): string {
-    const configDir = join(project, '.claude-config')
-    mkdirSync(configDir, { recursive: true })
-    return configDir
-  }
-
-  function projectSlug(dir: string): string {
-    return dir.replace(/[^A-Za-z0-9-]/g, '-')
-  }
-
-  it('a session with a known id and no delegation yet stays fully silent', () => {
-    const project = projectDir()
-    const configDir = freshConfigDir(project)
-
-    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project, '--poll', '5', '--stale', '1'], {
-      encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_SESSION_ID: 'relay-session-under-test' },
-      timeout: 3_000, killSignal: 'SIGKILL', // the watcher loops forever; sampling confirms silence, not exit
-    })
-    expect(res.stdout).toBe('')
-  })
+  registerSilentDelegationCase(projectDir)
 
   it('the SAME session delegating mid-run opens the gate and arms live — coverage is never lost', () => {
     // Real wall-clock time: the gate polls at 5s (the script's own poll-second
@@ -692,6 +696,36 @@ describe('wt-arc-watch: gated on THIS session\'s own first delegation, not on pr
     // Windows worst 11087 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 18000 ms).
   }, 28_000)
 })
+
+function registerQuotaProbePreferenceCases() {
+  it('falls back to the bundled probe when the config dir has none', () => {
+    const emptyConfig = tmpRoot('wt-quota-empty-config-')
+    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs'), '--poll', '5', '--timeout', '1'], {
+      encoding: 'utf8',
+      timeout: 8_000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: emptyConfig },
+      killSignal: 'SIGKILL',
+    })
+    // It must ARM on the bundled probe — never exit 1 "probe not found", which is what the
+    // old `<configDir>/scripts/quota-usage.mjs`-only default did for every adopter.
+    expect(res.stdout).toContain('QUOTA WATCH ARMED')
+    expect(res.stdout).toContain('source=bundled probe')
+    expect(res.stdout).not.toContain('QUOTA WATCH FAILED')
+  })
+
+  it('prefers a user probe over the bundled one when both exist', () => {
+    const cfg = tmpRoot('wt-quota-user-probe-')
+    mkdirSync(join(cfg, 'scripts'), { recursive: true })
+    writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), 'process.exit(2)\n')
+    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs'), '--poll', '5', '--timeout', '1'], {
+      encoding: 'utf8',
+      timeout: 8_000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: cfg },
+      killSignal: 'SIGKILL',
+    })
+    expect(res.stdout).toContain('source=user config probe')
+  })
+}
 
 describe('monitors.json registers the new monitor', () => {
   it('lists service-status-watch pointing at wt-service-watch.mjs', () => {
@@ -738,33 +772,7 @@ describe('monitors.json registers the new monitor', () => {
     expect(src).not.toContain("'fr-FR'")
   })
 
-  it('falls back to the bundled probe when the config dir has none', () => {
-    const emptyConfig = tmpRoot('wt-quota-empty-config-')
-    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs'), '--poll', '5', '--timeout', '1'], {
-      encoding: 'utf8',
-      timeout: 8_000,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: emptyConfig },
-      killSignal: 'SIGKILL',
-    })
-    // It must ARM on the bundled probe — never exit 1 "probe not found", which is what the
-    // old `<configDir>/scripts/quota-usage.mjs`-only default did for every adopter.
-    expect(res.stdout).toContain('QUOTA WATCH ARMED')
-    expect(res.stdout).toContain('source=bundled probe')
-    expect(res.stdout).not.toContain('QUOTA WATCH FAILED')
-  })
-
-  it('prefers a user probe over the bundled one when both exist', () => {
-    const cfg = tmpRoot('wt-quota-user-probe-')
-    mkdirSync(join(cfg, 'scripts'), { recursive: true })
-    writeFileSync(join(cfg, 'scripts', 'quota-usage.mjs'), 'process.exit(2)\n')
-    const res = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs'), '--poll', '5', '--timeout', '1'], {
-      encoding: 'utf8',
-      timeout: 8_000,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: cfg },
-      killSignal: 'SIGKILL',
-    })
-    expect(res.stdout).toContain('source=user config probe')
-  })
+  registerQuotaProbePreferenceCases()
 })
 
 // -----------------------------------------------------------------------------------

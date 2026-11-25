@@ -1,6 +1,6 @@
 import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
 import { dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -1973,7 +1973,10 @@ function registerSandboxGateCases() {
   it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips: bwrap unavailable or not root-owned, or zsh unavailable)', () => {
     const f = fixture('suite-lock-run-zsh')
     delete f.env.WT_LANE_SANDBOX
-    f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')
+    f.env.WT_LANE_SANDBOX_READ = [
+      join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures'),
+      join(ROOT, 'toolkit', 'test-support'),
+    ].join(':')
     const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'), 30_000)
     expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toContain('lane sandbox: bwrap')
