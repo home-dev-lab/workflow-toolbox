@@ -18,6 +18,7 @@ const reservations = await import(url('lib/host/suite-lock-reservations.mjs'))
 const sections = await import(url('lib/host/suite-lock-section.mjs'))
 const machineApi = await import(url('lib/host/suite-lock-machine.mjs'))
 const policy = await import(url('lib/suite-lock-admission.mjs'))
+const { readSuiteResourceRuns } = await import(url('lib/suite-lock-journal.mjs'))
 const { currentPidNamespace, processStartTime } = await import(url('lib/host/pid-namespace.mjs'))
 const children = new Set()
 const roots = []
@@ -93,10 +94,11 @@ test('R6 unknown supervision never becomes an automatic stop', () => {
 })
 
 function managedChild(root) {
+  writeFileSync(path.join(root, 'admission-reservation.enabled'), '')
   const marker = path.join(root, 'child-started')
   const child = spawn(process.execPath, [path.join(scratch, 'bin/wt-suite-lock.mjs'), 'run', '--', process.execPath, '-e',
     `require('fs').writeFileSync(${JSON.stringify(marker)},'started');setInterval(()=>{},1000)`], {
-    stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_ADMISSION: 'reservation',
+    stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, WT_SUITE_LOCK_DIR: root,
       WT_SUITE_LOCK_JOB_CLASS: 'fixture', WT_SUITE_LEASE: '', WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK: '1' },
   })
   children.add(child)
@@ -405,6 +407,59 @@ test('R4 CPU booking capacity is exactly the online logical CPU count', () => {
   const value = machineApi.readSuiteMachine({ platform: 'linux', read: (file) => file === '/proc/meminfo' ? 'MemAvailable: 8388608 kB\n' : '',
     release: () => 'linux', total: () => 16 * 1024 ** 3, cpus: () => 8, load: () => [2] })
   assert.equal(value.cores, 8, 'CPU capacity must not include the old 1.5 overbooking factor')
+})
+
+test('R3 real machine capacity carries nominal budgets into measured oversize planning', () => {
+  const capacity = machineApi.readSuiteMachine({ platform: 'linux', read: (file) => file === '/proc/meminfo' ? 'MemAvailable: 2097152 kB\n' : '',
+    release: () => 'linux', exists: () => false, total: () => 16 * 1024 ** 3, cpus: () => 8, load: () => [2] })
+  assert.equal(capacity.cores, 8)
+  assert.equal(capacity.load, 2)
+  assert.equal(capacity.totalMiB, 16384)
+  assert.equal(capacity.floorMiB, 1638.4)
+  assert.equal(capacity.memMiB, 2048 - 1638.4)
+  const runs = (peakCores, peakMemMiB) => Array.from({ length: 3 }, () => ({ release: { exit: 0, overlaps: [],
+    resources: { peakCores, peakMemMiB, wallMs: 1, unknownReasons: [] } } }))
+  for (const history of [runs(7, 100), runs(1, 12000)]) {
+    const reservation = policy.reservationForJob(history, 'heavy', capacity)
+    assert.equal(reservation.basis, 'measured-oversize', 'real nominal capacity must turn oversized measurements into exclusive work')
+    assert.deepEqual(policy.admissionPlan([{ number: 1, reservation }], [], { ...capacity, load: 999 }, {}).admit, [1])
+  }
+  assert.equal(policy.reservationForJob(runs(1, 1000), 'heavy', capacity).basis, 'measured',
+    'temporary low availability is not nominal oversize')
+})
+
+test('R5 classed measured jobs fall back on initially stale heartbeat or Windows samples', () => {
+  for (const sensor of ['heartbeat', 'windows']) for (const occupied of [false, true]) {
+    const { root, state } = fixture(`classed-stale-${sensor}-${occupied}`, occupied ? [holder('peer')] : [])
+    seedHistory(root)
+    state.windowsMemory = { availableMiB: 8000, sampledAt: Date.now() }
+    if (sensor === 'heartbeat') state.watchdog.heartbeat = Date.now() - 6000
+    else state.windowsMemory.sampledAt -= 11_000
+    save(root, state)
+    const request = waiting(root)
+    const reading = { ...healthy, wsl: true }
+    const runs = readSuiteResourceRuns(root).filter((run) => run.jobClass === request.record.jobClass)
+    assert.equal(policy.reservationForJob(runs, 'heavy', reading).basis, 'measured', 'the stale-sensor candidate has qualifying explicit-class history')
+    const lease = reservations.pollReservationLease(request, request.record, { readMachine: () => reading })
+    if (occupied) assert.equal(lease, null, 'stale sensors cannot let even a measured class share')
+    else assert.equal(lease?.holder.reservation.basis, 'sensor-unavailable', 'stale sensors still allow an exclusive cold-start grant')
+    assert.ok(reservations.readReservationState(root).holders.every((entry) => !entry.stop))
+  }
+})
+
+test('R2 a real memory-stop release neither trains nor disqualifies a measured class', () => {
+  const stopped = holder('memory-attempt', { jobClass: 'fixture', stop: { cause: 'memory-pressure', at: Date.now(), deadline: Date.now() + 20_000 } })
+  const { root } = fixture('memory-history', [stopped])
+  seedHistory(root)
+  reservations.releaseReservationLease({ root, holder: stopped, journal: { base: { root, leaseId: stopped.leaseId,
+    jobClass: 'fixture', kind: 'exclusive', cmd: 'other' } } }, { exit: 75,
+    resources: { peakCores: null, peakMemMiB: null, wallMs: 1, unknownReasons: ['interrupted'] } })
+  const rows = readFileSync(path.join(root, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  assert.equal(rows.at(-1).cause, 'memory-pressure')
+  assert.equal(rows.at(-1).exit, 75)
+  const history = rows.filter((row) => row.jobClass === 'fixture').map((release) => ({ release }))
+  assert.equal(policy.reservationForJob(history, 'heavy', healthy).basis, 'measured', 'interrupted unknown resources must not revoke three successful measurements')
+  assert.equal(policy.reservationForJob(history.slice(-1), 'heavy', healthy).basis, 'declared', 'the memory stop cannot train a class on its own')
 })
 
 test('R5 machine reader preserves legacy source getter ordering', () => {

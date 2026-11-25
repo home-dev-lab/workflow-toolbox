@@ -5,6 +5,10 @@ import { it } from 'vitest'
 // Expose new locks individually in the suite count while retaining the original
 // aggregate cases. Each standalone case executes once, not again in its aggregate.
 const addedCases = [
+  ['suite-lock-admission-comparison', 'quality ceiling extractions preserve sampler and restore-lock execution traces'],
+  ['suite-lock-admission-recovery', 'R3 real machine capacity carries nominal budgets into measured oversize planning'],
+  ['suite-lock-admission-recovery', 'R5 classed measured jobs fall back on initially stale heartbeat or Windows samples'],
+  ['suite-lock-admission-recovery', 'R2 a real memory-stop release neither trains nor disqualifies a measured class'],
   ['suite-lock-admission-recovery', 'R5 machine reader preserves legacy source getter ordering'],
   ['suite-lock-admission-recovery', 'R8 release retries a temporarily unreadable reservation state'],
   ['suite-lock-admission-recovery', 'R5 an invalid Windows sample cannot authorize sharing'],
@@ -38,6 +42,7 @@ const addedCases = [
   ['suite-lock-admission', 'admission has no count ceiling for a large fitting family'],
   ['suite-lock-admission', 'memory pressure still selects a victim when every holder has release priority'],
   ['suite-lock-admission-process', 'a released memory victim keeps its place ahead of an already polling peer'],
+  ['suite-lock-admission-process', 'memory retry preserves populated light size and explicit class against conflicting inputs'],
   ['suite-lock-admission-process', 'thirty-three measured heavy leases fit without a holder-count cap'],
   ['suite-lock-admission-process', 'same-name light jobs use history, not their name: sensitive=false'],
   ['suite-lock-admission-process', 'same-name light jobs use history, not their name: sensitive=true'],
@@ -46,7 +51,9 @@ const addedCases = [
   ['suite-lock-admission-process', 'CPU overload leaves real running jobs unsignalled and only pauses new admission'],
   ['suite-lock-admission-process', 'a foreign PID namespace cannot replace a live watchdog (Linux bwrap required)'],
   ['suite-lock-admission-identity', 'switch defaults off and uses legacy acquisition and release without a watchdog'],
-  ['suite-lock-admission-identity', 'explicit reservation switch creates managed state and a live watchdog'],
+  ['suite-lock-admission-identity', 'marker creates managed state and a live watchdog'],
+  ['suite-lock-admission-identity', 'reservation environment cannot enable admission without a marker through a complete queued run'],
+  ['suite-lock-admission-identity', 'exclusive override keeps a complete queued run unmanaged with a marker'],
   ['suite-lock-admission-identity', 'marker enables reservations and exclusive overrides the marker'],
   ['suite-lock-admission-identity', 'invalid switch warns once and is treated as unset including marker fallback'],
   ['suite-lock-admission-identity', 'flag job class wins and request and release journal the explicit identity'],
@@ -70,7 +77,9 @@ const addedCases = [
   ['suite-lock-admission-identity', 'reservation environment emits positive ceilings only for managed shared leases'],
   ['suite-lock-admission-identity', 'child environment removes managed keys using native platform case rules'],
   ['suite-lock-admission-identity', 'status shows switch and waiting and running identity mode reservation and basis'],
-  ['suite-lock-admission-identity', 'status retains legacy running identity after a reservation epoch has emptied'],
+  ['suite-lock-admission-identity', 'off status omits admission additions after a reservation epoch has emptied'],
+  ['suite-lock-admission-identity', 'off status keeps legacy queue entries without admission enrichment'],
+  ['suite-lock-admission-identity', 'status keeps admission visible when the marker is removed during a managed run'],
 ] as const
 const escaped = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const run = (file: string, pattern?: string) => execFileSync(process.execPath, [

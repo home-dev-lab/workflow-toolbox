@@ -11,18 +11,22 @@ const referenceFile = new URL('./suite-lock-admission-before-quality.json', impo
 const targets = {
   'suite-lock.mjs': ['holderIsStale', 'tryTakeLock', 'sameInstance', 'waiterRecord', 'coveredSuiteLease', 'resolveWindowsExecutable'],
   'suite-lock-status.mjs': ['formatSuiteLockStatus', 'suiteLockStatusJson'],
-  'host/suite-lock-machine.mjs': ['readSuiteMachine'],
+  // Machine readings intentionally changed in round 5 (WSL, nominal budgets,
+  // floor and freshness); recovery selftests lock that contract directly.
   'host/suite-lock-reservations.mjs': ['pollReservationLease'],
   'host/suite-lock-watchdog.mjs': ['main'],
   // Explicit default-off admission changes queueAndRun's contract in round 5;
   // its switch, identity and environment are covered by the identity process locks.
   '../wt-suite-lock.mjs': ['forward'],
 }
+const extractionTargets = { 'host/suite-lock-resources.mjs': ['linuxResourceTree'], 'host/suite-lock-queue.mjs': ['putLockBack'] }
 const helpers = ['holderAgeExpired', 'unpublishedLockDisappeared', 'sameLegacyInstance', 'queueClassFields',
   'coveredBrokerToken', 'windowsExecutableInDirectories', 'hasWindowsPath', 'reservationStatusLines',
-  'optionalResourceStatus', 'machineValues', 'validMachineValues', 'machineAdmissionBlocked', 'recordFitBypasses', 'watchdogOwns',
+  'optionalResourceStatus', 'recordFitBypasses', 'watchdogOwns',
+  'admissionMachine', 'machineReading', 'reservationSensorsFresh', 'fallbackMachine', 'recentSample',
+  'freshWindowsSample', 'exclusiveFallback', 'safeReservationQueue', 'reservationPlan', 'supervise',
   'cliReservationRequested', 'staticAncestorLease', 'replaceableCliRun', 'shouldRetryReservation', 'watchdogIdle',
-  'recordCommandSignal', 'recordForwardedCommand']
+  'recordCommandSignal', 'recordForwardedCommand', 'retainedCountersRegressed', 'assertPutBackRetryable']
 
 function declarations(text) {
   const parsed = tseslint.parser.parseForESLint(text, { sourceType: 'module', range: true, loc: true })
@@ -56,7 +60,7 @@ function findVariable(node, name, keys) {
 }
 
 function sources() {
-  return Object.fromEntries(Object.keys(targets).map((file) => [file,
+  return Object.fromEntries(Object.keys({ ...targets, ...extractionTargets }).map((file) => [file,
     declarations(readFileSync(path.join(root, 'plugin/bin/lib', file), 'utf8'))]))
 }
 
@@ -76,35 +80,56 @@ if (process.argv.includes('--capture')) {
 } else {
   const reference = JSON.parse(readFileSync(referenceFile, 'utf8'))
   test('quality extraction preserves values, errors, reads, writes, this and outgoing call order', async () => {
-    let count = 0
-    for (const [file, names] of Object.entries(targets)) {
+    const count = await compareTargets(reference, targets)
+    console.log(`DIFFERENTIAL_CASES=${count} FUNCTIONS=${Object.values(targets).flat().length}`)
+  })
+  test('quality ceiling extractions preserve sampler and restore-lock execution traces', async () => {
+    const count = await compareTargets(reference, extractionTargets)
+    console.log(`EXTRACTION_CASES=${count} FUNCTIONS=2`)
+  })
+}
+
+async function compareTargets(reference, selected) {
+  let count = 0
+  const failures = []
+  for (const [file, names] of Object.entries(selected)) {
       for (const name of names) {
         for (const variant of variants(name)) {
           const beforeHelpers = name === 'forward' ? { recordCommandSignal: reference[file].recordCommandSignal } : {}
           const before = await execute(reference[file][name], name, beforeHelpers, variant)
-          let body = current[file][name]
-          if (process.env.WT_ADMISSION_COMPARE_MUTATE === '1' && name === 'sameInstance') body = mutationCopy()
-          if (process.env.WT_ADMISSION_COMPARE_MUTATE_FORWARD === '1' && name === 'forward') body = mutationCopy('forward')
+          const body = comparisonBody(file, name)
           const after = await execute(body, name, current[file], variant)
-          assert.deepEqual(after, before, `${name} variant ${JSON.stringify(variant)} must preserve its execution trace`)
+          try { assert.deepEqual(after, before, `${name} variant ${JSON.stringify(variant)} must preserve its execution trace`) }
+          catch (error) { failures.push(error); console.error(`${name} variant ${JSON.stringify(variant)} must preserve its execution trace`) }
           count++
         }
       }
     }
-    console.log(`DIFFERENTIAL_CASES=${count} FUNCTIONS=12`)
-  })
+  console.log(`COMPARISON_CASES=${count} MATCHED=${count - failures.length} FUNCTIONS=${Object.values(selected).flat().length}`)
+  if (failures.length) throw new AggregateError(failures, `${failures.length} execution traces differ from the frozen contract`)
+  return count
+}
+
+function comparisonBody(file, name) {
+  let body = current[file][name]
+  if (process.env.WT_ADMISSION_COMPARE_MUTATE === '1' && name === 'sameInstance') body = mutationCopy()
+  if (process.env.WT_ADMISSION_COMPARE_MUTATE_FORWARD === '1' && name === 'forward') body = mutationCopy('forward')
+  if (process.env.WT_ADMISSION_COMPARE_MUTATE_EXTRA === name) body = mutationCopy(name)
+  return body
 }
 
 function mutationCopy(name = 'sameInstance') {
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'admission-comparison-'))
   try {
     const file = path.join(scratch, 'copy.mjs')
-    writeFileSync(file, name === 'forward' ? 'const forward = () => {}' : 'const sameInstance = () => false')
+    writeFileSync(file, name === 'forward' ? 'const forward = () => {}' : `const ${name} = () => false`)
     return readFileSync(file, 'utf8')
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 }
 
 function variants(name) {
+  if (name === 'linuxResourceTree') return ['ok', 'reused', 'unknown', 'exit', 'regressed', 'missing', 'denied'].map((mode) => ({ mode }))
+  if (name === 'putLockBack') return ['ok', 'retry', 'holder', 'expired', 'denied', 'null-error'].flatMap((mode) => [false, true].map((injected) => ({ mode, injected })))
   const legacy = legacyVariants(name)
   if (legacy) return legacy
   if (name === 'readSuiteMachine') return ['linux', 'darwin', 'win32'].flatMap((platform) => ['ok', 'missing', 'throw', 'invalid'].map((mode) => ({ platform, mode })))
@@ -154,7 +179,7 @@ async function execute(body, name, extra, variant) {
   let result
   let error
   try { result = await run(...environment.args.map((arg, index) => observed(arg, trace, `arg${index}`))) }
-  catch (failure) { error = { name: failure.name, message: failure.message, code: failure.code } }
+  catch (failure) { error = failure === null ? { thrown: null } : { name: failure.name, message: failure.message, code: failure.code } }
   const calls = [...trace]
   return { result: result === undefined ? '[undefined]' : copy(result), error, calls, effects: copy(environment.effects) }
 }
@@ -194,6 +219,8 @@ function commonGlobals(call) {
 }
 
 function functionFixture(name, v, g, call, effects, trace) {
+  if (name === 'linuxResourceTree') return resourceTreeFixture(v, g, call, effects, trace)
+  if (name === 'putLockBack') return putBackFixture(v, g, call, trace)
   if (name === 'sameInstance') return [v.left, v.right]
   if (name === 'holderIsStale') {
     Object.assign(g, { platformOf: call('platform', (options) => options.platform), positiveSeconds: call('seconds', Number),
@@ -206,6 +233,34 @@ function functionFixture(name, v, g, call, effects, trace) {
   if (name === 'resolveWindowsExecutable') return [v.executable, { env: { PATH: '/one:/two', PATHEXT: '.EXE;.CMD' }, exists: call('exists', () => v.found) }]
   if (name === 'readSuiteMachine') return [machineFixture(v, call)]
   return executionFixture(name, v, g, call, effects, trace)
+}
+
+function resourceTreeFixture(v, g, call, effects, trace) {
+  const before = observed({ pid: 1, identity: 'root', cpuMs: 10, childCpuMs: 0 }, trace, 'previous-row')
+  const rows = v.mode === 'missing' ? [] : [observed({ ...before, cpuMs: v.mode === 'regressed' ? 1 : 20 }, trace, 'current-row')]
+  effects.retainedWrites = []
+  const retained = { [Symbol.iterator]: () => [[before.identity, before]][Symbol.iterator](),
+    clear: () => effects.retainedWrites.push('clear'), set: (key, value) => effects.retainedWrites.push([key, value]) }
+  Object.assign(g, { linuxRows: call('linuxRows', async () => {
+    if (v.mode === 'denied') throw Object.assign(new Error('denied'), { code: 'EACCES' })
+    return { rows: v.mode === 'reused' ? [{ ...before, identity: 'replacement' }] : rows }
+  }), parentFirstFamily: call('parentFirstFamily', (family) => family), selectFamily: call('selectFamily', (family) => family),
+  linuxFamilyRow: call('linuxFamilyRow', async (_procfs, _ticks, row) => v.mode === 'unknown' ? { unknown: 'unreadable' } : v.mode === 'exit' ? null : row),
+  retainedCpuTotal: call('retainedCpuTotal', () => 20), unknown: call('unknown', (reason) => ({ unknown: reason })) })
+  return [{}, 100, 1, retained, new Map(), undefined]
+}
+
+function putBackFixture(v, g, call, trace) {
+  let attempts = 0
+  const rename = call('rename', () => {
+    if (v.mode === 'null-error') throw null
+    if (v.mode === 'denied') throw observed(Object.assign(new Error('missing'), { code: 'ENOENT' }), trace, 'rename-error')
+    if (v.mode !== 'ok' && attempts++ === 0) throw observed(Object.assign(new Error('busy'), { code: 'EEXIST' }), trace, 'rename-error')
+  })
+  Object.assign(g, { renameSync: rename, readHolderIn: call('readHolderIn', () => v.mode === 'holder' ? { pid: 2 } : null),
+    rmSync: call('rmSync'), rmdirSync: call('rmdirSync', () => { throw new Error('still present') }),
+    PUT_BACK_MAX_MS: 5000, PUT_BACK_STEP_MS: 5, Atomics: { wait: call('wait') } })
+  return ['/saved', '/lock', { ...(v.injected ? { rename } : {}), ...(v.mode === 'expired' ? { maxMs: 0 } : {}) }]
 }
 
 function executionFixture(name, v, g, call, effects, trace) {
@@ -258,11 +313,11 @@ function machineFixture(v, call) {
 function pollFixture(v, g, call, effects) {
   const state = { watchdog: { heartbeat: 200_000_000 }, holders: [], bypasses: {} }
   const candidate = { number: 1, effectiveLevel: 1, reason: {}, reservation: {} }
-  const queue = [{ number: 2 }, candidate]
+  const queue = [{ number: 2, reservation: {} }, candidate]
   const machine = { availableMiB: v.mode === 'floor' ? 0 : 8192, floorMiB: 1024, unknown: v.mode === 'unknown' }
   if (v.mode === 'stale') state.watchdog.heartbeat = 0
   Object.assign(g, { reservationSection: call('section', (_root, critical) => v.mode === 'busy' ? 'busy' : critical()),
-    prepareState: call('state', () => v.mode === 'no-state' ? null : state), reservedQueue: call('queue', () => queue),
+    prepareState: call('state', () => v.mode === 'no-state' ? null : state), readReservationState: call('reread', () => state), reservedQueue: call('queue', () => queue),
     admissionPlan: call('plan', () => ({ admit: v.mode === 'not-head' ? [] : [1], blocked: [2] })),
     resolveReservationCommand: call('replacement', () => v.mode !== 'replacement-waits'),
     grantReservation: call('grant', (_root, _state, _candidate, holder) => { effects.state = state; return holder }) })
@@ -278,6 +333,7 @@ function watchdogFixture(v, g, call) {
   if (v.mode === 'idle') { state.holders = []; state.used = true }
   const readings = v.mode === 'gone' ? [] : [state]
   Object.assign(g, { readReservationState: call('state', () => readings.shift()),
+    isWsl: () => false, startWindowsMemoryReader: () => assert.fail('plain Linux fixture must never start Windows reader'),
     readSuiteMachine: call('machine', () => v.mode === 'unknown' ? { unknown: 'denied' } : {}),
     watchReservationMemory: call('watch', () => v.mode === 'busy' ? 'busy' : true) })
   return ['/root', 'g']

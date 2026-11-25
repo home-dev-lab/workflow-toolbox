@@ -28,8 +28,9 @@ const watchdogProvesGone = (watchdog) => ticketIsStale({ holder: watchdog, ageMs
 
 export function reservationAdmissionSwitch(root, env = process.env, warn = (line) => process.stderr.write(`${line}\n`)) {
   const value = env.WT_SUITE_LOCK_ADMISSION
-  if (value === 'exclusive' || value === 'reservation') return { enabled: value === 'reservation', source: 'environment' }
-  if (value !== undefined) warn('wt-suite-lock: invalid WT_SUITE_LOCK_ADMISSION; expected reservation or exclusive; treating as unset')
+  if (value === 'exclusive') return { enabled: false, source: 'environment' }
+  if (value === 'reservation') warn('wt-suite-lock: only the marker file in the lock root enables reservation admission; WT_SUITE_LOCK_ADMISSION is ignored')
+  else if (value !== undefined) warn('wt-suite-lock: invalid WT_SUITE_LOCK_ADMISSION; expected exclusive; treating as unset')
   const enabled = !root.startsWith('broker:') && existsSync(path.join(root, 'admission-reservation.enabled'))
   return { enabled, source: enabled ? 'marker' : 'default' }
 }

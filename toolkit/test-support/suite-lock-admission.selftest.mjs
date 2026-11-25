@@ -144,7 +144,7 @@ test('platform measurements fail explicitly rather than using plausible Windows 
   assert.equal(host.readSuiteMachine?.({ ...input, platform: 'win32' })?.unknown, 'unsupported-platform-memory-and-load')
   for (const platform of ['linux', 'darwin']) {
     const result = host.readSuiteMachine({ ...input, platform })
-    assert.equal(result.cores, 12)
+    assert.equal(result.cores, 8)
     assert.equal(result.availableMiB, 4096)
     assert.equal(result.memMiB, 3072)
     assert.equal(result.load, 2.0000001)

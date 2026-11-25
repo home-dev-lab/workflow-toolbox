@@ -7,13 +7,15 @@ FIFO, and bounded light-pass ordering still ranks the queue.
 
 ## Explicit switch
 
-Reservation admission is **off by default**. Enable it with
-`WT_SUITE_LOCK_ADMISSION=reservation` or the marker file
-`<lock root>/admission-reservation.enabled`. `WT_SUITE_LOCK_ADMISSION=exclusive`
-overrides the marker. Other values produce one warning and are treated as unset,
-so the marker still applies. With the switch off, acquisition and release use the
+Reservation admission is **off by default**. Only creating the marker file
+`<lock root>/admission-reservation.enabled` enables it. `WT_SUITE_LOCK_ADMISSION=exclusive`
+overrides the marker. The value `reservation` warns that only the marker enables
+admission and is ignored; any other value warns that it is invalid and is treated
+as unset. The marker therefore decides in both cases. With the switch off, acquisition and release use the
 legacy exclusive path: no reservation state, compatibility fence, writer section
 or watchdog is created. Phase-one measurement journalling continues.
+Text status (including `--resources`) and JSON status retain the base output when
+the switch is off and no reservation holder remains.
 
 ## Workload identity
 
@@ -60,6 +62,23 @@ A red run with positive overlap, together with a passing run whose recorded
 overlap list is empty, marks that same class timing-sensitive, with exclusive
 basis `timing-history`. Missing overlap data does not prove that a run was alone.
 Every reservation release records overlapping lease IDs and their durations.
+
+## Measuring Linux resource peaks
+
+The sampler follows each process by PID and process start time, reading
+parents before children. CPU already observed for an exited process is carried
+to its surviving ancestor until the ancestor's reaped-child counters absorb it.
+That transfer counts a reaped child's observed CPU once, rather than again when
+its parent reaps it. Memory is the sum over live processes of the larger of
+current resident size and each process's resident high-water mark. Those peaks
+need not occur together, so the result intentionally over-estimates memory.
+
+One unreadable sample makes both peaks unknown for the run. Unknown runs cannot
+train a reservation; a successful incomplete run disqualifies the class until
+three complete successes follow. Ordinary confirmed process exits are reconciled
+as exits rather than treated as unreadable samples. macOS uses process CPU and
+instantaneous resident sizes from `ps`; native Windows resource sampling reports
+a named unknown rather than an invented zero.
 
 ## Capacity and fit
 
@@ -244,12 +263,17 @@ as reserved memory, conservatively. Victim priority is frozen at admission.
 
 ## Queue reservations
 
-`wt-suite-lock status` reports whether the switch is on and its source
+With the switch off and no reservation holders, `wt-suite-lock status`,
+`status --resources` and `status --json` preserve the base output: no admission
+block or key, and no enriched queue entries. When enabled, or when the
+marker is removed while managed holders still run, status reports the switch and its source
 (`environment`, `marker` or `default`). It lists each waiting and running job's
 class (or `none`), mode, reservation and basis, plus the sum of running reservations.
 `status --json` includes this view under `admission` (`enabled`, `source`, `running`,
 `waiting`, `totals`), and `jobClass` on queue entries. Unknown legacy reservation
 amounts are shown as unknown rather than invented zero budgets.
+The `environment` source can only report an explicit `exclusive` override;
+an enabled switch always has source `marker`.
 
 `status --json` includes a `reservation` on every managed queue entry, with
 unrounded `cores`, `memMiB`, `mode` and `basis`. These are recomputed from the

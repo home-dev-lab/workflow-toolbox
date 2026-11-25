@@ -58,7 +58,7 @@ const USAGE = `Usage:
   V3 has no level aging: exclusive size S gains one level unless the project's last S exceeded 10 minutes; M/L gain none (default L).
   WT_SUITE_LOCK_SIZE and WT_SUITE_LOCK_PROJECT supply defaults; explicit options win. Equal ranks alternate projects.
   --job-class / WT_SUITE_LOCK_JOB_CLASS identifies one stable workload; without qualifying class history a job stays exclusive.
-  Reservation admission is off by default; WT_SUITE_LOCK_ADMISSION=reservation or admission-reservation.enabled enables it; =exclusive overrides the marker.
+  Reservation admission is off by default; only <lock root>/admission-reservation.enabled enables it; WT_SUITE_LOCK_ADMISSION=exclusive overrides the marker.
   Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
@@ -395,12 +395,24 @@ async function status(args) {
   const viaBroker = Boolean(process.env.WT_SUITE_LOCK_BROKER)
   const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLockStatus()
   const admission = reservationAdmissionSwitch(suiteLeaseDomain())
-  const jobs = admissionStatusJobs(current, suiteLeaseDomain())
-  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(current), queue: jobs.waiting, admission: { ...admission, ...jobs }, ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
-  else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder), { resources: args.includes('--resources') }))
-  if (!json) process.stdout.write(admissionStatusLines(admission, jobs))
+  const additions = admissionStatusAdditions(current, admission, suiteLeaseDomain())
+  const visible = additions.admission ? current : legacyStatusSnapshot(current)
+  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(visible), ...additions, ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
+  else process.stdout.write(formatSuiteLockStatus(visible, formatSuiteLockHolder(current.holder), { resources: args.includes('--resources') }))
+  if (!json && additions.admission) process.stdout.write(admissionStatusLines(admission, additions.admission))
   if (!json) process.stdout.write(staticLaneStatusLines(current))
   return 0
+}
+
+function legacyStatusSnapshot(current) {
+  const queue = Array.isArray(current.queue) ? current.queue.map(({ reservation: _reservation, jobClass: _jobClass, ...entry }) => entry) : current.queue
+  return { ...current, queue, reservations: null }
+}
+
+function admissionStatusAdditions(current, admission, root) {
+  if (!admission.enabled && !current.reservations?.holders.length) return {}
+  const jobs = admissionStatusJobs(current, root)
+  return { queue: jobs.waiting, admission: { ...admission, ...jobs } }
 }
 
 function admissionStatusJobs(current, root) {

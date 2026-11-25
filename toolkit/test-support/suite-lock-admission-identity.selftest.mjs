@@ -31,6 +31,8 @@ const machine = { cores: 20, load: 0, loadLimit: 20, memMiB: 30000, totalMiB: 40
 writeFileSync(path.join(scratch, 'bin/lib/host/suite-lock-machine.mjs'), `
 export const reservationHostSupported = (platform = process.platform) => ['linux', 'darwin'].includes(platform)
 export const readSuiteMachine = () => (${JSON.stringify(machine)})
+export const isWsl = () => false
+export const startWindowsMemoryReader = () => { throw new Error('unexpected Windows reader in fixture') }
 `)
 const children = new Set()
 after(() => { for (const child of children) child.kill('SIGKILL'); rmSync(scratch, { recursive: true, force: true }) })
@@ -39,9 +41,11 @@ const api = await imported('suite-lock-admission.mjs')
 const host = await imported('host/suite-lock-reservations.mjs')
 const journal = await imported('suite-lock-journal.mjs')
 const lock = await imported('suite-lock.mjs')
+const { currentPidNamespace, processStartTime } = await imported('host/pid-namespace.mjs')
 const cli = path.join(scratch, 'bin/wt-suite-lock.mjs')
 const pause = () => new Promise((resolve) => setTimeout(resolve, 20))
 const rootFor = (name) => mkdtempSync(path.join(scratch, `${name}-`))
+const enable = (root) => writeFileSync(path.join(root, 'admission-reservation.enabled'), '')
 const measured = (cores = 1, memMiB = 100, fields = {}) => ({ jobClass: 'repo:check', release: {
   exit: 0, overlaps: [], resources: { peakCores: cores, peakMemMiB: memMiB, wallMs: 1000, unknownReasons: [] }, ...fields,
 } })
@@ -53,6 +57,15 @@ async function until(check, message) {
   const end = Date.now() + 8000
   while (Date.now() < end) { if (check()) return; await pause() }
   assert.fail(message)
+}
+
+async function warmSupervisor(root) {
+  const generation = `${path.basename(root)}-supervised`
+  const child = spawn(process.execPath, [path.join(scratch, 'bin/lib/host/suite-lock-watchdog.mjs'), root, generation], { stdio: 'ignore' })
+  children.add(child)
+  writeFileSync(path.join(root, 'reservations.json'), JSON.stringify({ version: 1, generation, holders: [], bypasses: {},
+    createdAt: Date.now(), watchdog: { pid: child.pid, startTime: processStartTime(child.pid), pidNamespace: currentPidNamespace(), heartbeat: 0 } }))
+  await until(() => host.readReservationState(root)?.watchdog.heartbeat > 0, 'private watchdog must publish its first heartbeat')
 }
 
 function environment(root, overrides = {}) {
@@ -94,6 +107,14 @@ async function inspectRun(root, flags, env, inspect) {
   return run
 }
 
+async function statusOutput(root, flags = []) {
+  const child = spawn(process.execPath, [cli, 'status', ...flags], { env: environment(root), stdio: ['ignore', 'pipe', 'pipe'] })
+  let text = ''
+  child.stdout.on('data', (chunk) => { text += chunk })
+  assert.equal(await new Promise((resolve) => child.once('exit', resolve)), 0)
+  return text
+}
+
 function assertUnmanaged(root, env) {
   for (const name of ['reservations.json', 'reservation-write.d', 'watchdog.log']) {
     assert.equal(existsSync(path.join(root, name)), false, `default-off must not create ${name}`)
@@ -118,9 +139,10 @@ processTest('switch defaults off and uses legacy acquisition and release without
   assert.ok(rows[0].release.resources, 'phase-one measurement still records a resource row')
 })
 
-processTest('explicit reservation switch creates managed state and a live watchdog', async () => {
+processTest('marker creates managed state and a live watchdog', async () => {
   const root = rootFor('enabled')
-  const run = await inspectRun(root, [], { WT_SUITE_LOCK_ADMISSION: 'reservation' }, (_run, env) => {
+  enable(root)
+  const run = await inspectRun(root, [], {}, (_run, env) => {
     const state = host.readReservationState(root)
     assert.equal(state.holders.length, 1, 'enabled control must create reservation state')
     assert.ok(state.watchdog.pid > 0, 'enabled control must spawn a watchdog')
@@ -130,6 +152,42 @@ processTest('explicit reservation switch creates managed state and a live watchd
   })
   assert.match(run.stderr(), /identity-watchdog-spawn/, 'enabled control must exercise the actual watchdog spawn')
   assert.match(run.stderr(), /identity-reservation-writer/)
+})
+
+async function queuedPair(root, overrides, managed) {
+  let waiter
+  const run = await inspectRun(root, [], overrides, async (_run, env) => {
+    if (!managed) assertUnmanaged(root, env)
+    else assert.equal(host.readReservationState(root)?.holders.length, 1, 'marker control creates managed state')
+    waiter = launch(root, [], overrides, `require('fs').writeFileSync(${JSON.stringify(path.join(root, 'waiter-started'))},JSON.stringify(process.env))`)
+    await until(() => lock.readSuiteLockStatus({ root }).queue.length === 1, 'second run must wait behind the holder')
+    assert.equal(existsSync(path.join(root, 'waiter-started')), false, 'queued command must not start early')
+    if (!managed) assertUnmanaged(root, env)
+  })
+  assert.equal(await waiter.ended, 0, waiter.stderr())
+  children.delete(waiter.child)
+  const env = JSON.parse(readFileSync(path.join(root, 'waiter-started'), 'utf8'))
+  if (!managed) {
+    assert.equal(env.WT_SUITE_LEASE_MODE, undefined)
+    for (const name of ['reservations.json', 'reservation-write.d', 'watchdog.log']) assert.equal(existsSync(path.join(root, name)), false)
+    for (const entry of [run, waiter]) assert.doesNotMatch(entry.stderr(), /identity-(?:watchdog-spawn|reservation-writer)/)
+  } else assert.match(run.stderr(), /identity-watchdog-spawn/)
+  return [run, waiter]
+}
+
+processTest('reservation environment cannot enable admission without a marker through a complete queued run', async () => {
+  for (const marker of [false, true]) {
+    const root = rootFor('marker-only')
+    if (marker) enable(root)
+    const runs = await queuedPair(root, { WT_SUITE_LOCK_ADMISSION: 'reservation' }, marker)
+    for (const run of runs) assert.equal(run.stderr().split('\n').filter((line) => /only the marker file.*ignored/.test(line)).length, 1)
+  }
+})
+
+processTest('exclusive override keeps a complete queued run unmanaged with a marker', async () => {
+  const root = rootFor('exclusive-marker')
+  enable(root)
+  await queuedPair(root, { WT_SUITE_LOCK_ADMISSION: 'exclusive' }, false)
 })
 
 processTest('marker enables reservations and exclusive overrides the marker', async () => {
@@ -222,8 +280,9 @@ test('timing sensitivity is confined to the explicit workload class', () => {
 processTest('classless wrapper remains exclusive despite other history for heavy and light', async () => {
   for (const flags of [[], ['--light']]) {
     const root = rootFor('wrapper')
+    enable(root)
     seed(root, history(), null)
-    await inspectRun(root, flags, { WT_SUITE_LOCK_ADMISSION: 'reservation' }, (_run, env) => {
+    await inspectRun(root, flags, {}, (_run, env) => {
       assert.equal(env.WT_SUITE_LEASE_MODE, 'exclusive', 'classless wrapper may never become shareable from argv')
     })
   }
@@ -352,14 +411,16 @@ test('child environment removes managed keys using native platform case rules', 
 
 processTest('status shows switch and waiting and running identity mode reservation and basis', async () => {
   const root = rootFor('status')
+  enable(root)
   seed(root, history())
-  await inspectRun(root, ['--job-class', 'repo:check'], { WT_SUITE_LOCK_ADMISSION: 'reservation' }, async () => {
-    const waiting = launch(root, ['--job-class', 'unmeasured:check'], { WT_SUITE_LOCK_ADMISSION: 'reservation' }, 'process.exit(0)')
+  await warmSupervisor(root)
+  await inspectRun(root, ['--job-class', 'repo:check'], {}, async () => {
+    const waiting = launch(root, ['--job-class', 'unmeasured:check'], {}, 'process.exit(0)')
     try {
       await until(() => lock.readSuiteLockStatus({ root }).queue.length === 1, 'exclusive waiter must queue behind reservation')
       for (const json of [false, true]) {
         const args = [cli, 'status', ...(json ? ['--json'] : [])]
-        const child = spawn(process.execPath, args, { env: environment(root, { WT_SUITE_LOCK_ADMISSION: 'reservation' }), stdio: ['ignore', 'pipe', 'pipe'] })
+        const child = spawn(process.execPath, args, { env: environment(root), stdio: ['ignore', 'pipe', 'pipe'] })
         let text = ''
         child.stdout.on('data', (chunk) => { text += chunk })
         assert.equal(await new Promise((resolve) => child.once('exit', resolve)), 0)
@@ -380,19 +441,52 @@ processTest('status shows switch and waiting and running identity mode reservati
   })
 })
 
-processTest('status retains legacy running identity after a reservation epoch has emptied', async () => {
+processTest('off status omits admission additions after a reservation epoch has emptied', async () => {
   const root = rootFor('legacy-status')
   writeFileSync(path.join(root, 'reservations.json'), JSON.stringify({ version: 1, generation: 'previous', holders: [], bypasses: {} }))
   await inspectRun(root, ['--job-class', 'repo:legacy'], {}, async () => {
-    const child = spawn(process.execPath, [cli, 'status', '--json'], { env: environment(root), stdio: ['ignore', 'pipe', 'pipe'] })
-    let text = ''
-    child.stdout.on('data', (chunk) => { text += chunk })
-    assert.equal(await new Promise((resolve) => child.once('exit', resolve)), 0)
-    const state = JSON.parse(text)
+    for (const flags of [[], ['--json'], ['--resources']]) {
+      const child = spawn(process.execPath, [cli, 'status', ...flags], { env: environment(root), stdio: ['ignore', 'pipe', 'pipe'] })
+      let text = ''
+      child.stdout.on('data', (chunk) => { text += chunk })
+      assert.equal(await new Promise((resolve) => child.once('exit', resolve)), 0)
+      assert.doesNotMatch(text, /^reservation admission:/m)
+      if (flags.includes('--json')) {
+        const state = JSON.parse(text)
+        assert.equal(state.admission, undefined, 'off JSON has no admission key')
+        assert.equal(state.holder.jobClass, 'repo:legacy')
+        assert.equal(state.reservations, undefined, 'empty previous state is hidden on the off path')
+      }
+    }
+  })
+})
+
+processTest('off status keeps legacy queue entries without admission enrichment', async () => {
+  const root = rootFor('off-queue')
+  let waiter
+  await inspectRun(root, [], {}, async () => {
+    waiter = launch(root, ['--job-class', 'repo:queued'], {}, 'process.exit(0)')
+    await until(() => lock.readSuiteLockStatus({ root }).queue.length === 1, 'off-path waiter must queue')
+    const state = JSON.parse(await statusOutput(root, ['--json']))
+    assert.equal(state.admission, undefined)
+    assert.equal(state.queue.length, 1)
+    assert.equal(state.queue[0].jobClass, undefined, 'legacy queue JSON is not enriched with workload identity')
+    assert.equal(state.queue[0].reservation, undefined, 'legacy queue JSON is not enriched with a budget')
+    assert.doesNotMatch(await statusOutput(root), /^reservation admission:/m)
+  })
+  assert.equal(await waiter.ended, 0, waiter.stderr())
+  children.delete(waiter.child)
+})
+
+processTest('status keeps admission visible when the marker is removed during a managed run', async () => {
+  const root = rootFor('removed-marker')
+  enable(root)
+  await inspectRun(root, ['--job-class', 'repo:active'], {}, async () => {
+    rmSync(path.join(root, 'admission-reservation.enabled'))
+    const state = JSON.parse(await statusOutput(root, ['--json']))
     assert.equal(state.admission.enabled, false)
-    assert.equal(state.admission.running.length, 1, 'an empty prior epoch must not hide the current legacy holder')
-    assert.equal(state.admission.running[0].jobClass, 'repo:legacy')
-    assert.equal(state.admission.running[0].reservation.mode, 'exclusive')
-    assert.equal(state.admission.totals.cores, null, 'unknown legacy budgets must not be summed as zero')
+    assert.equal(state.admission.source, 'default')
+    assert.equal(state.admission.running[0].jobClass, 'repo:active')
+    assert.match(await statusOutput(root), /^reservation admission: off \(default\)$/m)
   })
 })

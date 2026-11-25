@@ -166,7 +166,7 @@ async function linuxResourceTree(procfs, ticks, pid, retained, credits, signal) 
     if (row?.unknown) return row
     if (!row) continue
     const old = previous.get(row.identity)
-    if (old && (row.cpuMs < old.cpuMs || row.childCpuMs < old.childCpuMs)) return unknown('census-incoherent')
+    if (retainedCountersRegressed(row, old)) return unknown('census-incoherent')
     processes.push(row)
   }
   if (!processes.some((row) => row.pid === pid)) throw new Error('root missing')
@@ -174,6 +174,10 @@ async function linuxResourceTree(procfs, ticks, pid, retained, credits, signal) 
   retained.clear()
   for (const row of processes) retained.set(row.identity, row)
   return { processes, totalCpuMs }
+}
+
+function retainedCountersRegressed(row, old) {
+  return old && (row.cpuMs < old.cpuMs || row.childCpuMs < old.childCpuMs)
 }
 
 function selectFamily(rows, pid, retained) {
