@@ -7,7 +7,7 @@ export const ADMISSION_BYPASS_LIMIT = 8
 const SAFETY_MARGIN = 1.25
 const finite = (value) => Number.isFinite(value) && value >= 0
 const complete = (run) => validSuiteResources(run) && finite(run.peakCores) && finite(run.peakMemMiB)
-  && finite(run.wallMs) && run.unknownReasons.length === 0
+  && run.unknownReasons.length === 0
 
 function timingSensitive(runs) {
   const red = runs.some(({ release }) => Number.isInteger(release?.exit) && release.exit !== 0
@@ -17,19 +17,28 @@ function timingSensitive(runs) {
 }
 
 export function reservationForJob(runs, declared, capacity) {
-  const resources = runs.map((run) => run.release?.resources).filter(complete).slice(-ADMISSION_HISTORY_RUNS)
+  const window = runs.filter((run) => run.release?.resources !== undefined).slice(-ADMISSION_HISTORY_RUNS)
+  const successes = window.filter((run) => run.release.exit === 0)
   const exclusive = { mode: 'exclusive', cores: capacity.cores, memMiB: capacity.memMiB, basis: 'declared' }
   if (timingSensitive(runs)) return { ...exclusive, basis: 'timing-history' }
-  if (resources.length < MIN_RUNS) {
-    return declared === 'light' ? { mode: 'reservation', cores: 1, memMiB: 512, basis: 'declared' } : exclusive
-  }
-  return { mode: 'reservation', cores: Math.max(...resources.map((run) => run.peakCores)) * SAFETY_MARGIN,
+  if (successes.length < MIN_RUNS || !successes.slice(-MIN_RUNS).every((run) => complete(run.release.resources))) return exclusive
+  const resources = successes.map((run) => run.release.resources).filter(complete)
+  const reservation = { mode: 'reservation', cores: Math.max(...resources.map((run) => run.peakCores)) * SAFETY_MARGIN,
     memMiB: Math.max(...resources.map((run) => run.peakMemMiB)) * SAFETY_MARGIN, basis: 'measured' }
+  return measuredOversize(reservation, capacity) ? { ...exclusive, basis: 'measured-oversize' } : reservation
+}
+
+function measuredOversize(reservation, capacity) {
+  const nominalMemory = finite(capacity.totalMiB) && finite(capacity.floorMiB)
+    ? capacity.totalMiB - capacity.floorMiB : capacity.memMiB
+  return reservation.cores > capacity.cores || reservation.memMiB > nominalMemory
 }
 
 function fits(reservation, holders, capacity) {
-  if (!reservation || holders.some((holder) => holder.reservation.mode === 'exclusive')) return false
+  if (!reservation) return false
   if (reservation.mode === 'exclusive') return holders.length === 0
+  if (holders.some((holder) => holder.reservation.mode === 'exclusive')) return false
+  if (!finite(capacity.load) || capacity.load + reservation.cores > capacity.cores) return false
   const total = holders.reduce((sum, holder) => ({ cores: sum.cores + holder.reservation.cores,
     memMiB: sum.memMiB + holder.reservation.memMiB }), { cores: reservation.cores, memMiB: reservation.memMiB })
   return total.cores <= capacity.cores && total.memMiB <= capacity.memMiB
@@ -40,7 +49,6 @@ export function admissionPlan(queue, holders, capacity, bypasses) {
   const admit = []
   const blocked = []
   const running = [...holders]
-  if (!finite(capacity.load) || capacity.load > capacity.loadLimit) return { admit, blocked }
   for (const candidate of queue) {
     if (fits(candidate.reservation, running, capacity)) {
       admit.push(candidate.number)

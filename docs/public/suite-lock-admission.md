@@ -1,35 +1,82 @@
 # Resource reservation admission
 
-Managed non-interactive POSIX commands launched by `wt-suite-lock run -- <command>` share the
-main queue when their resource reservations fit. There is no job-count limit.
+Opted-in non-interactive POSIX commands launched by `wt-suite-lock run -- <command>` can share
+the main queue when their class-specific resource reservations fit. There is no job-count limit.
 The existing release, project precedence, priority, size bonus, project turn,
 FIFO, and bounded light-pass ordering still ranks the queue.
 
-## Budget and history
+## Explicit switch
 
-- CPU booking budget: 1.5 times the online CPU parallelism reported by Node.
-  These units include the reservation's 25% margin and 20% sampling headroom,
-  so a fully CPU-bound historical run still fits its own host. The live load
-  threshold remains the online CPU count; CPU pressure stops new admissions.
-- Memory budget: currently available memory minus the larger of 1 GiB and 10%
-  of total memory. Running reservations are also charged against this budget;
-  this deliberately leaves conservative headroom for their current consumption.
-- CPU load average above the online CPU count pauses admission. It stops no job.
-- A measured reservation uses maximum CPU and RSS peaks from the latest ten
-  complete observations, multiplied by 1.25. Completion follows terminal append
-  order, rather than request order or wall-clock timestamps. Incomplete or
-  malformed samples do not erase an established catalogue. Values remain full
-  precision until rendered.
-- With fewer than three complete observations, admission preserves the declaration: a heavy command is
-  exclusive and reserves the entire budget; a light command reserves one core
-  and 512 MiB.
-- History uses the existing journal `cmd` identity (`typecheck`, `lint`,
-  `quality`, `test`, or `other`). It does not fingerprint arbitrary command lines.
+Reservation admission is **off by default**. Enable it with
+`WT_SUITE_LOCK_ADMISSION=reservation` or the marker file
+`<lock root>/admission-reservation.enabled`. `WT_SUITE_LOCK_ADMISSION=exclusive`
+overrides the marker. Other values produce one warning and are treated as unset,
+so the marker still applies. With the switch off, acquisition and release use the
+legacy exclusive path: no reservation state, compatibility fence, writer section
+or watchdog is created. Phase-one measurement journalling continues.
 
-A red completed run with positive overlap, together with a passing run whose
-recorded overlap list is empty, marks that identity timing-sensitive. It becomes
-exclusive. Missing overlap data is not proof that a historical run was alone.
+## Workload identity
+
+Supply `run --job-class <name> -- <command>` or `WT_SUITE_LOCK_JOB_CLASS=<name>`;
+the flag wins. A name matches `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`. An invalid name
+produces one warning and is ignored. Choose one class for **one repository plus
+one command with a stable footprint**, for example `myrepo:unit-tests`. Different
+workloads need different classes even when they use the same launcher or wrapper.
+
+Request and release journal rows carry `jobClass`. Admission history is keyed
+only by this explicit class. The argv-derived `cmd` category (`typecheck`, `lint`,
+`quality`, `test`, or `other`) remains a display and measurement-catalogue label;
+it never trains admission for an unrelated workload. A command replacement keeps
+the explicit class; callers must preserve that class's workload contract.
+The command's environment has `WT_SUITE_LOCK_JOB_CLASS` removed, so nested runs
+cannot accidentally inherit their ancestor's class.
+
+Without a class, or without qualifying class history, **heavy and light jobs
+both run exclusively**, with basis `declared`. Direct one-file light runs still
+take no ticket and are outside reservation accounting.
+
+## Qualifying history and reservation
+
+Use the class's latest ten release rows carrying a resources record, in terminal
+append order rather than request or wall-clock order. Nonzero and unknown exits
+are ignored for training, including memory stops, signals and launcher-death
+reconciliation. They still occupy positions in that ten-row window.
+
+A successful row is trainable when its CPU and memory peaks are finite and its
+resources have no unknown reason. A successful incomplete or malformed resources
+record is disqualifying. After ignoring unsuccessful exits, the latest **three**
+rows must all be trainable to establish basis `measured`. A newer successful
+incomplete observation revokes old measured status until three complete successes
+follow it. Releases without a resources record do not enter the window.
+
+The reservation is the maximum CPU peak and maximum memory peak across all
+trainable rows in that window, each multiplied by **1.25**. Values remain at full
+precision for admission and sums; only display rounds them. If the result exceeds
+the nominal online CPU count or total memory minus the floor, its basis becomes
+`measured-oversize` and it runs exclusively. It remains runnable alone rather
+than blocking the queue with an impossible shared reservation.
+
+A red run with positive overlap, together with a passing run whose recorded
+overlap list is empty, marks that same class timing-sensitive, with exclusive
+basis `timing-history`. Missing overlap data does not prove that a run was alone.
 Every reservation release records overlapping lease IDs and their durations.
+
+## Capacity and fit
+
+CPU capacity is the online logical CPU count, with no over-booking factor.
+A shared candidate must satisfy every condition:
+
+- Holder core reservations plus its cores do not exceed online CPUs.
+- One-minute load plus its cores does not exceed online CPUs.
+- Holder memory reservations plus its memory do not exceed effective available
+  memory minus the larger of 1 GiB and 10% of total memory.
+- The grant's required machine readings and watchdog heartbeat are fresh.
+
+Running memory is deliberately counted twice: it lowers available memory and is
+also reserved. CPU overload pauses shared admission and stops nothing. An
+exclusive candidate needs only an empty holder set, regardless of load or missing
+readings. Missing or stale readings make a shared candidate exclusive for that
+poll, rather than leaving it waiting indefinitely for a sensor.
 
 The highest-ranked fitting ticket starts first. A ticket that cannot fit can be
 passed by fitting lower-ranked tickets at most eight times, then admission
@@ -126,9 +173,16 @@ durable command runner that replays work after its launcher dies.
 
 ## Queue reservations
 
+`wt-suite-lock status` reports whether the switch is on and its source
+(`environment`, `marker` or `default`). It lists each waiting and running job's
+class (or `none`), mode, reservation and basis, plus the sum of running reservations.
+`status --json` includes this view under `admission` (`enabled`, `source`, `running`,
+`waiting`, `totals`), and `jobClass` on queue entries. Unknown legacy reservation
+amounts are shown as unknown rather than invented zero budgets.
+
 `status --json` includes a `reservation` on every managed queue entry, with
 unrounded `cores`, `memMiB`, `mode` and `basis`. These are recomputed from the
-same complete-run history and current machine budget used by admission; a
+same class-specific qualifying history and current machine budget used by admission; a
 waiting ticket's footprint can change as new history completes. Unknown host
 readings appear as a named `reservation.unknown`, without invented zero values.
 Text status labels shareable heavy waiters `reserved` and appends, for example,
@@ -138,10 +192,15 @@ under `reservations.holders` in JSON. Only text rendering rounds values.
 
 ## Child environment
 
-The lock-owned child receives:
+Only a managed client's command receives:
 
 - `WT_SUITE_LEASE_MODE`: `exclusive` or `reservation`.
 - `WT_SUITE_LEASE_RESERVATION`: JSON containing `cores`, `memMiB`, `mode` and
-  `basis` for a resource lease; `null` for a compatibility exclusive lease.
+  `basis` for its granted managed lease.
+- In reservation mode only, `WT_SUITE_LEASE_RESERVATION_CORES` and
+  `WT_SUITE_LEASE_RESERVATION_MEM_MIB`: positive integer ceilings of the raw
+  reservation values, with a minimum of one. Exclusive mode omits both.
 
 These values describe the granted lease, rather than the requested label.
+Unmanaged commands receive none of these variables; inherited values are removed
+before the command is spawned.

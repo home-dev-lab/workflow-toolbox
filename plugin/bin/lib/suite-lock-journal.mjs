@@ -17,6 +17,8 @@ export function journalCommand(argv) {
   return 'other'
 }
 
+export const validSuiteJobClass = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value)
+
 export function suiteJournalRequest(root, ticket, record, priority, options, light, publish = true) {
   try { return journalRequest(root, ticket, record, priority, options, light, publish) } catch (error) {
     warnSuiteLockJournal(error)
@@ -29,10 +31,16 @@ function journalRequest(root, ticket, record, priority, options, light, publish)
   const base = { ticket, leaseId: record.leaseId, root: options.journalRoot ?? root, kind,
     cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: journalLight(options, light),
     pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct',
-    project: record.project, size: record.size, ...requestRankFields(root, ticket, record, options) }
+    project: record.project, size: record.size, jobClass: requestJobClass(record, options), ...requestRankFields(root, ticket, record, options) }
   const journal = { base, now: options.now?.bind(options) }
   if (publish) suiteJournalEvent(journal, 'request')
   return journal
+}
+
+function requestJobClass(record, options) {
+  const value = record.jobClass ?? options.jobClass
+  record.jobClass = validSuiteJobClass(value) ? value : undefined
+  return record.jobClass
 }
 
 function requestRankFields(root, ticket, record, options) {
@@ -154,7 +162,7 @@ export function readSuiteResourceClasses(root) {
 /** Complete-run windows need terminal append order, not request or wall-clock order. */
 export function readSuiteResourceRuns(root) {
   return parsedJournal(root).records.filter((event) => event.event === 'release')
-    .map((release) => ({ cmd: release.cmd, release }))
+    .map((release) => ({ cmd: release.cmd, jobClass: release.jobClass, release }))
 }
 
 export function suiteLockJournalCli(args, root) {

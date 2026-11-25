@@ -1,10 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, openSync, closeSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, openSync, closeSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { admissionPlan, releaseOverlaps, reservationForJob, watchdogDecision } from '../suite-lock-admission.mjs'
-import { journalCommand, readSuiteLockJournal, readSuiteResourceRuns, suiteJournalEvent } from '../suite-lock-journal.mjs'
+import { journalCommand, readSuiteLockJournal, readSuiteResourceRuns, suiteJournalEvent, validSuiteJobClass } from '../suite-lock-journal.mjs'
 import { closeQueuedReplacement } from './suite-lock-replace.mjs'
 import { orderSuiteLockTickets } from '../suite-lock-order.mjs'
 import { currentPidNamespace, processStartTime } from './pid-namespace.mjs'
@@ -24,6 +24,14 @@ const isFence = (holder) => holder?.reservationProtocol === RESERVATION_PROTOCOL
 // A foreign PID is not a local liveness probe. With zero silence age this uses
 // only the queue's existing namespace/PID/start-identity evidence, never time.
 const watchdogProvesGone = (watchdog) => ticketIsStale({ holder: watchdog, ageMs: 0 })
+
+export function reservationAdmissionSwitch(root, env = process.env, warn = (line) => process.stderr.write(`${line}\n`)) {
+  const value = env.WT_SUITE_LOCK_ADMISSION
+  if (value === 'exclusive' || value === 'reservation') return { enabled: value === 'reservation', source: 'environment' }
+  if (value !== undefined) warn('wt-suite-lock: invalid WT_SUITE_LOCK_ADMISSION; expected reservation or exclusive; treating as unset')
+  const enabled = !root.startsWith('broker:') && existsSync(path.join(root, 'admission-reservation.enabled'))
+  return { enabled, source: enabled ? 'marker' : 'default' }
+}
 
 export function readReservationState(root) {
   try {
@@ -139,12 +147,17 @@ function reservedQueue(root, options, machine, waiting) {
   const history = readSuiteResourceRuns(root)
   return rankedQueue(root, options.now?.() ?? Date.now(), options).map((ticket) => {
     const record = ticket.number === waiting.ticket ? waiting.record : ticket.record
-    const runs = history.filter((run) => (run.release?.cmd ?? run.cmd) === record.journal?.cmd)
+    const runs = jobClassHistory(history, record)
     const declared = record.light === true ? 'light' : 'heavy'
     const reservation = record.reservationProtocol === RESERVATION_PROTOCOL
-      ? reservationForJob(runs, declared, machine) : { mode: 'exclusive', cores: machine.cores, memMiB: machine.memMiB, basis: 'legacy' }
+      ? reservationForJob(runs, declared, machine) : { mode: 'exclusive', cores: machine.cores, memMiB: machine.memMiB, basis: 'declared' }
     return { ...ticket, reservation }
   })
+}
+
+function jobClassHistory(history, record) {
+  const jobClass = record.jobClass ?? record.journal?.jobClass
+  return validSuiteJobClass(jobClass) ? history.filter((run) => run.release?.jobClass === jobClass) : []
 }
 
 export function reservationQueueStatus(root, tickets) {
@@ -154,7 +167,7 @@ export function reservationQueueStatus(root, tickets) {
   return tickets.map((ticket) => {
     const record = ticket.record
     if (record?.reservationProtocol !== RESERVATION_PROTOCOL) return ticket
-    const runs = history.filter((run) => (run.release?.cmd ?? run.cmd) === record.journal?.cmd)
+    const runs = jobClassHistory(history, record)
     const reservation = machine.unknown ? { unknown: machine.unknown }
       : reservationForJob(runs, record.light === true ? 'light' : 'heavy', machine)
     return { ...ticket, reservation }
@@ -166,7 +179,7 @@ function resolveReservationCommand(waiting, candidate, holders, machine, options
   const cmd = journalCommand(waiting.record.argv)
   if (waiting.record.journal && cmd !== waiting.record.journal.cmd) {
     waiting.record.journal.cmd = cmd
-    const history = readSuiteResourceRuns(waiting.root).filter((run) => (run.release?.cmd ?? run.cmd) === cmd)
+    const history = jobClassHistory(readSuiteResourceRuns(waiting.root), waiting.record)
     candidate.reservation = reservationForJob(history, waiting.record.light ? 'light' : 'heavy', machine)
   }
   return admissionPlan([candidate], holders, machine, {}).admit.length > 0
@@ -304,6 +317,12 @@ export function reservationLeaseHeld(root, id) {
 }
 
 export function reservationEnvironment(lease) {
-  return { WT_SUITE_LEASE_MODE: lease.holder.reservation?.mode ?? 'exclusive',
-    WT_SUITE_LEASE_RESERVATION: JSON.stringify(lease.holder.reservation ?? null) }
+  if (!lease.reservationLease) return {}
+  const reservation = lease.holder.reservation
+  return { WT_SUITE_LEASE_MODE: reservation?.mode ?? 'exclusive',
+    WT_SUITE_LEASE_RESERVATION: JSON.stringify(reservation ?? null),
+    ...(reservation?.mode === 'reservation' ? {
+      WT_SUITE_LEASE_RESERVATION_CORES: String(Math.max(1, Math.ceil(reservation.cores))),
+      WT_SUITE_LEASE_RESERVATION_MEM_MIB: String(Math.max(1, Math.ceil(reservation.memMiB))),
+    } : {}) }
 }

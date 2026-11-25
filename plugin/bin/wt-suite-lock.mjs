@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
+import path from 'node:path'
+import { readQueueSnapshot } from './lib/host/suite-lock-queue.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTree } from './lib/host/suite-lock-host.mjs'
 import {
@@ -23,7 +25,8 @@ import {
 import { parseSuiteLockPriority } from './lib/suite-lock-priority.mjs'
 import { replaceQueuedCommand } from './lib/host/suite-lock-replace.mjs'
 import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-status.mjs'
-import { suiteLockJournalCli } from './lib/suite-lock-journal.mjs'
+import { suiteLockJournalCli, validSuiteJobClass } from './lib/suite-lock-journal.mjs'
+import { displayText } from './lib/suite-lock-display.mjs'
 import { staticLaneStatusLines } from './lib/suite-lock-static.mjs'
 import { acquireCliLease, cliInheritedLease, parseReplaceRun, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
 import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
@@ -34,12 +37,12 @@ import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
 import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
 import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mjs'
 import { suiteSignalExit, watchSuiteWaitSignals } from './lib/host/suite-lock-signals.mjs'
-import { reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
+import { reservationAdmissionSwitch, reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
 import { reservationHostSupported } from './lib/host/suite-lock-machine.mjs'
 import { reservationRetryOutcome } from './lib/host/suite-lock-memory-retry.mjs'
 
 const USAGE = `Usage:
-  node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs run [--job-class NAME] [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
   Replace queued command: run --replace <ticket-number> -- <command> [args...]
   Replacement keeps rank and uses the original waiter's cwd, environment, streams and exit recipient; refused once the waiter closes replacement acceptance before starting.
@@ -54,6 +57,8 @@ const USAGE = `Usage:
   in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
   V3 has no level aging: exclusive size S gains one level unless the project's last S exceeded 10 minutes; M/L gain none (default L).
   WT_SUITE_LOCK_SIZE and WT_SUITE_LOCK_PROJECT supply defaults; explicit options win. Equal ranks alternate projects.
+  --job-class / WT_SUITE_LOCK_JOB_CLASS identifies one stable workload; without qualifying class history a job stays exclusive.
+  Reservation admission is off by default; WT_SUITE_LOCK_ADMISSION=reservation or admission-reservation.enabled enables it; =exclusive overrides the marker.
   Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
@@ -95,6 +100,8 @@ function applyRunPriority(priority) {
 async function run(args) {
   const replacement = parseReplaceRun(args)
   if (replacement) return replaceRun(replacement)
+  const jobClass = parseJobClass(args)
+  const admission = reservationAdmissionSwitch(suiteLeaseDomain())
   const { command, staticRun, waitS, staleS, light, priority, park, project, size } = parseSuiteRunOptions(args,
     { parseSeconds, parsePriority: parseRunPriority, waitSeconds: suiteLockWaitSeconds, defaultStaleS: DEFAULT_SUITE_LOCK_STALE_S })
   const attempt = { outcome: 'not-parked\n' }
@@ -118,8 +125,21 @@ async function run(args) {
     if (inherited === 75) return 75
     if (inherited) return await spawnCommand(command, null, null, parkChildEnvironment(park))
     if (directLightRun({ light, staticRun, park, command })) return await runDirectCommand(() => spawnCommand(command, null, null, parkChildEnvironment(park)))
-    return await runReservationRetries(command, { waitS, staleS, light, staticRun, priority, project, size, park, attempt })
+    return await runReservationRetries(command, { waitS, staleS, light, staticRun, priority, project, size, park, attempt, jobClass, admission })
   } finally { try { publishParkOutcome(park, attempt.outcome) } finally { releaseAttempt() } }
+}
+
+function parseJobClass(args) {
+  const separator = args.indexOf('--')
+  const index = args.slice(0, separator < 0 ? args.length : separator).indexOf('--job-class')
+  let value = process.env.WT_SUITE_LOCK_JOB_CLASS
+  if (index >= 0) {
+    value = index + 1 < separator ? args[index + 1] : undefined
+    args.splice(index, value === undefined ? 1 : 2)
+  }
+  if (validSuiteJobClass(value)) return value
+  if (index >= 0 || value !== undefined) process.stderr.write('wt-suite-lock: invalid job class; expected [A-Za-z0-9][A-Za-z0-9._:-]{0,63}; ignoring class\n')
+  return undefined
 }
 
 async function runReservationRetries(command, options) {
@@ -148,9 +168,9 @@ async function queueAndRun(command, options) {
   if (scopeGuard.refused) return 2
   const waiting = watchSuiteWaitSignals()
   try {
-    const reservation = cliReservationRequested(park, staticRun, waitS)
-    if (!reservationHostSupported()) process.stderr.write('wt-suite-lock: memory watchdog unknown (unsupported-platform-memory-and-load); using exclusive protocol\n')
-    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: replaceableCliRun(park, light, staticRun), light, static: staticRun, priority, project, size, reservation, requeue: options.requeue, signal: waiting.signal, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+    const reservation = cliReservationRequested(park, staticRun, waitS, options.admission?.enabled)
+    warnUnsupportedReservation(options.admission)
+    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: replaceableCliRun(park, light, staticRun), light, static: staticRun, priority, project, size, reservation, jobClass: options.jobClass, requeue: options.requeue, signal: waiting.signal, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
     if (typeof lease === 'number') return lease
     if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
     const timing = {}
@@ -167,10 +187,14 @@ async function queueAndRun(command, options) {
 
 // A fail-fast request cannot wait for a supervisor's first heartbeat. Its
 // exclusive attempt still respects both legacy holders and reservation fences.
-const cliReservationRequested = (park, staticRun, waitS) => waitS !== 0 && reservationHostSupported(undefined, true) && !park && !staticRun && !process.env.WT_SUITE_LOCK_BROKER && !staticAncestorLease()
+const cliReservationRequested = (park, staticRun, waitS, enabled) => enabled === true && waitS !== 0 && reservationHostSupported(undefined, true) && !park && !staticRun && !process.env.WT_SUITE_LOCK_BROKER && !staticAncestorLease()
 const staticAncestorLease = () => /\|static:[^|]+$/.test(process.env.WT_SUITE_LEASE ?? '')
 const replaceableCliRun = (park, light, staticRun) => !park && !light && !staticRun
 const shouldRetryReservation = (timing) => timing.requeue && !timing.stopUnconfirmed && !timing.releaseFailed
+
+function warnUnsupportedReservation(admission) {
+  if (admission?.enabled && !reservationHostSupported()) process.stderr.write('wt-suite-lock: memory watchdog unknown (unsupported-platform-memory-and-load); using exclusive protocol\n')
+}
 
 // A light request is checked for its scope before it queues; a nested run under an inherited lease takes no
 // ticket and is not checked. Inside a lane the warning prints but the host's record is out of reach.
@@ -271,12 +295,22 @@ function installCommandForwarding(forward, timing) {
 function spawnOwnedCommand(command, marker, envOverrides, group) {
   return spawn(command[0], command.slice(1), {
     stdio: 'inherit',
-    ...spawnParkEnvironment(marker, envOverrides, process.env),
+    ...spawnParkEnvironment(marker, envOverrides, commandEnvironment()),
     // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
     // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
     shell: spawnNeedsShell(command[0]),
     ...coveredCommandSpawnOptions({ broker: group }),
   })
+}
+
+function commandEnvironment() {
+  const env = { ...process.env }
+  const managed = new Set(['WT_SUITE_LOCK_JOB_CLASS', 'WT_SUITE_LEASE_MODE', 'WT_SUITE_LEASE_RESERVATION',
+    'WT_SUITE_LEASE_RESERVATION_CORES', 'WT_SUITE_LEASE_RESERVATION_MEM_MIB'])
+  for (const name of Object.keys(env)) {
+    if (managed.has(process.platform === 'win32' ? name.toUpperCase() : name)) delete env[name]
+  }
+  return env
 }
 
 function spawnCommand(command, leaseLost = null, marker = null, envOverrides, timing = {}) {
@@ -351,12 +385,50 @@ async function status(args) {
   if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`)
   const viaBroker = Boolean(process.env.WT_SUITE_LOCK_BROKER)
   const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLockStatus()
-  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(current), ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
+  const admission = reservationAdmissionSwitch(suiteLeaseDomain())
+  const jobs = admissionStatusJobs(current, suiteLeaseDomain())
+  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(current), queue: jobs.waiting, admission: { ...admission, ...jobs }, ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
   else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder), { resources: args.includes('--resources') }))
+  if (!json) process.stdout.write(admissionStatusLines(admission, jobs))
   if (!json) process.stdout.write(staticLaneStatusLines(current))
   return 0
 }
 
+function admissionStatusJobs(current, root) {
+  const holders = statusRunningHolders(current)
+  const classes = root.startsWith('broker:') ? new Map() : new Map(readQueueSnapshot(path.join(root, 'queue.d'), Date.now())
+    .map((ticket) => [ticket.number, ticket.holder.jobClass ?? ticket.holder.journal?.jobClass ?? null]))
+  const waiting = Array.isArray(current.queue) ? current.queue.map((entry) => ({ ...entry,
+    jobClass: entry.jobClass ?? classes.get(entry.number) ?? null,
+    reservation: entry.reservation ?? { mode: 'exclusive', basis: 'declared' } })) : null
+  const running = holders.map((holder) => ({ leaseId: holder.leaseId, jobClass: holder.jobClass ?? holder.journal?.jobClass ?? null,
+    reservation: holder.reservation ?? { mode: 'exclusive', basis: 'declared' } }))
+  const totals = running.reduce((sum, job) => ({ cores: reservationSum(sum.cores, job.reservation.cores),
+    memMiB: reservationSum(sum.memMiB, job.reservation.memMiB) }), { cores: 0, memMiB: 0 })
+  return { running, waiting, totals }
+}
+
+function statusRunningHolders(current) {
+  if (current.reservations?.holders.length) return current.reservations.holders
+  return current.held && current.holder && !current.holder.reservationProtocol ? [current.holder] : []
+}
+
+const reservationSum = (left, right) => Number.isFinite(left) && Number.isFinite(right) ? left + right : null
+const reservationNumber = (value) => Number.isFinite(value) ? value.toFixed(2) : 'unknown'
+
+function admissionStatusLines(admission, jobs) {
+  const lines = [`reservation admission: ${admission.enabled ? 'on' : 'off'} (${admission.source})`]
+  for (const [state, entries] of [['running', jobs.running], ['waiting', jobs.waiting ?? []]]) {
+    for (const entry of entries) lines.push(admissionJobLine(state, entry))
+  }
+  lines.push(`running reservation sum: ${reservationNumber(jobs.totals.cores)} cores, ${reservationNumber(jobs.totals.memMiB)} MiB`)
+  return lines.map(displayText).join('\n') + '\n'
+}
+
+function admissionJobLine(state, entry) {
+  const value = entry.reservation
+  return `${state} class ${entry.jobClass ?? 'none'}: ${value.mode ?? 'exclusive'} reservation ${reservationNumber(value.cores)} cores, ${reservationNumber(value.memMiB)} MiB (${value.basis ?? 'declared'})`
+}
 function release(args) {
   if (process.env.WT_SUITE_LOCK_BROKER?.trim()) {
     process.stderr.write('wt-suite-lock: release is not available inside a lane sandbox; the host operator releases the lock\n')
