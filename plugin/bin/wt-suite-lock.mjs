@@ -229,11 +229,15 @@ export async function runLeasedCommand(command, lease, requested) {
     } finally {
       if (timing.stopUnconfirmed && lease.reservationLease) process.stderr.write('wt-suite-lock: command group stop unconfirmed; reservation retained, inspect status --json\n')
       else if (!releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs, ...timing.signalOutcome, ...reservationRetryOutcome(lease, timing) })) {
-        timing.releaseFailed = true
-        process.stderr.write('wt-suite-lock: release unconfirmed; reservation retained, inspect wt-suite-lock status --json\n')
+        recordReleaseFailure(lease, timing)
       }
     }
   }
+}
+
+function recordReleaseFailure(lease, timing) {
+  timing.releaseFailed = true
+  if (lease.reservationLease) process.stderr.write('wt-suite-lock: release unconfirmed; reservation retained, inspect wt-suite-lock status --json\n')
 }
 
 // The granted lease, not the request, decides. A static-lane grant never holds the exclusive mutex, so it
@@ -301,10 +305,10 @@ function installCommandForwarding(forward, timing) {
   return stopSignals
 }
 
-function spawnOwnedCommand(command, marker, envOverrides, group) {
+function spawnOwnedCommand(command, marker, envOverrides, group, reservation) {
   return spawn(command[0], command.slice(1), {
     stdio: 'inherit',
-    ...spawnParkEnvironment(marker, envOverrides, commandEnvironment()),
+    ...spawnParkEnvironment(marker, envOverrides, commandEnvironment(reservation)),
     // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
     // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
     shell: spawnNeedsShell(command[0]),
@@ -312,10 +316,10 @@ function spawnOwnedCommand(command, marker, envOverrides, group) {
   })
 }
 
-function commandEnvironment() {
+function commandEnvironment(reservation) {
   const env = { ...process.env }
-  const managed = new Set(['WT_SUITE_LOCK_JOB_CLASS', 'WT_SUITE_LEASE_MODE', 'WT_SUITE_LEASE_RESERVATION',
-    'WT_SUITE_LEASE_RESERVATION_CORES', 'WT_SUITE_LEASE_RESERVATION_MEM_MIB'])
+  const managed = new Set(['WT_SUITE_LOCK_JOB_CLASS', ...(reservation ? ['WT_SUITE_LEASE_MODE', 'WT_SUITE_LEASE_RESERVATION',
+    'WT_SUITE_LEASE_RESERVATION_CORES', 'WT_SUITE_LEASE_RESERVATION_MEM_MIB'] : [])])
   for (const name of Object.keys(env)) {
     if (managed.has(process.platform === 'win32' ? name.toUpperCase() : name)) delete env[name]
   }
@@ -329,7 +333,7 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
     // Broker and resource leases isolate their owned command groups on POSIX.
     const group = Boolean(leaseLost)
     const started = performance.now()
-    const child = spawnOwnedCommand(command, marker, envOverrides, group)
+    const child = spawnOwnedCommand(command, marker, envOverrides, group, timing.reservation)
     let forwardedSignal = null
     let lockLost = false
     let treeStopped = null
@@ -371,6 +375,7 @@ function recordCommandSignal(timing, signal) {
 }
 
 function stopLeasedCommandTree(child, group, timing) {
+  if (!timing.reservation) return stopCoveredCommandTree(child, { group })
   // An error event can reject the command before the stop promise settles.
   // Retain capacity from the first signal attempt until positive confirmation.
   timing.stopUnconfirmed = true

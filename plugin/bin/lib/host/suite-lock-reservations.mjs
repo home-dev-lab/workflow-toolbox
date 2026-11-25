@@ -9,7 +9,8 @@ import { closeQueuedReplacement } from './suite-lock-replace.mjs'
 import { orderSuiteLockTickets } from '../suite-lock-order.mjs'
 import { currentPidNamespace, processStartTime } from './pid-namespace.mjs'
 import { readSuiteLockRankState, recordSuiteLockService } from './suite-lock-rank-state.mjs'
-import { claimOwnedSuiteSection, claimSuiteSection, RECLAIM_BUSY, retrySuiteSection } from './suite-lock-section.mjs'
+import { claimSuiteSection, RECLAIM_BUSY } from './suite-lock-section.mjs'
+import { claimOwnedSuiteSection, retryReservationSection } from './suite-lock-owned-section.mjs'
 import { abandonEmptyLockDir, reclaimInFlight, readHolderIn, readLightCounter, readP0Counter, readQueueSnapshot, recordAdmissionGrant, recordLightGrant, recordP0Grant } from './suite-lock-queue.mjs'
 import { staticSemaphoreRoot } from './suite-lock-static-semaphore.mjs'
 import { ticketIsStale } from './suite-lock-liveness.mjs'
@@ -31,8 +32,12 @@ export function reservationAdmissionSwitch(root, env = process.env, warn = (line
   if (value === 'exclusive') return { enabled: false, source: 'environment' }
   if (value === 'reservation') warn('wt-suite-lock: only the marker file in the lock root enables reservation admission; WT_SUITE_LOCK_ADMISSION is ignored')
   else if (value !== undefined) warn('wt-suite-lock: invalid WT_SUITE_LOCK_ADMISSION; expected exclusive; treating as unset')
-  const enabled = !root.startsWith('broker:') && existsSync(path.join(root, 'admission-reservation.enabled'))
+  const enabled = reservationMarkerEnabled(root)
   return { enabled, source: enabled ? 'marker' : 'default' }
+}
+
+export function reservationMarkerEnabled(root) {
+  return !root.startsWith('broker:') && existsSync(path.join(root, 'admission-reservation.enabled'))
 }
 
 export function readReservationState(root) {
@@ -40,7 +45,10 @@ export function readReservationState(root) {
     const state = JSON.parse(readFileSync(stateFile(root), 'utf8'))
     if (state.version !== RESERVATION_PROTOCOL || !Array.isArray(state.holders)) throw new Error('invalid reservation state')
     return state
-  } catch (error) { if (error.code === 'ENOENT') return null; throw error }
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
 }
 
 function publish(root, state) {
@@ -186,10 +194,14 @@ export function reservationQueueStatus(root, tickets) {
     const record = ticket.record
     if (record?.reservationProtocol !== RESERVATION_PROTOCOL) return ticket
     const runs = jobClassHistory(history, record)
-    const reservation = machine.unknown ? { unknown: machine.unknown }
-      : reservationForJob(runs, record.light === true ? 'light' : 'heavy', machine)
+    const reservation = queueStatusReservation(machine, runs, record)
     return { ...ticket, reservation }
   })
+}
+
+function queueStatusReservation(machine, runs, record) {
+  if (machine.unknown) return { unknown: machine.unknown }
+  return reservationForJob(runs, record.light === true ? 'light' : 'heavy', machine)
 }
 
 function resolveReservationCommand(waiting, candidate, holders, machine, options) {
@@ -312,16 +324,20 @@ function removeOwnedFence(root, generation) {
 }
 
 export function releaseReservationLease(lease, outcome) {
-  return retrySuiteSection(lease.root, () => claimOwnedSuiteSection(lease.root, 'reservation-write.d', () => {
+  return retryReservationSection(lease.root, () => claimOwnedSuiteSection(lease.root, 'reservation-write.d', () => {
     reconcileLaunchers(lease.root)
     return finishReservationRelease(lease, outcome)
   }), { timeoutMs: 60_000, maxPauseMs: 250, retryErrors: true })
 }
 
 function finishReservationRelease(lease, outcome) {
-    const state = readReservationState(lease.root)
-    const holder = state?.holders.find((entry) => entry.leaseId === lease.holder.leaseId)
-    if (!holder) return true
+  const state = readReservationState(lease.root)
+  const holder = state?.holders.find((entry) => entry.leaseId === lease.holder.leaseId)
+  if (holder) releaseHolderTransaction(lease, outcome, state, holder)
+  return true
+}
+
+function releaseHolderTransaction(lease, outcome, state, holder) {
     const now = performance.timeOrigin + performance.now()
     const stop = holder.stop?.abandoned ? null : holder.stop
     const fields = { ...outcome, ...stoppedReleaseFields(stop),
@@ -334,7 +350,6 @@ function finishReservationRelease(lease, outcome) {
     removeReleasedHolder(state, holder, stop, now)
     publish(lease.root, state)
     closeFence(lease.root, state)
-    return true
 }
 
 function retryStoppedLease(lease, outcome, stop) {

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { test, after } from 'node:test'
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync, existsSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync, existsSync, readdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import vm from 'node:vm'
 
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'suite-recovery-'))
 const source = process.env.WT_ADMISSION_BIN ?? path.resolve(import.meta.dirname, '../../plugin/bin')
@@ -16,6 +17,7 @@ cpSync(path.join(source, '../.claude-plugin/plugin.json'), path.join(scratch, '.
 const url = (name) => pathToFileURL(path.join(scratch, 'bin', name)).href
 const reservations = await import(url('lib/host/suite-lock-reservations.mjs'))
 const sections = await import(url('lib/host/suite-lock-section.mjs'))
+const ownedSections = await import(url('lib/host/suite-lock-owned-section.mjs')).catch(() => sections)
 const machineApi = await import(url('lib/host/suite-lock-machine.mjs'))
 const policy = await import(url('lib/suite-lock-admission.mjs'))
 const { readSuiteResourceRuns } = await import(url('lib/suite-lock-journal.mjs'))
@@ -50,6 +52,7 @@ async function until(check, message, timeout = 5000) {
 function fixture(name, holders = []) {
   const root = path.join(scratch, name)
   mkdirSync(path.join(root, 'queue.d'), { recursive: true })
+  writeFileSync(path.join(root, 'admission-reservation.enabled'), '')
   roots.push(root)
   const state = { version: 1, generation: name, holders, bypasses: {}, createdAt: Date.now(),
     watchdog: { ...identity(), heartbeat: Date.now() } }
@@ -77,6 +80,69 @@ function seedHistory(root) {
     resources: { peakCores: 1, peakMemMiB: 100, wallMs: 1000, unknownReasons: [] } }))
   writeFileSync(path.join(root, 'journal.jsonl'), rows.map(JSON.stringify).join('\n') + '\n')
 }
+
+test('legacy section publishes only an empty reclaim directory', () => {
+  const root = path.join(scratch, 'legacy-empty')
+  mkdirSync(root)
+  sections.claimSuiteSection(root, () => {
+    assert.deepEqual(readdirSync(root), ['reclaim.d'], 'legacy section must publish only reclaim.d')
+    assert.deepEqual(readdirSync(path.join(root, 'reclaim.d')), [], 'legacy reclaim.d must stay empty')
+  })
+})
+
+test('legacy section retains the sixty-second ownerless bound', () => {
+  assert.equal(sections.RECLAIM_DIR_STALE_MS, 60000, 'legacy stale bound must remain sixty seconds')
+  const root = path.join(scratch, 'legacy-age')
+  mkdirSync(root)
+  const directory = path.join(root, 'reclaim.d')
+  mkdirSync(directory)
+  for (const age of [11000, 61000]) {
+    utimesSync(directory, new Date(Date.now() - age), new Date(Date.now() - age))
+    assert.equal(sections.claimSuiteSection(root, () => assert.fail('claim must return busy after reclaim')), sections.RECLAIM_BUSY)
+    assert.equal(existsSync(directory), age === 11000, `legacy directory retention at ${age} ms`)
+  }
+})
+
+test('legacy busy release retains the exact base diagnostic', () => {
+  const root = path.join(scratch, 'legacy-busy')
+  mkdirSync(path.join(root, 'reclaim.d'), { recursive: true })
+  const write = process.stderr.write
+  let text = ''
+  try {
+    process.stderr.write = (chunk) => { text += chunk; return true }
+    assert.equal(sections.retrySuiteSection(root, () => assert.fail('busy section entered')), false)
+  } finally { process.stderr.write = write }
+  assert.equal(text, 'wt-suite-lock: release section busy after 3 s; holder retained, retry release\n',
+    'legacy busy release must retain the base diagnostic')
+})
+
+test('owned section refuses the shared reclaim directory', () => {
+  const root = path.join(scratch, 'owned-refusal')
+  mkdirSync(root)
+  assert.throws(() => ownedSections.claimOwnedSuiteSection(root, 'reclaim.d', () => {}), /reclaim\.d/,
+    'owned protocol must refuse reclaim.d')
+})
+
+test('watchdog main owns and closes its WSL reader', async () => {
+  const source = readFileSync(path.join(scratch, 'bin/lib/host/suite-lock-watchdog.mjs'), 'utf8')
+  const names = ['main', 'supervise', 'watchdogOwns', 'watchdogIdle']
+  const bodies = names.map((name) => source.match(new RegExp(`(?:async )?function ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n\\}`))?.[0])
+  assert.ok(bodies.every(Boolean), 'execute the actual watchdog declarations')
+  const calls = []
+  const state = { generation: 'fixture', watchdog: { pid: process.pid }, holders: [holder('live')] }
+  const main = vm.runInNewContext(`${bodies.join('\n')}; main`, {
+    process: { pid: process.pid, stderr: { write: () => {} } }, RECLAIM_BUSY: sections.RECLAIM_BUSY,
+    readReservationState: () => state, isWsl: () => true,
+    readSuiteMachine: ({ windowsMemory }) => { calls.push(['machine', windowsMemory]); return healthy },
+    watchReservationMemory: () => false,
+    startWindowsMemoryReader: () => {
+      calls.push('start')
+      return { sample: () => { calls.push('sample'); return 123 }, close: () => calls.push('close') }
+    },
+  })
+  await main('root', 'fixture')
+  assert.deepEqual(calls, ['start', 'sample', ['machine', 123], 'close'], 'WSL watchdog must sample and close its owned reader')
+})
 
 test('R6 unknown supervision never becomes an automatic stop', () => {
   const { root, state } = fixture('unknown-supervision', [holder('live')])
@@ -166,7 +232,7 @@ test('R5 an invalid Windows sample cannot authorize sharing', () => {
 
 async function deadWriter(root, name, owner = true) {
   const directory = path.join(root, name)
-  const script = `const f=require('fs');(async()=>{const m=await import(${JSON.stringify(url('lib/host/suite-lock-section.mjs'))});
+  const script = `const f=require('fs');(async()=>{const m=await import(${JSON.stringify(url('lib/host/suite-lock-owned-section.mjs'))});
 if(${owner}&&m.claimOwnedSuiteSection){m.claimOwnedSuiteSection(${JSON.stringify(root)},${JSON.stringify(name)},()=>{process.stdout.write('ready');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,60000)});return}
 f.mkdirSync(${JSON.stringify(directory)});${owner ? `f.writeFileSync(${JSON.stringify(path.join(directory, 'owner.json'))},JSON.stringify({pid:process.pid,pidNamespace:${JSON.stringify(currentPidNamespace())}}));` : ''}process.stdout.write('ready');setInterval(()=>{},1000)})()`
   const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
@@ -180,7 +246,7 @@ f.mkdirSync(${JSON.stringify(directory)});${owner ? `f.writeFileSync(${JSON.stri
 
 for (const name of ['reservation-write.d', 'reclaim.d']) test(`R8 dead writer in ${name} is reclaimed`, async () => {
   const { root } = fixture(`dead-${name}`)
-  await deadWriter(root, name)
+  await deadWriter(root, name, name !== 'reclaim.d')
   const request = waiting(root)
   let lease
   await until(() => (lease = reservations.pollReservationLease(request, request.record, { readMachine: () => healthy })),
@@ -198,22 +264,22 @@ test('R8 ownerless writer older than ten seconds is reclaimed', async () => {
 
 test('R8 live writer is never reclaimed merely by age', () => {
   const { root } = fixture('live-section')
-  const directory = path.join(root, 'reclaim.d')
+  const directory = path.join(root, 'reservation-write.d')
   mkdirSync(directory)
   writeFileSync(path.join(directory, 'owner.json'), JSON.stringify(identity()))
   utimesSync(directory, new Date(0), new Date(0))
-  assert.equal(sections.claimSuiteSection(root, () => assert.fail('live owner was bypassed')), sections.RECLAIM_BUSY)
+  assert.equal(ownedSections.claimOwnedSuiteSection(root, 'reservation-write.d', () => assert.fail('live owner was bypassed')), sections.RECLAIM_BUSY)
   assert.equal(existsSync(directory), true, 'age must not remove a live writer')
 })
 
 test('R8 two concurrent reclaimers cannot both enter the writer section', async () => {
   const { root } = fixture('concurrent-reclaim')
-  await deadWriter(root, 'reclaim.d')
+  await deadWriter(root, 'reservation-write.d')
   const barrier = path.join(root, 'go')
-  const script = `import * as f from 'node:fs';const m=await import(${JSON.stringify(url('lib/host/suite-lock-section.mjs'))});
+  const script = `import * as f from 'node:fs';const m=await import(${JSON.stringify(url('lib/host/suite-lock-owned-section.mjs'))});
 process.stdout.write('ready');while(!f.existsSync(${JSON.stringify(barrier)}))await new Promise(r=>setTimeout(r,5));
 let result;const entered=${JSON.stringify(path.join(root, 'entered'))},release=${JSON.stringify(path.join(root, 'release'))};
-while(!f.existsSync(entered)){result=m.claimSuiteSection(${JSON.stringify(root)},()=>{f.writeFileSync(entered,String(process.pid),{flag:'wx'});process.stdout.write('entered');const end=Date.now()+5000;while(!f.existsSync(release)&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);return true});if(result===true)break;await new Promise(r=>setTimeout(r,5+Math.random()*10))}process.stdout.write(result===true?'done':'busy');`
+while(!f.existsSync(entered)){result=m.claimOwnedSuiteSection(${JSON.stringify(root)},'reservation-write.d',()=>{f.writeFileSync(entered,String(process.pid),{flag:'wx'});process.stdout.write('entered');const end=Date.now()+5000;while(!f.existsSync(release)&&Date.now()<end)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);return true});if(result===true)break;await new Promise(r=>setTimeout(r,5+Math.random()*10))}process.stdout.write(result===true?'done':'busy');`
   const runs = [0, 1].map(() => {
     const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'inherit'] })
     children.add(child)
@@ -306,14 +372,14 @@ test('R6 victim order is total for absent sequence and timestamps', () => {
 })
 
 test('R6 expired stops are abandoned and the next victim can be chosen', () => {
-  const { root, state } = fixture('expired-stop', [holder('old-stop', { admittedSequence: 2,
+  const { root } = fixture('expired-stop', [holder('old-stop', { admittedSequence: 2,
     stop: { cause: 'memory-pressure', at: Date.now() - 21_000, deadline: Date.now() - 1000 } }), holder('next', { admittedSequence: 1 })])
   reservations.watchReservationMemory(root, { ...healthy, availableMiB: 0 })
   const updated = reservations.readReservationState(root)
+  assert.equal(updated.holders.length, 2, 'watchdog must retain both holders in persisted state')
   assert.equal(updated.holders[0].stop.abandoned, true, 'expired stop must no longer block the safety net')
   assert.equal(updated.holders[1].stop?.cause, 'memory-pressure')
   assert.equal(updated.holders[1].stop.deadline - updated.holders[1].stop.at, 20_000)
-  assert.equal(state.holders.length, 2)
   reservations.releaseReservationLease({ root, holder: updated.holders[0] }, { exit: 0 })
   assert.equal(reservations.readReservationState(root).lastStopConfirmedAt, undefined, 'an abandoned request is not a confirmed memory stop')
 })

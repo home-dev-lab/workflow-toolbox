@@ -3,7 +3,8 @@ const SETTLE_MS = 5000
 const finite = (value) => Number.isFinite(value) && value >= 0
 const age = (holder, sequenced) => {
   const primary = sequenced ? holder.admittedSequence : holder.startedAtMs
-  return finite(primary) ? primary : finite(holder.admittedSequence) ? holder.admittedSequence : -Infinity
+  if (finite(primary)) return primary
+  return finite(holder.admittedSequence) ? holder.admittedSequence : -Infinity
 }
 const priority = (holder, index) => holder.watchdogPriority?.[index] ?? (index === 0 ? 2 : holder.level ?? 1)
 
@@ -11,7 +12,12 @@ function victimOrder(left, right, sequenced) {
   const ordered = priority(right, 0) - priority(left, 0) || priority(right, 1) - priority(left, 1)
   if (ordered) return ordered
   if (age(left, sequenced) !== age(right, sequenced)) return age(left, sequenced) > age(right, sequenced) ? -1 : 1
-  return String(left.leaseId) < String(right.leaseId) ? -1 : String(left.leaseId) > String(right.leaseId) ? 1 : 0
+  return leaseIdOrder(left, right)
+}
+
+function leaseIdOrder(left, right) {
+  if (String(left.leaseId) < String(right.leaseId)) return -1
+  return String(left.leaseId) > String(right.leaseId) ? 1 : 0
 }
 
 export function selectMemoryVictim(holders, memory, { now = Date.now(), lastStopConfirmedAt = 0 } = {}) {

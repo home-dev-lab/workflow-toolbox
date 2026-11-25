@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, test } from 'node:test'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
@@ -128,8 +128,7 @@ function assertUnmanaged(root, env) {
 
 processTest('switch defaults off and uses legacy acquisition and release without a watchdog', async () => {
   const root = rootFor('default')
-  const run = await inspectRun(root, [], { WT_SUITE_LEASE_MODE: 'reservation', WT_SUITE_LEASE_RESERVATION: '{}',
-    WT_SUITE_LEASE_RESERVATION_CORES: '99', WT_SUITE_LEASE_RESERVATION_MEM_MIB: '99' }, (_run, env) => assertUnmanaged(root, env))
+  const run = await inspectRun(root, [], {}, (_run, env) => assertUnmanaged(root, env))
   assert.match(run.stderr(), /identity-legacy-acquire/)
   assert.match(run.stderr(), /identity-legacy-release/)
   assert.doesNotMatch(run.stderr(), /identity-(?:watchdog-spawn|reservation-writer)/, 'default path never enters a writer or spawns a watchdog')
@@ -137,6 +136,76 @@ processTest('switch defaults off and uses legacy acquisition and release without
   const rows = journal.readSuiteLockJournal(root).tickets
   assert.equal(rows.length, 1)
   assert.ok(rows[0].release.resources, 'phase-one measurement still records a resource row')
+})
+
+processTest('off command preserves caller reservation variables and drops only the job class', async () => {
+  const root = rootFor('caller-env')
+  const sentinels = { WT_SUITE_LEASE_MODE: 'caller-mode', WT_SUITE_LEASE_RESERVATION: 'caller-reservation',
+    WT_SUITE_LEASE_RESERVATION_CORES: 'caller-cores', WT_SUITE_LEASE_RESERVATION_MEM_MIB: 'caller-memory' }
+  await inspectRun(root, [], { ...sentinels, WT_SUITE_LOCK_JOB_CLASS: 'repo:check' }, (_run, env) => {
+    for (const [name, value] of Object.entries(sentinels)) assert.equal(env[name], value, `off command must preserve ${name}`)
+    assert.equal(env.WT_SUITE_LOCK_JOB_CLASS, undefined)
+  })
+})
+
+processTest('off refused release emits no reservation diagnostic', async () => {
+  const root = rootFor('refused-release')
+  const run = launch(root, [], {}, `const fs=require('fs'),p=${JSON.stringify(root)}+'/lock.d/holder.json';
+const h=JSON.parse(fs.readFileSync(p));h.leaseId='replacement';fs.writeFileSync(p,JSON.stringify(h))`)
+  assert.equal(await run.ended, 0)
+  children.delete(run.child)
+  assert.doesNotMatch(run.stderr(), /reservation/, 'ordinary refused release must not mention a reservation')
+})
+
+test('ordinary broker stop keeps the base call and silence when stop is unconfirmed', async () => {
+  const text = readFileSync(cli, 'utf8')
+  const body = text.match(/function stopLeasedCommandTree\([^)]*\) \{[\s\S]*?\n\}/)?.[0]
+  const failure = text.match(/function groupStopFailure\([^)]*\) \{[\s\S]*?\n\}/)?.[0]
+  const lines = []
+  const calls = []
+  const stop = vm.runInNewContext(`${failure}\n${body};stopLeasedCommandTree`, {
+    process: { stderr: { write: (line) => lines.push(line) } },
+    stopCoveredCommandTree: (...args) => { calls.push(args); return Promise.resolve(false) },
+  })
+  const child = {}
+  await stop(child, true, { reservation: false })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], child)
+  assert.equal(calls[0][1].group, true)
+  assert.deepEqual(lines, [], 'ordinary broker stop must retain base silence')
+})
+
+processTest('library reservation request requires the root marker with a positive control', async () => {
+  for (const managed of [false, true]) {
+    const root = rootFor('library-marker')
+    if (managed) enable(root)
+    const lease = await lock.acquireSuiteLock({ root, reservation: true, waitS: 5, pollMs: 10,
+      argv: ['fixture'], env: {}, readMachine: () => machine })
+    try {
+      const holder = JSON.parse(readFileSync(path.join(root, 'lock.d/holder.json'), 'utf8'))
+      assert.equal(holder.reservationProtocol, managed ? 1 : undefined, 'library must require the marker before publishing protocol fields')
+      assert.equal(existsSync(path.join(root, 'reservations.json')), managed, 'library must not publish reservation state without the marker')
+      assert.equal(lease.reservationLease === true, managed)
+    } finally { lock.releaseSuiteLock(lease, { exit: 0 }) }
+  }
+})
+
+processTest('off queued run never publishes reservation or owned-section files with a watched positive control', async () => {
+  for (const managed of [false, true]) {
+    const root = rootFor('watched')
+    if (managed) enable(root)
+    const seen = new Set()
+    const sample = () => {
+      for (const name of readdirSync(root)) seen.add(name)
+      try { for (const name of readdirSync(path.join(root, 'reclaim.d'))) seen.add(`reclaim.d/${name}`) } catch { /* between sections */ }
+    }
+    sample()
+    const watcher = setInterval(sample, 5)
+    try { await queuedPair(root, {}, managed) } finally { sample(); clearInterval(watcher) }
+    const additions = [...seen].filter((name) => /intent|owner\.json|reservation|watchdog/.test(name))
+    if (managed) assert.ok(additions.includes('reservations.json'), 'watcher positive control must see reservation state')
+    else assert.deepEqual(additions, [], 'off-path watcher must never see owned or reservation files')
+  }
 })
 
 processTest('marker creates managed state and a live watchdog', async () => {
@@ -391,13 +460,13 @@ test('reservation environment emits positive ceilings only for managed shared le
 })
 
 test('child environment removes managed keys using native platform case rules', () => {
-  const body = readFileSync(cli, 'utf8').match(/function commandEnvironment\(\) \{[\s\S]*?\n\}/)?.[0]
+  const body = readFileSync(cli, 'utf8').match(/function commandEnvironment\([^)]*\) \{[\s\S]*?\n\}/)?.[0]
   assert.ok(body, 'exercise the real command environment helper')
   const input = { WT_SUITE_LOCK_JOB_CLASS: 'outer', wt_suite_lock_job_class: 'outer-lower',
     WT_SUITE_LEASE_MODE: 'reservation', wt_suite_lease_reservation_cores: '99',
     WT_SUITE_LEASE_RESERVATION_MEM_MIB: '99', WT_SUITE_LEASE_RESERVATION: '{}', KEEP: 'value' }
   for (const platform of ['linux', 'darwin', 'win32']) {
-    const value = vm.runInNewContext(`${body}; commandEnvironment()`, { process: { env: input, platform } })
+    const value = vm.runInNewContext(`${body}; commandEnvironment(true)`, { process: { env: input, platform } })
     assert.equal(value.WT_SUITE_LOCK_JOB_CLASS, undefined)
     assert.equal(value.WT_SUITE_LEASE_MODE, undefined)
     assert.equal(value.WT_SUITE_LEASE_RESERVATION_MEM_MIB, undefined)
@@ -476,6 +545,31 @@ processTest('off status keeps legacy queue entries without admission enrichment'
   })
   assert.equal(await waiter.ended, 0, waiter.stderr())
   children.delete(waiter.child)
+})
+
+processTest('off status never invokes reservation readers on a root with no reservation state', async () => {
+  const root = rootFor('status-no-reads')
+  const file = path.join(scratch, 'bin/lib/host/suite-lock-reservations.mjs')
+  const before = readFileSync(file, 'utf8')
+  const expected = JSON.parse(await statusOutput(root, ['--json']))
+  const poisoned = before.replace('export function readReservationState(root) {',
+    "export function readReservationState(root) { throw new Error('unexpected reservation state read');")
+    .replace('export function reservationQueueStatus(root, tickets) {',
+      "export function reservationQueueStatus(root, tickets) { throw new Error('unexpected reservation queue read');")
+  assert.notEqual(poisoned, before, 'reader doubles must target the real module')
+  try {
+    writeFileSync(file, poisoned)
+    assert.deepEqual(JSON.parse(await statusOutput(root, ['--json'])), expected,
+      'off status must preserve the legacy JSON shape without reservation readers')
+  } finally { writeFileSync(file, before) }
+})
+
+test('exit-zero stopped or signalled rows never train reservation history', () => {
+  for (const fields of [{ cause: 'signal', served: false }, { served: false }, { cause: 'signal', served: true }, { cause: null }, { cause: '' }]) {
+    const runs = history().map(() => measured(1, 100, fields))
+    assert.equal(api.reservationForJob(runs, 'heavy', machine).basis, 'declared', 'exit-zero interrupted rows must not train reservations')
+  }
+  assert.equal(api.reservationForJob(history().map(() => measured(1, 100, { served: true })), 'heavy', machine).basis, 'measured')
 })
 
 processTest('status keeps admission visible when the marker is removed during a managed run', async () => {

@@ -5,6 +5,19 @@ import { it } from 'vitest'
 // Expose new locks individually in the suite count while retaining the original
 // aggregate cases. Each standalone case executes once, not again in its aggregate.
 const addedCases = [
+  ['suite-lock-admission-comparison', 'round seven warning extractions preserve every read and release side effect'],
+  ['suite-lock-admission-recovery', 'legacy section publishes only an empty reclaim directory'],
+  ['suite-lock-admission-recovery', 'legacy section retains the sixty-second ownerless bound'],
+  ['suite-lock-admission-recovery', 'legacy busy release retains the exact base diagnostic'],
+  ['suite-lock-admission-recovery', 'owned section refuses the shared reclaim directory'],
+  ['suite-lock-admission-recovery', 'watchdog main owns and closes its WSL reader'],
+  ['suite-lock-admission-identity', 'off queued run never publishes reservation or owned-section files with a watched positive control'],
+  ['suite-lock-admission-identity', 'off command preserves caller reservation variables and drops only the job class'],
+  ['suite-lock-admission-identity', 'off refused release emits no reservation diagnostic'],
+  ['suite-lock-admission-identity', 'ordinary broker stop keeps the base call and silence when stop is unconfirmed'],
+  ['suite-lock-admission-identity', 'library reservation request requires the root marker with a positive control'],
+  ['suite-lock-admission-identity', 'off status never invokes reservation readers on a root with no reservation state'],
+  ['suite-lock-admission-identity', 'exit-zero stopped or signalled rows never train reservation history'],
   ['suite-lock-admission-comparison', 'quality ceiling extractions preserve sampler and restore-lock execution traces'],
   ['suite-lock-admission-recovery', 'R3 real machine capacity carries nominal budgets into measured oversize planning'],
   ['suite-lock-admission-recovery', 'R5 classed measured jobs fall back on initially stale heartbeat or Windows samples'],

@@ -14,6 +14,8 @@ admission and is ignored; any other value warns that it is invalid and is treate
 as unset. The marker therefore decides in both cases. With the switch off, acquisition and release use the
 legacy exclusive path: no reservation state, compatibility fence, writer section
 or watchdog is created. Phase-one measurement journalling continues.
+The library's `reservation: true` request also requires this marker in its own
+root; broker roots cannot enable the reservation protocol.
 Text status (including `--resources`) and JSON status retain the base output when
 the switch is off and no reservation holder remains.
 
@@ -43,6 +45,8 @@ Use the class's latest ten release rows carrying a resources record, in terminal
 append order rather than request or wall-clock order. Nonzero and unknown exits
 are ignored for training, including memory stops, signals and launcher-death
 reconciliation. They still occupy positions in that ten-row window.
+Rows with a cause or `served: false` are also ignored for training, even when
+their command caught a signal and exited zero.
 
 A successful row is trainable when its CPU and memory peaks are finite and its
 resources have no unknown reason. A successful incomplete or malformed resources
@@ -205,8 +209,17 @@ a command to signal. Actual reservation holders and watchdog state are listed
 in `wt-suite-lock status --json`. Operator release refuses that fence.
 
 Reservations live outside `lock.d`; a missing fence does not erase capacity.
-Both `reclaim.d` and `reservation-write.d` record PID, process start and namespace.
-Any client can reclaim a proven-dead writer. A directory without a readable
+Every client uses the base protocol for the shared outer `reclaim.d`: an empty
+directory, no owner or intent records, and a 60-second abandoned-directory bound.
+A claim meeting an existing directory returns busy, even if it removes an old
+directory; entry requires a subsequent claim. The off path uses only this base
+section protocol, preserving compatibility with older clients sharing the root.
+
+Reservation writers nest `reservation-write.d` inside that outer section. Only
+this reservation-only directory uses the owned protocol: PID, process start and
+namespace records, immutable intents, and tombstone reclamation. The owned claim
+refuses `reclaim.d`, so the two protocols cannot share a directory.
+A reservation-aware client can reclaim a proven-dead owned writer. A directory without a readable
 owner becomes reclaimable after ten seconds. Reclaim renames it to a unique
 tombstone; only the successful renamer removes it and attempts entry. A readable
 live owner is never reclaimed based on age. Immutable, uniquely named intent
@@ -236,9 +249,10 @@ execution. Another waiter cannot inherit a crashed launcher's command.
 | Launcher after spawn | Detached descendants may still exist. | Next writer entry reconciles a proven-dead launcher. Descendants are not adopted or replayed. |
 | Watchdog dies | Holders and commands keep running. | Holder launchers or waiters re-elect on their next poll, normally within one second. |
 | Watchdog is paused or slow | Its heartbeat ages; commands keep running. | Sharing falls back to exclusive after five seconds; election may supersede it after 15 seconds, without signalling it. |
-| While writing an unpublished intent temporary file | No intent participates in section entry yet. | The temporary file is ignored; the next client proceeds normally. |
-| After intent rename, before directory creation, or after directory removal | One immutable intent still names the launcher. | Next entry proves the owner dead and removes that unique record; it cannot remove a replacement intent. |
-| After writer-directory creation, before owner publication | Directory exists without a readable owner. | Any client reclaims after ten seconds, on its next entry attempt. |
+| While holding the outer `reclaim.d` | Empty shared section remains; no owner or intent record exists. | Every client uses the base 60-second age bound, then retries a busy claim. |
+| While writing an unpublished `reservation-write.d` intent temporary file | No intent participates in owned-section entry yet. | A reservation-aware client ignores the temporary file; the outer section still follows its base age bound. |
+| After owned intent rename, before directory creation, or after directory removal | One immutable reservation-writer intent still names the launcher. | A reservation-aware client proves the owner dead and removes that unique record; it cannot remove a replacement intent. |
+| After `reservation-write.d` creation, before owner publication | Inner directory exists without a readable owner. | A reservation-aware client reclaims after ten seconds, once it can enter the outer base section. |
 | After writer owner publication, before state temporary write | Old complete state remains. | A contender reclaims immediately after positive owner-death proof and reconciles launchers before its operation. |
 | During state temporary write, before rename | Old complete state and an unused temporary file remain. | Same writer reclamation; the temporary file is never treated as state. |
 | After atomic state rename, before writer cleanup | New complete state remains behind the writer directory. | Same writer reclamation; reconciliation uses the newly published state. |
@@ -255,6 +269,8 @@ execution. Another waiter cannot inherit a crashed launcher's command.
 These bounds assume another waiter or holder launcher continues polling; without
 a client, reconciliation occurs on the next arrival. Reservation state is not a
 durable runner that replays commands after launcher death.
+Recovery of reservation state requires a client that understands the reservation
+protocol. Older clients only participate in the base section and fence protocols.
 
 Known limits: a descendant that leaves the command group with `setsid` survives
 a stop and can overlap its retry. Direct one-file light runs take no ticket and
@@ -287,7 +303,7 @@ under `reservations.holders` in JSON. Only text rendering rounds values.
 
 ## Child environment
 
-Only a managed client's command receives:
+A managed client's command receives values set from its granted lease:
 
 - `WT_SUITE_LEASE_MODE`: `exclusive` or `reservation`.
 - `WT_SUITE_LEASE_RESERVATION`: JSON containing `cores`, `memMiB`, `mode` and
@@ -297,5 +313,7 @@ Only a managed client's command receives:
   reservation values, with a minimum of one. Exclusive mode omits both.
 
 These values describe the granted lease, rather than the requested label.
-Unmanaged commands receive none of these variables; inherited values are removed
-before the command is spawned.
+Managed commands have caller-provided values for these four keys removed before
+the granted values are set. Unmanaged commands preserve all four caller values,
+as in the base protocol. `WT_SUITE_LOCK_JOB_CLASS` is removed for every command;
+this new request-only key must not leak into a nested request.

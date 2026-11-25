@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { closeQueuedReplacement, finishQueuedReplacement, replacementQueueFields } from './host/suite-lock-replace.mjs'
 import path from 'node:path'
 import { foreignNamespaceStale, pidProvesGone, platformOf, ticketIsStale, TICKET_SILENCE_MS } from './host/suite-lock-liveness.mjs'
@@ -23,7 +23,7 @@ import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, pa
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
 import { claimSuiteSection, RECLAIM_BUSY, RECLAIM_DIR_STALE_MS, retrySuiteSection } from './host/suite-lock-section.mjs'
-import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, reservationQueueStatus, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
+import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, reservationMarkerEnabled, reservationQueueStatus, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
 import { publishReservationRetry } from './host/suite-lock-memory-retry.mjs'
 import { prepareJournalTicket, takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
@@ -90,9 +90,11 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, reservationQueueStatus(current.root, tickets), readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
+  const managed = existsSync(path.join(current.root, 'reservations.json')) || reservationMarkerEnabled(current.root)
+  const queue = managed ? reservationQueueStatus(current.root, tickets) : tickets
+  const snapshot = suiteLockStatusSnapshot(current, queue, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
   snapshot.resourceClasses = readSuiteResourceClasses(current.root)
-  snapshot.reservations = readReservationState(current.root)
+  snapshot.reservations = managed ? readReservationState(current.root) : null
   snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
@@ -463,7 +465,7 @@ async function acquireSuiteLock(options = {}) {
   const broker = suiteBroker(env)
   if (broker && !options.root) return acquireBrokerSuiteLock(broker, options)
   const root = domain
-  const waiting = prepareSuiteWait(root, options, env, priority)
+  const waiting = prepareSuiteWait(root, reservationRequestOptions(root, options), env, priority)
   const { lockDir, queueDir, record } = waiting
   const ticket = await retryTransient(() => takeAcquisitionTicket(queueDir, record, options), HEAD_OF_QUEUE_POLL_MS, () => options.signal)
   const state = { root, lockDir, queueDir, ticket, record, ...parkQueueMetadata(record) }
@@ -484,6 +486,11 @@ async function acquireSuiteLock(options = {}) {
   } finally {
     try { finishQueuedReplacement(state) } finally { finishParkQueue(state, options.park, () => removeTicket(queueDir, ticket)) }
   }
+}
+
+function reservationRequestOptions(root, options) {
+  if (options.reservation !== true || reservationMarkerEnabled(root)) return options
+  return { ...options, reservation: false }
 }
 
 function takeAcquisitionTicket(queueDir, record, options) {

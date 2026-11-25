@@ -19,7 +19,7 @@ function timingSensitive(runs) {
 
 export function reservationForJob(runs, declared, capacity) {
   const window = runs.filter((run) => run.release?.resources !== undefined).slice(-ADMISSION_HISTORY_RUNS)
-  const successes = window.filter((run) => run.release.exit === 0)
+  const successes = window.filter((run) => run.release.exit === 0 && !Object.hasOwn(run.release, 'cause') && run.release.served !== false)
   const exclusive = { mode: 'exclusive', cores: capacity.cores, memMiB: capacity.memMiB, basis: 'declared' }
   if (timingSensitive(runs)) return { ...exclusive, basis: 'timing-history' }
   if (successes.length < MIN_RUNS || !successes.slice(-MIN_RUNS).every((run) => complete(run.release.resources))) return exclusive

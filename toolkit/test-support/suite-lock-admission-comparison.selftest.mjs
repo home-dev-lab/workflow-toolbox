@@ -20,13 +20,79 @@ const targets = {
   '../wt-suite-lock.mjs': ['forward'],
 }
 const extractionTargets = { 'host/suite-lock-resources.mjs': ['linuxResourceTree'], 'host/suite-lock-queue.mjs': ['putLockBack'] }
+const roundSevenTargets = { 'suite-lock-safety-net.mjs': ['age', 'victimOrder'],
+  'host/suite-lock-reservations.mjs': ['readReservationState', 'reservationQueueStatus', 'finishReservationRelease'] }
+// Frozen before the warning-only extractions; the earlier policy reference stays intact.
+const roundSevenReference = {
+  'suite-lock-safety-net.mjs': {
+    age: `const age = (holder, sequenced) => {
+  const primary = sequenced ? holder.admittedSequence : holder.startedAtMs
+  return finite(primary) ? primary : finite(holder.admittedSequence) ? holder.admittedSequence : -Infinity
+}`,
+    victimOrder: `function victimOrder(left, right, sequenced) {
+  const ordered = priority(right, 0) - priority(left, 0) || priority(right, 1) - priority(left, 1)
+  if (ordered) return ordered
+  if (age(left, sequenced) !== age(right, sequenced)) return age(left, sequenced) > age(right, sequenced) ? -1 : 1
+  return String(left.leaseId) < String(right.leaseId) ? -1 : String(left.leaseId) > String(right.leaseId) ? 1 : 0
+}`,
+  },
+  'host/suite-lock-reservations.mjs': {
+    readReservationState: `function readReservationState(root) {
+  try {
+    const state = JSON.parse(readFileSync(stateFile(root), 'utf8'))
+    if (state.version !== RESERVATION_PROTOCOL || !Array.isArray(state.holders)) throw new Error('invalid reservation state')
+    return state
+  } catch (error) { if (error.code === 'ENOENT') return null; throw error }
+}`,
+    reservationQueueStatus: `function reservationQueueStatus(root, tickets) {
+  if (!tickets.some((ticket) => ticket.record?.reservationProtocol === RESERVATION_PROTOCOL)) return tickets
+  const machine = readSuiteMachine()
+  const history = readSuiteResourceRuns(root)
+  return tickets.map((ticket) => {
+    const record = ticket.record
+    if (record?.reservationProtocol !== RESERVATION_PROTOCOL) return ticket
+    const runs = jobClassHistory(history, record)
+    const reservation = machine.unknown ? { unknown: machine.unknown }
+      : reservationForJob(runs, record.light === true ? 'light' : 'heavy', machine)
+    return { ...ticket, reservation }
+  })
+}`,
+    finishReservationRelease: `function finishReservationRelease(lease, outcome) {
+  const state = readReservationState(lease.root)
+  const holder = state?.holders.find((entry) => entry.leaseId === lease.holder.leaseId)
+  if (!holder) return true
+  const now = performance.timeOrigin + performance.now()
+  const stop = holder.stop?.abandoned ? null : holder.stop
+  const fields = { ...outcome, ...stoppedReleaseFields(stop),
+    reservation: holder.reservation, overlaps: releaseOverlaps(holder, now) }
+  retryStoppedLease(lease, outcome, stop)
+  if (!terminalRecorded(lease.root, holder.leaseId)) {
+    recordSuiteLockService(lease, fields)
+    suiteJournalEvent(lease.journal, 'release', fields)
+  }
+  removeReleasedHolder(state, holder, stop, now)
+  publish(lease.root, state)
+  closeFence(lease.root, state)
+  return true
+}`,
+  },
+}
+const policyExclusions = [
+  { function: 'pollReservationLease', variant: { mode: 'ok' },
+    policy: 'Round 5 rechecks fresh sensors and the admission plan before publishing a grant.',
+    lock: 'R5 publication rechecks the sensors after beforePublish' },
+  { function: 'main', variant: { mode: 'ok' },
+    policy: 'Round 5 gives the elected WSL watchdog ownership of the streaming Windows memory reader.',
+    lock: 'watchdog main owns and closes its WSL reader' },
+]
 const helpers = ['holderAgeExpired', 'unpublishedLockDisappeared', 'sameLegacyInstance', 'queueClassFields',
   'coveredBrokerToken', 'windowsExecutableInDirectories', 'hasWindowsPath', 'reservationStatusLines',
   'optionalResourceStatus', 'recordFitBypasses', 'watchdogOwns',
   'admissionMachine', 'machineReading', 'reservationSensorsFresh', 'fallbackMachine', 'recentSample',
   'freshWindowsSample', 'exclusiveFallback', 'safeReservationQueue', 'reservationPlan', 'supervise',
   'cliReservationRequested', 'staticAncestorLease', 'replaceableCliRun', 'shouldRetryReservation', 'watchdogIdle',
-  'recordCommandSignal', 'recordForwardedCommand', 'retainedCountersRegressed', 'assertPutBackRetryable']
+  'recordCommandSignal', 'recordForwardedCommand', 'retainedCountersRegressed', 'assertPutBackRetryable',
+  'finite', 'age', 'priority', 'leaseIdOrder', 'queueStatusReservation', 'releaseHolderTransaction']
 
 function declarations(text) {
   const parsed = tseslint.parser.parseForESLint(text, { sourceType: 'module', range: true, loc: true })
@@ -60,7 +126,7 @@ function findVariable(node, name, keys) {
 }
 
 function sources() {
-  return Object.fromEntries(Object.keys({ ...targets, ...extractionTargets }).map((file) => [file,
+  return Object.fromEntries(Object.keys({ ...targets, ...extractionTargets, ...roundSevenTargets }).map((file) => [file,
     declarations(readFileSync(path.join(root, 'plugin/bin/lib', file), 'utf8'))]))
 }
 
@@ -80,6 +146,8 @@ if (process.argv.includes('--capture')) {
 } else {
   const reference = JSON.parse(readFileSync(referenceFile, 'utf8'))
   test('quality extraction preserves values, errors, reads, writes, this and outgoing call order', async () => {
+    assert.deepEqual(policyExclusions.map(({ function: name, variant }) => [name, variant]),
+      [['pollReservationLease', { mode: 'ok' }], ['main', { mode: 'ok' }]], 'policy exclusions must remain exactly the two authorized cases')
     const count = await compareTargets(reference, targets)
     console.log(`DIFFERENTIAL_CASES=${count} FUNCTIONS=${Object.values(targets).flat().length}`)
   })
@@ -87,25 +155,37 @@ if (process.argv.includes('--capture')) {
     const count = await compareTargets(reference, extractionTargets)
     console.log(`EXTRACTION_CASES=${count} FUNCTIONS=2`)
   })
+  test('round seven warning extractions preserve every read and release side effect', async () => {
+    const count = await compareTargets(roundSevenReference, roundSevenTargets)
+    console.log(`ROUND_SEVEN_CASES=${count} FUNCTIONS=5`)
+  })
 }
 
 async function compareTargets(reference, selected) {
   let count = 0
+  let excluded = 0
   const failures = []
   for (const [file, names] of Object.entries(selected)) {
       for (const name of names) {
         for (const variant of variants(name)) {
-          const beforeHelpers = name === 'forward' ? { recordCommandSignal: reference[file].recordCommandSignal } : {}
+          const beforeHelpers = reference === roundSevenReference ? { ...current[file], ...reference[file] }
+            : name === 'forward' ? { recordCommandSignal: reference[file].recordCommandSignal } : {}
           const before = await execute(reference[file][name], name, beforeHelpers, variant)
           const body = comparisonBody(file, name)
           const after = await execute(body, name, current[file], variant)
+          const exclusion = policyExclusions.find((entry) => entry.function === name && JSON.stringify(entry.variant) === JSON.stringify(variant))
+          if (exclusion) {
+            assert.notDeepEqual(after, before, `${name} exclusion must still differ; remove an obsolete policy exclusion`)
+            excluded++
+            continue
+          }
           try { assert.deepEqual(after, before, `${name} variant ${JSON.stringify(variant)} must preserve its execution trace`) }
           catch (error) { failures.push(error); console.error(`${name} variant ${JSON.stringify(variant)} must preserve its execution trace`) }
           count++
         }
       }
     }
-  console.log(`COMPARISON_CASES=${count} MATCHED=${count - failures.length} FUNCTIONS=${Object.values(selected).flat().length}`)
+  console.log(`COMPARISON_CASES=${count} MATCHED=${count - failures.length} EXCLUDED=${excluded} FUNCTIONS=${Object.values(selected).flat().length}`)
   if (failures.length) throw new AggregateError(failures, `${failures.length} execution traces differ from the frozen contract`)
   return count
 }
@@ -128,6 +208,7 @@ function mutationCopy(name = 'sameInstance') {
 }
 
 function variants(name) {
+  if (Object.values(roundSevenTargets).flat().includes(name)) return ['ok', 'missing', 'unknown', 'denied', 'light', 'stop', 'abandoned', 'recorded'].map((mode) => ({ mode }))
   if (name === 'linuxResourceTree') return ['ok', 'reused', 'unknown', 'exit', 'regressed', 'missing', 'denied'].map((mode) => ({ mode }))
   if (name === 'putLockBack') return ['ok', 'retry', 'holder', 'expired', 'denied', 'null-error'].flatMap((mode) => [false, true].map((injected) => ({ mode, injected })))
   const legacy = legacyVariants(name)
@@ -174,7 +255,7 @@ const copy = (value) => value === undefined ? '[undefined]' : JSON.parse(JSON.st
 async function execute(body, name, extra, variant) {
   const trace = []
   const environment = fixture(name, variant, trace)
-  const helperCode = helpers.filter((helper) => extra[helper]).map((helper) => extra[helper]).join('\n')
+  const helperCode = helpers.filter((helper) => helper !== name && extra[helper]).map((helper) => extra[helper]).join('\n')
   const run = vm.runInNewContext(`${helperCode}\n${body}\n${name}`, environment.globals)
   let result
   let error
@@ -199,7 +280,8 @@ function fixture(name, variant, trace) {
     if (!match) throw new Error('MemAvailable unavailable')
     return Number(match[1]) / 1024
   })
-  const args = functionFixture(name, variant, globals, call, effects, trace)
+  const args = Object.values(roundSevenTargets).flat().includes(name)
+    ? roundSevenFixture(name, variant, globals, call, trace) : functionFixture(name, variant, globals, call, effects, trace)
   return { globals, args, effects }
 }
 
@@ -233,6 +315,43 @@ function functionFixture(name, v, g, call, effects, trace) {
   if (name === 'resolveWindowsExecutable') return [v.executable, { env: { PATH: '/one:/two', PATHEXT: '.EXE;.CMD' }, exists: call('exists', () => v.found) }]
   if (name === 'readSuiteMachine') return [machineFixture(v, call)]
   return executionFixture(name, v, g, call, effects, trace)
+}
+
+function roundSevenFixture(name, v, g, call, trace) {
+  if (name === 'age') return roundAgeFixture(v)
+  if (name === 'victimOrder') return [{ leaseId: v.mode === 'light' ? 'z' : 'a', level: 1,
+    startedAtMs: v.mode === 'stop' ? 4 : 3 }, { leaseId: v.mode === 'recorded' ? 'a' : 'b', level: v.mode === 'denied' ? 2 : 1, startedAtMs: 3 }, false]
+  if (name === 'readReservationState') return roundStateFixture(v, g, call)
+  if (name === 'reservationQueueStatus') return roundQueueFixture(v, g, call)
+  return roundReleaseFixture(v, g, call, trace)
+}
+
+function roundAgeFixture(v) {
+  return [{ admittedSequence: v.mode === 'missing' ? undefined : 2,
+    startedAtMs: v.mode === 'unknown' ? undefined : 3 }, v.mode === 'ok']
+}
+
+function roundStateFixture(v, g, call) {
+    Object.assign(g, { stateFile: call('stateFile', (root) => root + '/reservations.json'), readFileSync: call('readFileSync', () => {
+      if (['missing', 'denied'].includes(v.mode)) throw Object.assign(new Error(v.mode), { code: v.mode === 'missing' ? 'ENOENT' : 'EACCES' })
+      return JSON.stringify({ version: v.mode === 'unknown' ? 2 : 1, holders: [] })
+    }) })
+    return ['/root']
+}
+
+function roundQueueFixture(v, g, call) {
+    Object.assign(g, { readSuiteMachine: call('machine', () => ({ unknown: v.mode === 'unknown' ? 'missing' : undefined })),
+      readSuiteResourceRuns: call('history', () => []), jobClassHistory: call('class', () => []), reservationForJob: call('reservation', () => ({})) })
+    return ['/root', v.mode === 'missing' ? [] : [{ number: 1, record: { reservationProtocol: v.mode === 'denied' ? 0 : 1, light: v.mode === 'light' } }, { number: 2, record: {} }]]
+}
+
+function roundReleaseFixture(v, g, call, trace) {
+  const holder = { leaseId: 'lease', reservation: {}, stop: v.mode === 'stop' ? { cause: 'signal' } : v.mode === 'abandoned' ? { abandoned: true } : undefined }
+  const state = observed({ holders: v.mode === 'missing' ? [] : [holder] }, trace, 'state')
+  Object.assign(g, { readReservationState: call('state', () => state), stoppedReleaseFields: call('stopped', () => ({})),
+    releaseOverlaps: call('overlaps', () => []), retryStoppedLease: call('retry'), terminalRecorded: call('terminal', () => v.mode === 'recorded'),
+    recordSuiteLockService: call('service'), suiteJournalEvent: call('journal'), removeReleasedHolder: call('remove'), publish: call('publish'), closeFence: call('close') })
+  return [{ root: '/root', holder: { leaseId: 'lease' }, journal: {} }, { exit: 0 }]
 }
 
 function resourceTreeFixture(v, g, call, effects, trace) {
