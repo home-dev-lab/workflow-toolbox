@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
+import { spawnSync as unboundedGitSpawn } from 'node:child_process'
 import { appendFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -193,7 +194,7 @@ describe('registeredWorktrees', () => {
     const untimedSpawn = (command: string, args: string[], options: Record<string, unknown>) => {
       const untimed = { ...options }
       delete untimed.timeout
-      return spawnSync(command, args, untimed)
+      return unboundedGitSpawn(command, args, untimed)
     }
     const scan = registeredWorktrees(repo, { spawnSyncImpl: untimedSpawn })
     expect(scan.status).toBe('known')

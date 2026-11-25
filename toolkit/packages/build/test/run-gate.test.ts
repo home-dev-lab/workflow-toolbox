@@ -16,7 +16,7 @@
 // nothing for a following command to chain onto; the test proves that by trying to smuggle
 // one in and showing it has no effect on the captured .exit file.)
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync, chmodSync, symlinkSync, unlinkSync, openSync, closeSync } from 'node:fs'
 import { tmpdir } from 'node:os'

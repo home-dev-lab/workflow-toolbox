@@ -3,7 +3,7 @@
 // drives the REAL script as a child process against a crafted report fixture
 // and asserts stdout/exit code — the "closest to real" option.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

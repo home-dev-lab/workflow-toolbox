@@ -17,7 +17,7 @@
 // stage with no phase to belong to). An envelope's call nodes DO have a phase: their parent's. See
 // the "trap" section of the card brief.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'

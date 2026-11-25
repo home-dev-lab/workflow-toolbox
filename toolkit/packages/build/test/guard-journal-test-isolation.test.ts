@@ -11,7 +11,7 @@
 // COMPLEMENTARY, coarser check — did the real directory change at all, across the whole run —
 // lives in test-support/guard-journal-isolation.global-setup.ts and is not duplicated here: this
 // file answers "is the redirect wired", that file answers "did anything leak regardless".
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import { tmpdir } from 'node:os'

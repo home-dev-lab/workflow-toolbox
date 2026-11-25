@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'

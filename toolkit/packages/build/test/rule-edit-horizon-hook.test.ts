@@ -2,7 +2,7 @@
 // makes an ambient-rule edit's session-reload horizon explicit. Drives the REAL
 // hook as a child process against isolated fixture paths, never the real ~/.claude.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -3,7 +3,7 @@
 // today's binaries. This test globs plugin/bin/*.mjs itself, so a CLI added next month is
 // covered automatically — a hardcoded list would stay green the day a 25th binary ships with
 // no --help, exactly the convention nobody enforced that this test exists to replace.
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

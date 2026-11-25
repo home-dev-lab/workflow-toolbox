@@ -11,7 +11,7 @@
 // padding — they are the ones that decide whether the mechanism survives, and the
 // nothing-adopted case is the sharpest of them.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

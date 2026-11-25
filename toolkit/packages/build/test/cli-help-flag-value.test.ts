@@ -17,7 +17,7 @@
 //   5. every declared VALUE flag of every helper CLI, behaviourally;
 //   6. the sweep: an undeclared option next to a help token is refused by every helper CLI;
 //   7. compatibility locks: boolean flags still accept help (these also pass on the old helper).
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

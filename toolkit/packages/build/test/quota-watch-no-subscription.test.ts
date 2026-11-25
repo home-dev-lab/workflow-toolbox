@@ -8,7 +8,7 @@
 //
 // A custom probe may declare `quota_model: 'none'`. The bundled endpoint has no known explicit
 // no-subscription discriminator, so empty responses must never be promoted to that declaration.
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

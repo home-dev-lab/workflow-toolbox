@@ -9,7 +9,7 @@
 // silently skip. This suite proves the three paths named on the card: ON (consented, silent),
 // OFF (refused, denied), and BROKEN (unreadable/malformed settings, denied — fail CLOSED).
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

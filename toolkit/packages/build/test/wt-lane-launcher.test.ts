@@ -1,4 +1,4 @@
-import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from 'node:child_process'
+import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
@@ -1646,7 +1646,7 @@ function registerOwnerNoticeCases() {
 function registerPlainDirectoryAttributionCases() {
   it.skipIf(process.platform !== 'linux')('attributes an allow-no-git lane from its plain-directory owner record [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30', true)
-    const runtime = join(f.root, 'fake-opencode-runtime.mjs'); copyFileSync(FAKE_OPENCODE, runtime)
+    const runtime = join(f.root, 'fake-opencode-runtime.mjs'); writeFileSync(runtime, readFileSync(FAKE_OPENCODE, 'utf8').replace("'../../../../test-support/bounded-hook-spawn.mjs'", JSON.stringify(new URL('../../../test-support/bounded-hook-spawn.mjs', import.meta.url).href)))
     writeFileSync(join(f.root, 'bin', 'opencode'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(runtime)} opencode "$@"\n`)
     const launch = run(f, ['--timeout', '60']); expect(launch.status, launch.stderr).toBe(0)
     const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])

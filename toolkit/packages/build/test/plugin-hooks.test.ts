@@ -6,7 +6,7 @@
 // sends (verified on Claude Code 2.1.215: a SUBAGENT's PreToolUse stdin carries
 // top-level agent_type + agent_id; a main-session call carries neither).
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

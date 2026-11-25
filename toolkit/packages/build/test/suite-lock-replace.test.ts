@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { it } from 'vitest'
 // @ts-expect-error Executable shared scenarios have no TypeScript declarations.
 import { replaceScenarios } from './helpers/suite-lock-replace-scenarios.mjs'

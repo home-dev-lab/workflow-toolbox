@@ -13,7 +13,7 @@
 // that becomes unreachable turns this suite red for a reason that has nothing to do with the code
 // (measured on this machine, and it cost an evening).
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

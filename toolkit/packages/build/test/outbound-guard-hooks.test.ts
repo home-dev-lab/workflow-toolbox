@@ -9,7 +9,7 @@
 // stdin payload / fixture file and asserts stdout, stderr, and exit code — the "closest to real"
 // option, where a wiring regression (a hook that silently stops firing after a move) hides.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

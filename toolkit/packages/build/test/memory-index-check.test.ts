@@ -17,7 +17,7 @@
 //   4. fiches on disk reachable by NO path           → FLAGGED, exit 1,
 //      even when the line count is low
 //   5. a store with no index at all                  → silent, exit 0
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
