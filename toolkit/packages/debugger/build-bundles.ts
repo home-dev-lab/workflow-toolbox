@@ -25,6 +25,7 @@ export const DEBUGGER_ENTRIES = [
   { entry: 'cli.ts', out: 'wt-debug.mjs' },
   { entry: 'stop-hook.ts', out: 'wt-stop-hook.mjs' },
   { entry: 'observe-cli.ts', out: 'wt-observe.mjs' },
+  { entry: 'observe-server-bootstrap.ts', out: 'lib/host/observe-server-bootstrap.mjs' },
 ] as const
 
 export interface DebuggerBundle {
@@ -52,6 +53,14 @@ export async function buildDebuggerBundles(): Promise<DebuggerBundle[]> {
       legalComments: 'none',
       write: false,
       logLevel: 'silent',
+      plugins: [{
+        name: 'observe-server-bootstrap',
+        setup(builder) {
+          builder.onResolve({ filter: /^\.\/observe-server-bootstrap\.js$/ }, () => ({
+            path: './lib/host/observe-server-bootstrap.mjs', external: true,
+          }))
+        },
+      }],
     })
     const output = result.outputFiles[0]
     if (!output) throw new Error(`debugger build: esbuild produced no output for ${entry}`)
