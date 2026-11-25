@@ -37,7 +37,7 @@ import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
 import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
 import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mjs'
 import { suiteSignalExit, watchSuiteWaitSignals } from './lib/host/suite-lock-signals.mjs'
-import { maintainReservationWatchdog, reservationAdmissionSwitch, reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
+import { commandEnvironment, maintainReservationWatchdog, reservationAdmissionSwitch, reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
 import { reservationHostSupported } from './lib/host/suite-lock-machine.mjs'
 import { reservationRetryOutcome } from './lib/host/suite-lock-memory-retry.mjs'
 
@@ -314,16 +314,6 @@ function spawnOwnedCommand(command, marker, envOverrides, group, reservation) {
     shell: spawnNeedsShell(command[0]),
     ...coveredCommandSpawnOptions({ broker: group }),
   })
-}
-
-function commandEnvironment(reservation) {
-  const env = { ...process.env }
-  const managed = new Set(['WT_SUITE_LOCK_JOB_CLASS', ...(reservation ? ['WT_SUITE_LEASE_MODE', 'WT_SUITE_LEASE_RESERVATION',
-    'WT_SUITE_LEASE_RESERVATION_CORES', 'WT_SUITE_LEASE_RESERVATION_MEM_MIB'] : [])])
-  for (const name of Object.keys(env)) {
-    if (managed.has(process.platform === 'win32' ? name.toUpperCase() : name)) delete env[name]
-  }
-  return env
 }
 
 function spawnCommand(command, leaseLost = null, marker = null, envOverrides, timing = {}) {

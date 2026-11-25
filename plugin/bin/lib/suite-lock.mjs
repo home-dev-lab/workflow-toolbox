@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { closeQueuedReplacement, finishQueuedReplacement, replacementQueueFields } from './host/suite-lock-replace.mjs'
 import path from 'node:path'
 import { foreignNamespaceStale, pidProvesGone, platformOf, ticketIsStale, TICKET_SILENCE_MS } from './host/suite-lock-liveness.mjs'
@@ -23,7 +23,7 @@ import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, pa
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
 import { claimSuiteSection, RECLAIM_BUSY, RECLAIM_DIR_STALE_MS, retrySuiteSection } from './host/suite-lock-section.mjs'
-import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, reservationMarkerEnabled, reservationQueueStatus, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
+import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, reservationMarkerEnabled, reservationQueueStatus, reservationStateVisible, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
 import { publishReservationRetry } from './host/suite-lock-memory-retry.mjs'
 import { prepareJournalTicket, takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
@@ -90,7 +90,7 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const managed = existsSync(path.join(current.root, 'reservations.json')) || reservationMarkerEnabled(current.root)
+  const managed = reservationStateVisible(current.root)
   const queue = managed ? reservationQueueStatus(current.root, tickets) : tickets
   const snapshot = suiteLockStatusSnapshot(current, queue, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
   snapshot.resourceClasses = readSuiteResourceClasses(current.root)

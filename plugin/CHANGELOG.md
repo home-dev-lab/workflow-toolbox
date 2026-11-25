@@ -15,14 +15,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
-- Managed non-interactive POSIX suite-lock commands can share capacity using measured CPU and
-  memory reservations, with bounded fit bypass, recorded overlap history, and
-  history-derived timing exclusion. A memory watchdog requests a bounded stop
-  of the youngest lowest-priority command and automatically retries its original
-  ticket and rank; overload only pauses admission. Unknown heavy jobs and
-  compatibility clients remain exclusive. Children receive their lease mode and
-  reservation in the environment. See `docs/public/suite-lock-admission.md`.
-
 - Suite-lock journals record sampled process-tree CPU and resident-memory peaks, wall time and exits; status reports history-based job classes without changing admission.
 
 - `wt-suite-lock run --replace <ticket-number> -- <command> [args...]` can replace a

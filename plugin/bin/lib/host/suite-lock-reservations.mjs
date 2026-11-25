@@ -40,6 +40,25 @@ export function reservationMarkerEnabled(root) {
   return !root.startsWith('broker:') && existsSync(path.join(root, 'admission-reservation.enabled'))
 }
 
+// Status looks at reservation state only where it can exist: a state file is
+// present, or the marker enables admission.
+export function reservationStateVisible(root) {
+  return existsSync(stateFile(root)) || reservationMarkerEnabled(root)
+}
+
+// A command never inherits its launcher's job class. The four lease variables
+// are cleared only for a reservation lease, which then sets its own values.
+// Windows environment names are case-insensitive.
+export function commandEnvironment(reservation, source = process.env, platform = process.platform) {
+  const env = { ...source }
+  const managed = new Set(['WT_SUITE_LOCK_JOB_CLASS', ...(reservation ? ['WT_SUITE_LEASE_MODE', 'WT_SUITE_LEASE_RESERVATION',
+    'WT_SUITE_LEASE_RESERVATION_CORES', 'WT_SUITE_LEASE_RESERVATION_MEM_MIB'] : [])])
+  for (const name of Object.keys(env)) {
+    if (managed.has(platform === 'win32' ? name.toUpperCase() : name)) delete env[name]
+  }
+  return env
+}
+
 export function readReservationState(root) {
   try {
     const state = JSON.parse(readFileSync(stateFile(root), 'utf8'))

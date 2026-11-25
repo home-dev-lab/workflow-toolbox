@@ -161,6 +161,9 @@ function queueDependencies(config, t, options, steps, lease) {
   // fresh/park ticket operation at that boundary without hiding loop reads.
   dependencies.takeAcquisitionTicket = (queueDir, value, settings) =>
     dependencies.takeParkTicket(queueDir, value, settings, dependencies.parkOwnerJudge(settings))
+  // The marker check on a reservation request has its own lock with a positive
+  // control; these cases compare the acquisition mechanics after that boundary.
+  dependencies.reservationRequestOptions = (root, value) => value
   return dependencies
 }
 

@@ -460,13 +460,11 @@ test('reservation environment emits positive ceilings only for managed shared le
 })
 
 test('child environment removes managed keys using native platform case rules', () => {
-  const body = readFileSync(cli, 'utf8').match(/function commandEnvironment\([^)]*\) \{[\s\S]*?\n\}/)?.[0]
-  assert.ok(body, 'exercise the real command environment helper')
   const input = { WT_SUITE_LOCK_JOB_CLASS: 'outer', wt_suite_lock_job_class: 'outer-lower',
     WT_SUITE_LEASE_MODE: 'reservation', wt_suite_lease_reservation_cores: '99',
     WT_SUITE_LEASE_RESERVATION_MEM_MIB: '99', WT_SUITE_LEASE_RESERVATION: '{}', KEEP: 'value' }
   for (const platform of ['linux', 'darwin', 'win32']) {
-    const value = vm.runInNewContext(`${body}; commandEnvironment(true)`, { process: { env: input, platform } })
+    const value = host.commandEnvironment(true, input, platform)
     assert.equal(value.WT_SUITE_LOCK_JOB_CLASS, undefined)
     assert.equal(value.WT_SUITE_LEASE_MODE, undefined)
     assert.equal(value.WT_SUITE_LEASE_RESERVATION_MEM_MIB, undefined)

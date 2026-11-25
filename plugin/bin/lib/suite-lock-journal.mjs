@@ -31,16 +31,19 @@ function journalRequest(root, ticket, record, priority, options, light, publish)
   const base = { ticket, leaseId: record.leaseId, root: options.journalRoot ?? root, kind,
     cmd: journalCommand(options.commandArgv ?? record.argv), priority: options.journalPriority ?? priority, light: journalLight(options, light),
     pid: record.pid, cwd: record.cwd, argv: displayArgv(record.argv), route: options.route ?? 'direct',
-    project: record.project, size: record.size, jobClass: requestJobClass(record, options), ...requestRankFields(root, ticket, record, options) }
+    project: record.project, size: record.size, ...requestJobClass(record, options), ...requestRankFields(root, ticket, record, options) }
   const journal = { base, now: options.now?.bind(options) }
   if (publish) suiteJournalEvent(journal, 'request')
   return journal
 }
 
+// A request without a valid class carries no class key at all, in the record
+// and in its journal fields alike, exactly as before classes existed.
 function requestJobClass(record, options) {
   const value = record.jobClass ?? options.jobClass
-  record.jobClass = validSuiteJobClass(value) ? value : undefined
-  return record.jobClass
+  if (validSuiteJobClass(value)) { record.jobClass = value; return { jobClass: value } }
+  delete record.jobClass
+  return {}
 }
 
 function requestRankFields(root, ticket, record, options) {
