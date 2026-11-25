@@ -47,8 +47,9 @@ async function waitFor(read, child) {
 }
 
 function startEntry(fixture, name, args, spawnProcess) {
+  const probeUrl = pathToFileURL(join(fixture.directory, 'probe.mjs')).href
   const child = spawnProcess(process.execPath, [
-    '--import', pathToFileURL(join(fixture.directory, 'probe.mjs')).href,
+    '--import', probeUrl,
     join(BIN, name), ...args,
   ], { cwd: fixture.directory, env: fixture.env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
   fixture.children.push(child)

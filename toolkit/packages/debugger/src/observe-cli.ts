@@ -49,7 +49,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve as resolvePath } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import {
   classifyHealth,
   decideStart,
@@ -1899,19 +1899,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 }
 
-// tsx runs this bootstrap in the server process. Keep the title local to that
-// role, and restore the companion entry's argv before loading it (including --watch).
-async function runObserveServer(): Promise<void> {
-  const entry = resolvePath(process.argv[3]!)
-  process.argv.splice(1, 2)
-  process.argv[1] = entry
-  try { process.title = 'wt-observe-srv' } catch { /* Best-effort on unsupported hosts. */ }
-  await import(pathToFileURL(entry).href)
-}
-
-// The shared guard handles symlinks and fails closed when either path is unavailable.
-const entryGuardUrl = new URL('./lib/host/entry-guard.mjs', import.meta.url)
-const { isInvokedDirectly } = await import(entryGuardUrl.href)
+// The bootstrap shares the symlink-aware, fail-closed direct-invocation guard.
+const entryModuleUrl = new URL('./lib/host/observe-server-bootstrap.mjs', import.meta.url)
+const { isInvokedDirectly, runObserveServer } = await import(entryModuleUrl.href)
 if (isInvokedDirectly(import.meta.url)) {
   if (process.argv[2] === '--internal-serve') await runObserveServer()
   else process.exitCode = await main()
