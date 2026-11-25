@@ -2,7 +2,7 @@
 // own intake stays claimed on the board while nobody works it, and nothing detects it. Drives the
 // real script as a child process (closest-to-real, same style as outbound-guard-hooks.test.ts).
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

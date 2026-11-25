@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
+import { execFileSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'

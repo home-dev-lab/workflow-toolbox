@@ -4,7 +4,7 @@
 // — this test globs plugin/bin/*guard*.mjs itself, so a new file is covered automatically.
 // The notice-delivery scan covers every *-hook.mjs recording a warned decision. It cannot
 // see multi-line if conditions or silencing hidden in a helper; library tests carry behaviour.
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import {
   existsSync,
   mkdirSync,

@@ -1,4 +1,4 @@
-import childProcess, { spawn, spawnSync } from 'node:child_process'
+import childProcess, { spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import net from 'node:net'
 import fs, { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'

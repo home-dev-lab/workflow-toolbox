@@ -1,5 +1,5 @@
 // Hermetic real-git selftests: the guard's evidence is the index and tree, not a mocked diff.
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

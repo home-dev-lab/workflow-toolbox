@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { checkSpawningTestFiles, scanSpawningTestFiles, spawningTestFiles } from '../spawning-test-files.mjs'
 import { laneSandboxContext, noteInsideLaneSandbox } from '../../test-support/lane-sandbox-context.js'
+import { scanAmbientState } from '../ambient-state-census.mjs'
+import { scanFixedWaits } from '../fixed-wait-census.mjs'
 
 const root = resolve(import.meta.dirname, '../..')
 function omittedExportEntries(stale: string[], testName: string): string[] {
@@ -27,6 +30,22 @@ function omittedExportEntries(stale: string[], testName: string): string[] {
 const WHOLE_TREE_SCAN_TIMEOUT_MS = 120_000
 
 describe('process-spawning test scheduling', () => {
+  it.each(['spawnSync', 'execFileSync'])('retains scheduling and audit detection through bounded %s', (method) => {
+    const fixture = mkdtempSync(resolve(tmpdir(), 'bounded-spawn-census-'))
+    try {
+      for (const dir of ['packages/build/test', 'examples/test', 'scripts/test']) mkdirSync(resolve(fixture, dir), { recursive: true })
+      const file = resolve(fixture, 'packages/build/test/hook.test.ts')
+      const source = (module: string) => `import { ${method} as run } from '${module}'\nrun('node', ['hook.mjs'], { env: { ...process.env }, timeout: 1000 })\n`
+      writeFileSync(file, source('node:child_process'))
+      const before = [scanSpawningTestFiles(fixture), scanAmbientState(fixture), scanFixedWaits(fixture)]
+      expect(before[0]).toEqual(['packages/build/test/hook.test.ts'])
+      expect(before[1]).toHaveLength(1)
+      expect(before[2]).toHaveLength(1)
+      writeFileSync(file, source('../../../test-support/bounded-hook-spawn.mjs'))
+      expect([scanSpawningTestFiles(fixture), scanAmbientState(fixture), scanFixedWaits(fixture)]).toEqual(before)
+    } finally { rmSync(fixture, { recursive: true, force: true }) }
+  })
+
   it('does not exempt a nonexistent entry absent from the committed scheduling list', (ctx) => {
     const file = 'packages/build/test/nonexistent-scheduling-entry.test.ts'
     expect(existsSync(resolve(root, file))).toBe(false)

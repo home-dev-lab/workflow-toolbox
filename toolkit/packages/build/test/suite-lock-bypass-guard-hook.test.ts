@@ -2,7 +2,7 @@
 // it is bypassing the machine suite lock. Every case spawns the real hook with a real-shaped
 // PreToolUse payload and a pinned child environment, then reads BOTH what the hook printed and
 // what it journaled.
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

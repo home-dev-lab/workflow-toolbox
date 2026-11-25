@@ -8,7 +8,7 @@
 // assertions INTO the suite (child-process execution against throwaway dirs, the same
 // pattern as plugin-hooks.test.ts) so the contract is locked against future drift.
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import {
   mkdtempSync,

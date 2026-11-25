@@ -2,7 +2,7 @@
 // git commands that switch the working tree of a LIVE ambient rules directory. Drives the
 // REAL hook as a child process against isolated fixture paths, never the real ~/.claude.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'

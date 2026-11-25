@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import fs, { appendFileSync, chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'

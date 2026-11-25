@@ -7,7 +7,7 @@
 // other one. So the silence cases below are not padding — a guard that fires on ordinary
 // commands becomes noise within a day and takes its real case with it.
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

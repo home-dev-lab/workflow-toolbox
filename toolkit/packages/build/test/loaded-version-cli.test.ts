@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
 // @ts-expect-error runtime module

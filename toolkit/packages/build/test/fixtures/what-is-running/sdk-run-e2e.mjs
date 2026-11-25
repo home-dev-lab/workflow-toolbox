@@ -4,7 +4,7 @@
 //   node toolkit/packages/build/test/fixtures/what-is-running/sdk-run-e2e.mjs
 // Exit 0 when every SDK pilot row backed by a live runner process renders its header with that row's phase,
 // phase model and elapsed; 3 when no runner is live; 1 otherwise.
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from '../../../../../test-support/bounded-hook-spawn.mjs';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
 import { projectRootOf, readSnapshot, renderPane } from '../../../../../../plugin/hooks/hooks.js';

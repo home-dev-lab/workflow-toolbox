@@ -5,7 +5,7 @@
 // itself to seed each fixture — the same technique adopt-installer.test.ts uses
 // (install, then a targeted string edit) rather than hand-rolling a second classifier.
 
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { createHash } from 'node:crypto'
 import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

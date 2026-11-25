@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { join } from 'node:path'

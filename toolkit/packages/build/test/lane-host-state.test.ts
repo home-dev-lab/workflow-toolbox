@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { EventEmitter } from 'node:events'
 import { randomBytes } from 'node:crypto'
 import { afterEach, expect, it, vi, type TestContext } from 'vitest'

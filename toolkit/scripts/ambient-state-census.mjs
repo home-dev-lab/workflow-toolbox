@@ -5,7 +5,7 @@ import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
-const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
+const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process', '../../../test-support/bounded-hook-spawn.mjs'])
 const PROCESS_FUNCTIONS = new Set(['exec', 'execFile', 'execFileSync', 'execSync', 'fork', 'spawn', 'spawnSync'])
 const SEAL_KEYS = ['NPM_CONFIG_PREFIX', 'HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_PLUGIN_DATA']
 
@@ -71,7 +71,7 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/second-opinion.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'fabel'], { encoding: 'utf8', env: { ...pr", 'argument-validation case supplies CLAUDE_CONFIG_DIR and exits before SDK/global npm resolution'],
   ["packages/build/test/second-opinion.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [CLI, '--out', f.out, '--route', 'opus'], { encoding: 'utf8', env: { ...process.env, ...f.env } })", 'argument-validation case exits before config, SDK, or global npm resolution'],
   ["packages/build/test/second-opinion.test.ts:real-process-table:const result = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' })", 'POSIX liveness tests read only their own process or recorded fixture pid; macOS zombies still answer signal zero, so scheduler state distinguishes them from live children'],
-  ["packages/build/test/service-watch.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [SERVICE_WATCH, '--once', ...args], {", 'case launches an owned inert process used only for pid identity'],
+  ["packages/build/test/service-watch.test.ts:inherited-env-to-child:const res = boundedSpawnSync(process.execPath, [SERVICE_WATCH, '--once', ...args], {", 'case launches an owned inert process used only for pid identity'],
   ["packages/build/test/stale-date-guard.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
   ["packages/build/test/standing-authorizations.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
   ["packages/build/test/stray-tool-markup-guard-hook.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [HOOK], {", 'case pins WT_GUARD_JOURNAL_DIR and the test origin; only the -C tilde case reads HOME, on purpose'],

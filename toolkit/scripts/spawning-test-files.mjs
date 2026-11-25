@@ -5,7 +5,7 @@ import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
-const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
+const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process', '../../../test-support/bounded-hook-spawn.mjs'])
 const PROCESS_FUNCTIONS = new Set([
   'exec',
   'execFile',
@@ -43,6 +43,7 @@ export const spawningTestFiles = [
   'packages/build/test/artifact-server.test.ts',
   'packages/build/test/autonomy-arm.test.ts',
   'packages/build/test/autonomy-watch.test.ts',
+  'packages/build/test/bounded-hook-spawn.test.ts',
   'packages/build/test/bounded-walk.test.ts',
   'packages/build/test/cache-keepalive.test.ts',
   'packages/build/test/cancelled-call-relay-guard-hook.test.ts',

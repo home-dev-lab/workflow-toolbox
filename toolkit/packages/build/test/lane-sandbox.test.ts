@@ -1,4 +1,4 @@
-import childProcess, { execFileSync, spawn, spawnSync } from 'node:child_process'
+import childProcess, { execFileSync, spawn, spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, closeSync, constants, cpSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'

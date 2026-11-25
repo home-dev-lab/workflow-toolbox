@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { resolvePluginDataDir } from '../../../../plugin/bin/lib/plugin-data-dir.mjs'
 

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawnSync } from '../../../test-support/bounded-hook-spawn.mjs'
 import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -245,7 +245,7 @@ function options(f: ReturnType<typeof fixture>, extra: Record<string, unknown> =
     const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')
     const source = `require('node:fs').writeFileSync(require('node:path').join(process.argv[1], '.lane', 'cli-final.json'), '{"ok":true}\\n')`
 
-    const result = command(process.execPath, [CLI, 'integrate', '--dir', f.lane, '--into', f.into, '--message', f.message, '--archive-root', f.archiveRoot, '--pre-remove-check', process.execPath, '-e', source])
+    const result = command(process.execPath, [CLI, 'integrate', '--dir', f.lane, '--into', f.into, '--message', f.message, '--archive-root', f.archiveRoot, '--pre-remove-check', process.execPath, '-e', source], { timeout: GIT_HEAVY_TEST_MS })
 
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('step 6 remove: EXIT=1')
