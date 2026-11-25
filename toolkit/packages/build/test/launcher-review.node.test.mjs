@@ -308,10 +308,12 @@ test('journal unreadable printed record: retain until evidence can be read, then
   fresh(f, String.raw`const rename=fs.renameSync;
     fs.renameSync=(from,to)=>{if(String(to).includes(${JSON.stringify(`${path.sep}done${path.sep}`)}))throw Object.assign(new Error('busy'),{code:'EPERM'});return rename(from,to)};
     syncBuiltinESMExports();const m=await import(eventUrl);m.takeLauncherEvent('delegate',{...options,deliver:()=>{}});`)
-  fresh(f, String.raw`const read=fs.readFileSync;const reasons=[];
-    fs.readFileSync=(file,...args)=>{if(String(file).endsWith('delivery.journal'))throw Object.assign(new Error('denied'),{code:'EACCES'});return read(file,...args)};
+  fresh(f, String.raw`const read=fs.readFileSync,open=fs.openSync,reasons=[];let journalFd,denied=0;
+    fs.openSync=(file,...args)=>{const fd=open(file,...args);if(String(file).endsWith('delivery.journal'))journalFd=fd;return fd};
+    fs.readFileSync=(file,...args)=>{if(file===journalFd){denied++;throw Object.assign(new Error('denied'),{code:'EACCES'})}return read(file,...args)};
     syncBuiltinESMExports();const m=await import(eventUrl);
     assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:line=>reasons.push(line),deliver:()=>assert.fail('no replay')}),null);
+    assert.equal(denied,1,'the fault must reach the validated journal descriptor read');
     assert.match(reasons.join('\n'),/launcher-read-failed.*EACCES/);`)
   assert.equal(readdirSync(path.join(f.box, 'done')).length, 0, 'unreadable evidence must retain the claim')
   assert.equal(events.takeLauncherEvent('delegate', { ...f.options, deliver: () => assert.fail('durable print cannot replay') }), null)

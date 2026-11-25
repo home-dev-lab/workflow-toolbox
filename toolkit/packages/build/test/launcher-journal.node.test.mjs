@@ -190,13 +190,15 @@ test('journal compaction never truncates a hard-linked legacy checkpoint payload
 test('journal checkpoint creation rejects a hard link planted at its fresh candidate', (t) => {
   const f = fixture(t), lines = []; publish(f); output(f, lines); fillJournal(f); publish(f, 'B')
   const payload = path.join(f.box, 'pending', readdirSync(path.join(f.box, 'pending'))[0])
-  fresh(f, String.raw`const open=fs.openSync,before=fs.readFileSync(${JSON.stringify(payload)});let candidate,flags;
+  fresh(f, String.raw`const open=fs.openSync,before=fs.readFileSync(${JSON.stringify(payload)});let candidate,flags,planted=0;
     fs.openSync=(file,value,...args)=>{
-      if(/delivery(?:\.[0-9a-f-]{36})?\.next$/.test(String(file))){candidate=file;flags=value;fs.linkSync(${JSON.stringify(payload)},file)}
+      if(/delivery(?:\.[0-9a-f-]{36})?\.next$/.test(String(file))&&typeof value==='number'&&(value&fs.constants.O_CREAT)){
+        candidate=file;flags=value;planted++;fs.linkSync(${JSON.stringify(payload)},file)}
       return open(file,value,...args)};
     syncBuiltinESMExports();const m=await import(eventUrl),reasons=[];
     assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:r=>reasons.push(r),deliver:()=>assert.fail('collision must not print')}),null);
     assert.ok(candidate,'compaction must attempt a checkpoint');
+    assert.equal(planted,1,'plant only at checkpoint creation, not at the verification read');
     assert.deepEqual(fs.readFileSync(${JSON.stringify(payload)}),before,'exclusive checkpoint creation must preserve a planted hard link');
     assert.deepEqual(fs.readFileSync(candidate),before,'checkpoint collision must leave the planted candidate untouched');
     assert.ok(flags&fs.constants.O_EXCL,'checkpoint creation must use O_EXCL');

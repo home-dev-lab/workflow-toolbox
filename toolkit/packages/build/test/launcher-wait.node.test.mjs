@@ -155,7 +155,9 @@ test('event staging is unique, exclusive and nofollow where available', () => {
   const f = fixture(), module = new URL('../../../../plugin/bin/lib/host/launcher-events.mjs', import.meta.url).href
   const program = `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
     const opened = [], open = fs.openSync; fs.openSync = (file, flags, ...args) => {
-      if (String(file).endsWith('.tmp')) opened.push({file, flags}); return open(file, flags, ...args);
+      const writing = typeof flags === 'number' ? flags & fs.constants.O_WRONLY : String(flags).startsWith('w');
+      if (/\\.(?:tmp|ready)$/.test(String(file)) && writing) opened.push({file, flags, mode:args[0]});
+      return open(file, flags, ...args);
     }; syncBuiltinESMExports(); const m = await import(${JSON.stringify(module)});
     const delivered = [], opts = {stateRoot: ${JSON.stringify(f.stateRoot)}, deliver:event=>{delivered.push(event.line)}};
     for (const key of ['one', 'two']) { m.appendLauncherEvent('first', {key, line:key}, opts); m.takeLauncherEvent('first', opts); }
@@ -164,10 +166,14 @@ test('event staging is unique, exclusive and nofollow where available', () => {
   assert.equal(result.status, 0, result.stderr)
   const { opened, delivered, exclusive, nofollow } = JSON.parse(result.stdout)
   assert.deepEqual(delivered, ['one', 'two'], 'fixture delivery must be captured separately from its JSON diagnostic')
-  assert.equal(opened.length, 2, 'each event publication must explicitly create its own exclusive staging file')
-  assert.notEqual(opened[0].file, opened[1].file, 'staging names must be unique even in one process')
-  for (const { flags } of opened) {
+  assert.equal(opened.length, 4, 'each publication must create both its retained staging file and its ready source')
+  assert.equal(new Set(opened.map(({ file }) => file)).size, 4, 'all staging and ready names must be unique even in one process')
+  for (const suffix of ['.tmp', '.ready']) {
+    assert.equal(opened.filter(({ file }) => file.endsWith(suffix)).length, 2, `each publication must create a ${suffix} file`)
+  }
+  for (const { flags, mode } of opened) {
     assert.ok(flags & exclusive, 'staging must be created with O_EXCL (wx)')
     if (nofollow) assert.ok(flags & nofollow, 'staging must use O_NOFOLLOW where available')
+    assert.equal(mode, 0o600, 'staging and ready sources must be private at creation')
   }
 })
