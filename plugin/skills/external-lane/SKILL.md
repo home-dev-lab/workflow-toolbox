@@ -75,8 +75,14 @@ reports delivery unknown, retains the claim and may replay. The precise duplicat
 is one extra output per crash or failed commit between stdout and a durable printed
 record; arbitrarily repeated interruptions in that window have no finite total bound.
 After printed is durable, done-file rename failures never cause another output.
-The journal compacts at 64 KiB via one fsync'd checkpoint and atomic replacement; it is
-bounded by that threshold plus three maximum 1099-byte frames, plus one checkpoint.
+The journal compacts at 64 KiB via a uniquely named, exclusively created (`O_EXCL`)
+fsync'd checkpoint and atomic replacement; pre-existing hard links are never truncated.
+The active journal is bounded by that threshold plus three maximum 1099-byte frames.
+Abandoned checkpoints left by process death are not delivery evidence; their aggregate
+storage is not bounded under repeated crashes and they are not automatically collected.
+The race and compaction tests exercise selected schedules and empty-checkpoint crash
+boundaries, not exhaustive interleavings or a hardware power-loss simulation. See the
+[delivery design note](references/launcher-event-delivery.md) for proof limits.
 File fsync and process-death recovery apply on Linux, macOS and Windows; directory
 fsync is unavailable through portable Node on Windows, and macOS fsync is not
 F_FULLFSYNC. Unconditional hardware power-loss durability is not claimed.

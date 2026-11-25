@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, linkSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { test } from 'node:test'
-import { events, fixture, fresh, held, moduleUrl } from './helpers/launcher-fixtures.mjs'
+import { events, fixture, fresh, held, moduleUrl, repo } from './helpers/launcher-fixtures.mjs'
 
 function journalFile(f) {
   const file = path.join(f.box, 'delivery.journal')
@@ -34,8 +34,9 @@ test('journal HIGH: EIO with no printed evidence retains the claim until a reada
   const f = fixture(t); publish(f)
   await killAt(t, f, String.raw`const m=await import(eventUrl);
     m.takeLauncherEvent('delegate',{...options,deliver:()=>hold()});`)
-  fresh(f, String.raw`const read=fs.readFileSync;
-    fs.readFileSync=(file,...args)=>{if(String(file).endsWith('delivery.journal')||String(file).endsWith('.printed'))
+  fresh(f, String.raw`const read=fs.readFileSync,open=fs.openSync;let journalFd;
+    fs.openSync=(file,...args)=>{const fd=open(file,...args);if(String(file).endsWith('delivery.journal'))journalFd=fd;return fd};
+    fs.readFileSync=(file,...args)=>{if(file===journalFd||String(file).endsWith('delivery.journal')||String(file).endsWith('.printed'))
       throw Object.assign(new Error('transient storage failure'),{code:'EIO'});return read(file,...args)};
     syncBuiltinESMExports();const m=await import(eventUrl),reasons=[];
     assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:r=>reasons.push(r),deliver:()=>assert.fail('unreadable evidence must not print')}),null);
@@ -173,11 +174,70 @@ test('journal growth is bounded across repeated compactions and failed output', 
   output(f, lines); assert.equal(lines.at(-1), 'retry')
 })
 
+test('journal compaction never truncates a hard-linked legacy checkpoint payload', (t) => {
+  const f = fixture(t), lines = []; publish(f); output(f, lines); fillJournal(f); publish(f, 'B')
+  const payload = path.join(f.box, 'pending', readdirSync(path.join(f.box, 'pending'))[0])
+  const before = readFileSync(payload), alias = path.join(f.box, 'delivery.next')
+  linkSync(payload, alias)
+  output(f, lines, { reportReason: () => {} })
+  const retainedPayload = path.join(f.box, 'tmp', `${path.basename(payload, '.json')}.tmp`)
+  assert.deepEqual(readFileSync(retainedPayload), before, 'compaction must not truncate a pre-existing hard-linked payload')
+  assert.deepEqual(readFileSync(alias), before, 'compaction must leave the legacy checkpoint alias untouched')
+  assert.deepEqual(lines, ['A', 'B'], 'a planted checkpoint alias must not prevent delivery')
+  assert.equal(doneCount(f), 2)
+})
+
+test('journal checkpoint creation rejects a hard link planted at its fresh candidate', (t) => {
+  const f = fixture(t), lines = []; publish(f); output(f, lines); fillJournal(f); publish(f, 'B')
+  const payload = path.join(f.box, 'pending', readdirSync(path.join(f.box, 'pending'))[0])
+  fresh(f, String.raw`const open=fs.openSync,before=fs.readFileSync(${JSON.stringify(payload)});let candidate,flags;
+    fs.openSync=(file,value,...args)=>{
+      if(/delivery(?:\.[0-9a-f-]{36})?\.next$/.test(String(file))){candidate=file;flags=value;fs.linkSync(${JSON.stringify(payload)},file)}
+      return open(file,value,...args)};
+    syncBuiltinESMExports();const m=await import(eventUrl),reasons=[];
+    assert.equal(m.takeLauncherEvent('delegate',{...options,reportReason:r=>reasons.push(r),deliver:()=>assert.fail('collision must not print')}),null);
+    assert.ok(candidate,'compaction must attempt a checkpoint');
+    assert.deepEqual(fs.readFileSync(${JSON.stringify(payload)}),before,'exclusive checkpoint creation must preserve a planted hard link');
+    assert.deepEqual(fs.readFileSync(candidate),before,'checkpoint collision must leave the planted candidate untouched');
+    assert.ok(flags&fs.constants.O_EXCL,'checkpoint creation must use O_EXCL');
+    assert.equal(flags&fs.constants.O_TRUNC,0,'checkpoint creation must never use O_TRUNC');
+    if(fs.constants.O_NOFOLLOW)assert.ok(flags&fs.constants.O_NOFOLLOW);
+    assert.match(reasons.join('\n'),/EEXIST/);`)
+  output(f, lines); assert.deepEqual(lines, ['A', 'B'], 'retry must use a different checkpoint name')
+})
+
+test('journal parsing reads the validated descriptor after pathname replacement', (t) => {
+  const f = fixture(t)
+  events.takeLauncherEvent('delegate', f.options)
+  fresh(f, String.raw`const file=${JSON.stringify(journalFile(f))},open=fs.openSync,stat=fs.fstatSync,read=fs.readFileSync;let journalFd,validatedFd,seen=false;
+    fs.openSync=(source,...args)=>{const fd=open(source,...args);if(source===file)journalFd=fd;return fd};
+    fs.fstatSync=fd=>{const info=stat(fd);if(fd===journalFd&&validatedFd===undefined){validatedFd=fd;
+      fs.renameSync(file,file+'.validated');fs.writeFileSync(file,'untrusted replacement')}return info};
+    fs.readFileSync=(source,...args)=>{if(source===validatedFd){seen=true;return read(source,...args)}
+      assert.notEqual(source,file,'journal parsing must not reopen the validated pathname');return read(source,...args)};
+    syncBuiltinESMExports();const m=await import(${JSON.stringify(moduleUrl('lib/host/launcher-journal.mjs'))});
+    const journal=m.openLauncherJournal({box:${JSON.stringify(f.box)}},options);
+    try{assert.ok(seen,'journal parsing must read the fstat-validated descriptor');assert.deepEqual(journal.transactions,[])}
+    finally{m.closeLauncherJournal(journal)}`)
+})
+
+test('journal documentation scopes recovery proofs and repeated-interruption bounds', () => {
+  const design = readFileSync(path.join(repo, 'plugin/skills/external-lane/references/launcher-event-delivery.md'), 'utf8')
+  const skill = readFileSync(path.join(repo, 'plugin/skills/external-lane/SKILL.md'), 'utf8')
+  for (const text of [design, skill]) {
+    assert.match(text, /repeated interruptions[\s\S]*no finite total bound/i, 'delivery contract must not imply a finite lifetime replay bound')
+    assert.match(text, /abandoned checkpoints[\s\S]*not bounded/i, 'delivery contract must distinguish journal bytes from abandoned checkpoint storage')
+  }
+  assert.match(design, /do not enumerate all schedules/i, 'race examples must not be described as exhaustive scheduling proofs')
+  assert.match(design, /empty checkpoint/i, 'compaction crash examples must name the checkpoint contents they exercise')
+  assert.match(design, /not a power-loss simulation/i, 'process-death tests must not imply hardware durability')
+})
+
 for (const phase of ['checkpoint-write', 'before-replace', 'after-replace']) {
   test(`journal compaction crash: ${phase} retains the pending event`, async (t) => {
     const f = fixture(t), lines = []; publish(f); output(f, lines); fillJournal(f); publish(f, 'B')
     const body = String.raw`const open=fs.openSync,write=fs.writeSync,rename=fs.renameSync,sync=fs.fsyncSync;let nextFd;
-      fs.openSync=(file,...args)=>{const fd=open(file,...args);if(String(file).endsWith('delivery.next'))nextFd=fd;return fd};
+      fs.openSync=(file,...args)=>{const fd=open(file,...args);if(/delivery(?:\.[0-9a-f-]{36})?\.next$/.test(String(file)))nextFd=fd;return fd};
       fs.fsyncSync=fd=>{if(fd===nextFd&&${JSON.stringify(phase)}==='checkpoint-write'){write(fd,'torn');hold()}sync(fd)};
       fs.renameSync=(from,to)=>{if(String(to).endsWith('delivery.journal')&&${JSON.stringify(phase)}==='before-replace')hold();
         rename(from,to);if(String(to).endsWith('delivery.journal')&&${JSON.stringify(phase)}==='after-replace')hold()};

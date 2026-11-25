@@ -1,8 +1,8 @@
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, openSync, readFileSync, writeSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { refuseEventSymlink } from './launcher-event-io.mjs'
-import { eventOperation, eventReason } from './launcher-maildir.mjs'
+import { eventOperation, eventReason, removeEventFile } from './launcher-maildir.mjs'
 
 export const JOURNAL_LIMIT = 65_536
 export const JOURNAL_FRAME_MAX = 1_099
@@ -70,7 +70,7 @@ export function openLauncherJournal(paths, options) {
     const info = fstatSync(fd)
     if (!info.isFile() || info.nlink !== 1) throw new Error('launcher-journal-not-private-file')
     if (info.size > JOURNAL_LIMIT + 3 * JOURNAL_FRAME_MAX) throw new Error('launcher-journal-size-limit')
-    const parsed = parseJournal(readFileSync(file))
+    const parsed = parseJournal(readFileSync(fd))
     if (parsed.torn) {
       ftruncateSync(fd, parsed.offset); fsyncSync(fd)
       eventReason(options, 'launcher-journal-torn-tail-retained')
@@ -120,15 +120,17 @@ export function compactLauncherJournal(journal, options) {
   if (journal.bytes < JOURNAL_LIMIT) return
   const retained = journal.transactions.filter((item) => !item.projected)
   const bytes = Buffer.concat(retained.flatMap((item) => item.records.map(journalFrame)))
-  const next = path.join(path.dirname(journal.file), 'delivery.next'); refuseEventSymlink(next)
-  const fd = openSync(next, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0), 0o600)
-  try { writeFrame(fd, bytes); fsyncSync(fd) } finally { closeSync(fd) }
-  // No descriptor for the replaced journal remains open on Windows.
-  closeSync(journal.fd); journal.fd = undefined
-  eventOperation('rename', next, journal.file, options)
-  syncJournalDirectory(path.dirname(journal.file), options)
-  journal.fd = openSync(journal.file, constants.O_RDWR | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0))
-  journal.bytes = bytes.length; journal.transactions = retained
+  const next = path.join(path.dirname(journal.file), `delivery.${randomUUID()}.next`)
+  const fd = openSync(next, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
+  try {
+    try { writeFrame(fd, bytes); fsyncSync(fd) } finally { closeSync(fd) }
+    // No descriptor for the replaced journal remains open on Windows.
+    closeSync(journal.fd); journal.fd = undefined
+    eventOperation('rename', next, journal.file, options)
+    syncJournalDirectory(path.dirname(journal.file), options)
+    journal.fd = openSync(journal.file, constants.O_RDWR | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0))
+    journal.bytes = bytes.length; journal.transactions = retained
+  } finally { removeEventFile(next, options) }
 }
 
 export function closeLauncherJournal(journal) {

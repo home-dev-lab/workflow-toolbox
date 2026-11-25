@@ -157,12 +157,13 @@ test('event staging is unique, exclusive and nofollow where available', () => {
     const opened = [], open = fs.openSync; fs.openSync = (file, flags, ...args) => {
       if (String(file).endsWith('.tmp')) opened.push({file, flags}); return open(file, flags, ...args);
     }; syncBuiltinESMExports(); const m = await import(${JSON.stringify(module)});
-    const opts = {stateRoot: ${JSON.stringify(f.stateRoot)}};
+    const delivered = [], opts = {stateRoot: ${JSON.stringify(f.stateRoot)}, deliver:event=>{delivered.push(event.line)}};
     for (const key of ['one', 'two']) { m.appendLauncherEvent('first', {key, line:key}, opts); m.takeLauncherEvent('first', opts); }
-    console.log(JSON.stringify({opened, exclusive:fs.constants.O_EXCL, nofollow:fs.constants.O_NOFOLLOW ?? 0}));`
+    console.log(JSON.stringify({opened, delivered, exclusive:fs.constants.O_EXCL, nofollow:fs.constants.O_NOFOLLOW ?? 0}));`
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], { encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
-  const { opened, exclusive, nofollow } = JSON.parse(result.stdout)
+  const { opened, delivered, exclusive, nofollow } = JSON.parse(result.stdout)
+  assert.deepEqual(delivered, ['one', 'two'], 'fixture delivery must be captured separately from its JSON diagnostic')
   assert.equal(opened.length, 2, 'each event publication must explicitly create its own exclusive staging file')
   assert.notEqual(opened[0].file, opened[1].file, 'staging names must be unique even in one process')
   for (const { flags } of opened) {
