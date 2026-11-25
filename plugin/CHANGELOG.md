@@ -26,6 +26,27 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Windows: the three `quota-watch-account-cache` cases listed in 0.202.0 still fail on native Windows, and the new `suite-lock-resources` case "a process past its address space release counts zero resident memory" fails there too. Linux is unaffected.
 - macOS (GitHub-hosted runner only): the two `lifecycle-owned-lanes` "pending stop permits extend/abandon of the lifecycle own lane" cases listed in 0.202.0 still fail on the `macos-latest` runner. The full suite passes on a real Mac for the release candidate (0 failures in 19323 tests).
 
+### Quality
+
+Measured on the release tree against the committed baseline (`pnpm quality:delta`). No judge total regressed against that baseline: typecheck, lint, `pnpm quality` and `pnpm quality:delta` exited 0. Against 0.202.0's figures, coverage moved down: lines 84.91 % -> 84.27 %, branches 77.06 % -> 76.28 %, functions 88.42 % -> 87.34 %, statements 83.18 % -> 82.47 %.
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 126 -> 112 | -14 | - -> - | - |
+| Cognitive complexity | 268 -> 129 | -139 | 84 -> 84 | - |
+| Biggest file (lines) | 2719 -> 2655 | -64 | 2719 -> 2655 | plugin/bin/wt-observe.mjs, toolkit/packages/debugger/src/observe-cli.ts |
+| Longest function (lines) | 700 -> 480 | -220 | 238 -> - | - |
+| Max depth | 7 -> 7 | 0 | 7 -> 7 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 684 -> 646 | -38 | 36 -> 35 | plugin/bin/wt-observe.mjs, plugin/bin/wt-artifact-server.mjs |
+| Duplication % | 2.432415513803064 -> 1.8115942028985508 | -0.62 | - -> - | - |
+| Knip issues | 196 -> 183 | -13 | - -> - | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 78.61 -> 84.27 | +5.66 | 0 -> 0 | plugin/bin/wt-observe.mjs |
+| Coverage branches % | 69.76 -> 76.28 | +6.52 | 0 -> 0 | plugin/bin/wt-observe.mjs |
+| Coverage functions % | 80.86 -> 87.34 | +6.48 | 0 -> 0 | plugin/bin/wt-observe.mjs |
+| Coverage statements % | 76.5 -> 82.47 | +5.97 | 0 -> 0 | plugin/bin/wt-observe.mjs |
+
 ## [0.202.0] - 2026-11-24
 
 ### Added
