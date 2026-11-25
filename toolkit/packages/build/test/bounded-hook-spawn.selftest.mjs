@@ -73,7 +73,7 @@ function generatedLauncherTemplates() {
   return templates
 }
 
-function runRelocatedLauncher(template) {
+function runRelocatedLauncher(template, remove = rmSync) {
   const root = mkdtempSync(join(tmpdir(), 'bounded-launcher-import-'))
   try {
     mkdirSync(join(root, '.lane'))
@@ -83,22 +83,45 @@ function runRelocatedLauncher(template) {
     writeFileSync(log, 'LANE_NONCE=fixture\n')
     writeFileSync(brief, `Write the report to \`${report}\``)
     const render = new Function('BOUNDED_SPAWN_URL', 'fakeSource', 'realLauncher', 'hermeticPath', 'helperSource', 'old', `return ${template}`)
-    writeFileSync(file, render(moduleUrl, '', cli, () => process.env.PATH, 'process.exit(0)', cli))
+    const helperSource = "setTimeout(() => require('node:fs').writeFileSync(require('node:path').join(process.argv[1], 'helper-finished'), 'done'), 250)"
+    const source = render(moduleUrl, '', cli, () => process.env.PATH, helperSource, cli)
+    // The detached helper inherits this fixture's cwd. Keep its handle referenced and
+    // wait for close before the launcher exits, so spawnSync also waits for the helper.
+    const waitForHelper = `
+      if (typeof helper !== 'undefined') await new Promise((resolve, reject) => {
+        helper.once('error', reject);
+        helper.once('close', resolve);
+        helper.ref();
+      });
+    `
+    writeFileSync(file, source + waitForHelper)
     const result = nativeSpawnSync(process.execPath, [file, '--dir', root, '--log', log, '--brief', brief], {
       cwd: root, encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL',
     })
     assert.equal(result.error, undefined)
     assert.equal(result.status, 0, result.stderr)
     assert.equal(result.stderr, '')
+    if (template.includes('helper.unref()')) assert.ok(existsSync(join(root, 'helper-finished')), 'detached helper must finish before launcher cleanup')
     if (existsSync(report)) assert.equal(readFileSync(report, 'utf8'), 'report\n')
     else assert.equal(result.stdout, 'pid=0\n')
-  } finally { rmSync(root, { recursive: true, force: true }) }
+  } finally { remove(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) }
 }
 
 test('all generated synchronous lifecycle launchers resolve the bounded helper from temporary directories', () => {
   const templates = generatedLauncherTemplates()
   assert.equal(templates.length, 4, 'every generated synchronous launcher must carry its relocatable helper URL')
   for (const template of templates) runRelocatedLauncher(template)
+})
+
+test('relocated launcher cleanup configures retries and reports a removal error', () => {
+  const error = Object.assign(new Error('fixture removal denied'), { code: 'EPERM' })
+  const remove = (root, options) => {
+    try {
+      assert.deepEqual(options, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      throw error
+    } finally { rmSync(root, options) }
+  }
+  assert.throws(() => runRelocatedLauncher(generatedLauncherTemplates()[0], remove), candidate => candidate === error)
 })
 
 function fixture() {
