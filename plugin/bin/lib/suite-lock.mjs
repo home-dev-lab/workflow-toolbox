@@ -23,6 +23,9 @@ import { assertParkClaim, finishParkQueue, grantParkState, liveParkedTickets, pa
 import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 import { cleanSuiteRecoveryFiles, journalReclaimedHolder, reapSuiteTicket, removeLeaseTickets } from './host/suite-lock-recovery.mjs'
 import { claimSuiteSection, RECLAIM_BUSY, RECLAIM_DIR_STALE_MS, retrySuiteSection } from './host/suite-lock-section.mjs'
+import { pollReservationLease, readReservationState, releaseReservationLease, reservationLeaseHeld, reservationMarkerEnabled, reservationQueueStatus, reservationStateVisible, RESERVATION_PROTOCOL } from './host/suite-lock-reservations.mjs'
+import { publishReservationRetry } from './host/suite-lock-memory-retry.mjs'
+import { prepareJournalTicket, takeJournalTicket } from './suite-lock-journal-lifecycle.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
@@ -87,8 +90,11 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
+  const managed = reservationStateVisible(current.root)
+  const queue = managed ? reservationQueueStatus(current.root, tickets) : tickets
+  const snapshot = suiteLockStatusSnapshot(current, queue, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root), readSuiteLockRankState(current.root, tickets))
   snapshot.resourceClasses = readSuiteResourceClasses(current.root)
+  snapshot.reservations = managed ? readReservationState(current.root) : null
   snapshot.parked = parkStatusEntries(readSuiteLockParked(path.join(current.root, 'queue.d'), options, now), now)
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
@@ -120,8 +126,10 @@ export function holderIsStale(lock, options = {}) {
   if (pidProvesGone(lock.holder, options)) return true
   // Windows signalability does not prove process identity: after this conservative age bound,
   // reclaiming avoids a recycled PID making a crashed holder permanent. POSIX never uses age alone.
-  return platform === 'win32' && lock.ageMs !== null && lock.ageMs >= staleMs
+  return holderAgeExpired(lock, platform, staleMs)
 }
+
+const holderAgeExpired = (lock, platform, staleMs) => platform === 'win32' && lock.ageMs !== null && lock.ageMs >= staleMs
 
 // A holder record is read from a file any local process can write, then printed on a terminal and
 // into logs: control characters (escape sequences, newlines, C1, bidi overrides) are replaced and the
@@ -217,12 +225,14 @@ function tryTakeLock(lockDir, holder, beforePublish) {
   } catch (error) {
     // Reclaimed as half-created while this acquirer was suspended: the lock is no longer mine, and the
     // lock.d now there may be someone else's.
-    if (error?.code === 'ENOENT' || error?.code === 'EEXIST') return false
+    if (unpublishedLockDisappeared(error)) return false
     rmSync(lockDir, { recursive: true, force: true })
     throw error
   }
   return true
 }
+
+const unpublishedLockDisappeared = (error) => error?.code === 'ENOENT' || error?.code === 'EEXIST'
 
 // Returns true only when it removed the stale holder, so the caller retries at once; otherwise the
 // caller's timeout check and sleep run (no spin behind another reclaimer's, or an abandoned, reclaim.d).
@@ -230,8 +240,9 @@ function tryTakeLock(lockDir, holder, beforePublish) {
 const sameInstance = (left, right) => {
   if (left === null || right === null) return left === right
   if (left?.leaseId && right?.leaseId) return left.leaseId === right.leaseId
-  return left?.pid === right?.pid && left?.startedAt === right?.startedAt
+  return sameLegacyInstance(left, right)
 }
+const sameLegacyInstance = (left, right) => left?.pid === right?.pid && left?.startedAt === right?.startedAt
 
 // Removes the judged lock instance and nothing newer: lock.d is renamed aside, and deleted only
 // if the holder that moved is the one judged; a newer instance (a holder that acquired in between) is
@@ -297,7 +308,7 @@ function waiterRecord(options, counter, priority, p0Fields) {
     startedAt: new Date(suiteLockNow(options)).toISOString(),
     level: priority === 'release' ? 0 : Number(priority[1]),
     ...(priority === 'release' ? { priority: 'release' } : {}),
-    ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
+    ...queueClassFields(options, counter),
     levelOrderVersion: options.staticDomain ? BOUNDED_P0_ORDER_VERSION : SUITE_LOCK_ORDER_VERSION,
     project: normalizeSuiteLockProject(options.project), size: options.size,
     ...p0Fields,
@@ -305,8 +316,12 @@ function waiterRecord(options, counter, priority, p0Fields) {
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
     startTime: options.startTime ?? processStartTime(process.pid),
     ...replacementQueueFields(options),
+    ...(options.reservation === true ? { reservationProtocol: RESERVATION_PROTOCOL } : {}),
   }, options, priority)
 }
+
+const queueClassFields = (options, counter) => options.light === true
+  ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }
 
 function describeWait(place, current, record) {
   const holder = current.held ? formatSuiteLockHolder(current.holder) : 'holder none (handing over)'
@@ -369,6 +384,7 @@ function pollQueue(state, options) {
   assertParkClaim(state)
   heartbeatTicket(queueDir, ticket, record, !state.resumed)
   const place = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
+  if (record.reservationProtocol === RESERVATION_PROTOCOL) return pollManagedReservation(state, place, options)
   if (place.ahead === 0) {
     const holder = journalHolder(record, options, suiteLockNow(options))
     delete holder.lightGrantsAtQueue // queue-only: what a full suite records to bound how often light runs pass it
@@ -390,6 +406,20 @@ function pollQueue(state, options) {
   // Only the head of the queue reclaims (acquisition also withdraws while reclaim.d exists, see tryTakeLock).
   if (headReclaimed(place, current, root, lockDir, options)) return { again: true, place }
   return { place, current }
+}
+
+function pollManagedReservation(state, place, options) {
+  for (const root of [state.root, staticLeaseRoot(state.root)]) {
+    const current = readSuiteLock({ root })
+    if (headReclaimed(place, current, root, current.lockDir, options)) return { again: true, place }
+  }
+  const holder = journalHolder(state.record, options, suiteLockNow(options))
+  const lease = pollReservationLease(state, holder, options)
+  if (!lease) return { place, current: readSuiteLock({ root: state.root }) }
+  notePublishedLease(lease, options, releaseSuiteLock)
+  options.afterPublish?.()
+  closeQueuedReplacement(state, options.replacementSeams, options.onWait)
+  return { lease }
 }
 
 function admitPublishedLease(state, holder, place, options) {
@@ -435,9 +465,9 @@ async function acquireSuiteLock(options = {}) {
   const broker = suiteBroker(env)
   if (broker && !options.root) return acquireBrokerSuiteLock(broker, options)
   const root = domain
-  const waiting = prepareSuiteWait(root, options, env, priority)
+  const waiting = prepareSuiteWait(root, reservationRequestOptions(root, options), env, priority)
   const { lockDir, queueDir, record } = waiting
-  const ticket = await retryTransient(() => takeParkTicket(queueDir, record, options, parkOwnerJudge(options)), HEAD_OF_QUEUE_POLL_MS, () => options.signal)
+  const ticket = await retryTransient(() => takeAcquisitionTicket(queueDir, record, options), HEAD_OF_QUEUE_POLL_MS, () => options.signal)
   const state = { root, lockDir, queueDir, ticket, record, ...parkQueueMetadata(record) }
   try {
     while (true) {
@@ -456,6 +486,23 @@ async function acquireSuiteLock(options = {}) {
   } finally {
     try { finishQueuedReplacement(state) } finally { finishParkQueue(state, options.park, () => removeTicket(queueDir, ticket)) }
   }
+}
+
+function reservationRequestOptions(root, options) {
+  if (options.reservation !== true || reservationMarkerEnabled(root)) return options
+  return { ...options, reservation: false }
+}
+
+function takeAcquisitionTicket(queueDir, record, options) {
+  if (!options.requeue) return takeParkTicket(queueDir, record, options, parkOwnerJudge(options))
+  const leaseId = options.requeue.retryRecord?.leaseId ?? record.leaseId
+  for (const key of Object.keys(record)) delete record[key]
+  Object.assign(record, options.requeue.retryRecord ?? options.requeue.record, { leaseId })
+  delete record.journal
+  const ticket = options.requeue.ticket
+  prepareJournalTicket(queueDir, record, ticket, ticket)
+  publishReservationRetry(queueDir, ticket, record)
+  return takeJournalTicket(queueDir, record, ticket)
 }
 
 function suiteBroker(env) {
@@ -586,6 +633,7 @@ export function releaseSuiteLock(lease, outcome = {}) {
   if (lease?.broker) {
     return finishBrokerLease(lease, outcome)
   }
+  if (lease?.reservationLease) return releaseReservationLease(lease, suiteResourceReleaseOutcome(suiteLockReleaseOutcome(lease, outcome)))
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
   if (!sameInstance(current.holder, lease.holder)) return false
@@ -655,13 +703,16 @@ function coveredSuiteLease(env, domain, staticRequest) {
   const { token, staticToken, id } = parsed
   // The connection-owning ancestor stops its tree on loss. A typed static grant
   // only covers static children; exclusive work must acquire the main queue.
-  if (domain.startsWith('broker:')) return staticToken && !staticRequest ? null : token
+  if (domain.startsWith('broker:')) return coveredBrokerToken(staticToken, staticRequest, token)
   if (readSuiteLock({ root: domain }).holder?.leaseId === id) return id
+  if (reservationLeaseHeld(domain, id)) return id
   if (readSuiteLock({ root: staticLeaseRoot(domain) }).holder?.leaseId === id) return staticRequest ? `static:${id}` : null
   const error = new Error(`suite lease ${id} from WT_SUITE_LEASE is no longer held; inspect with wt-suite-lock status`)
   error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
   throw error
 }
+
+const coveredBrokerToken = (staticToken, staticRequest, token) => staticToken && !staticRequest ? null : token
 
 export async function hasSuiteLeaseAsync(env = process.env, options = {}) {
   return Boolean(coveredSuiteLease(env, suiteLeaseDomain({ ...options, env }), options.static === true && staticLaneEnabled(env)))
@@ -670,6 +721,7 @@ export async function hasSuiteLeaseAsync(env = process.env, options = {}) {
 export function operatorReleaseSuiteLock(options = {}) {
   const current = readSuiteLock(options)
   if (!current.held) return { released: false, reason: 'free', holder: null }
+  if (current.holder?.reservationProtocol) return { released: false, reason: 'live', holder: current.holder }
   if (!options.force && !holderIsStale(current, options)) return { released: false, reason: 'live', holder: current.holder }
   options.beforeOperatorReclaim?.()
   // The same guarded critical section as a waiter's reclaim; busy when another holds it.
@@ -701,7 +753,7 @@ function resolveWindowsExecutable(executable, options = {}) {
   const env = options.env ?? process.env
   const exists = options.exists ?? ((candidate) => { try { return statSync(candidate).isFile() } catch { return false } })
   const pathExt = String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
-  if (String(executable).includes('/') || String(executable).includes('\\')) {
+  if (hasWindowsPath(executable)) {
     for (const extension of pathExt) {
       const candidate = `${executable}${extension}`
       if (exists(candidate)) return candidate
@@ -709,6 +761,12 @@ function resolveWindowsExecutable(executable, options = {}) {
     return null
   }
   const searchPath = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean)
+  return windowsExecutableInDirectories(searchPath, executable, pathExt, exists)
+}
+
+const hasWindowsPath = (executable) => String(executable).includes('/') || String(executable).includes('\\')
+
+function windowsExecutableInDirectories(searchPath, executable, pathExt, exists) {
   for (const directory of searchPath) {
     for (const extension of pathExt) {
       const candidate = path.join(directory, `${executable}${extension}`)

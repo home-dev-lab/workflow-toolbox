@@ -100,9 +100,10 @@ async function resume(f: Fixture, extra: Record<string, unknown> = {}) {
     const f = fixture()
     const parked = f.park()
     const result = f.run([...flags, '--wait-s', '0'], 'process.stdout.write("admitted")')
-    expect(result.status, 'parked tickets must not block admission').toBe(0)
+    expect(result.status, `parked tickets must not block fail-fast admission: ${result.stderr}`).toBe(0)
     expect(result.stdout).toBe('admitted')
     expect(existsSync(f.file(parked.number))).toBe(true)
+    expect(readSuiteLockStatus({ root: f.root }).reservations, 'zero wait must not require watchdog warm-up').toBeNull()
   })
 
   it('restores the original number, startedAt, class and all queue counter fields', async () => {

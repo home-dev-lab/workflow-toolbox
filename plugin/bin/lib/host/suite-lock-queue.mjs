@@ -162,7 +162,7 @@ export function putLockBack(aside, lockDir, options = {}) {
       rename(aside, lockDir)
       return true
     } catch (error) {
-      if (!blocking.includes(error?.code)) throw error
+      assertPutBackRetryable(error, blocking)
       if (readHolderIn(lockDir) !== null) {
         rmSync(aside, { recursive: true, force: true })
         return false
@@ -175,6 +175,10 @@ export function putLockBack(aside, lockDir, options = {}) {
       Atomics.wait(pause, 0, 0, PUT_BACK_STEP_MS)
     }
   }
+}
+
+function assertPutBackRetryable(error, blocking) {
+  if (!blocking.includes(error?.code)) throw error
 }
 
 export function discardDirectory(directory) {

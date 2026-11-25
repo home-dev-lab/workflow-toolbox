@@ -37,7 +37,8 @@ function queueEntry(ticket, position, now) {
     level: numericLevel(record?.level) ? record.level : null,
     effectiveLevel: ticket.effectiveLevel === undefined ? effectiveLevel(record, now) : ticket.effectiveLevel,
     light: record?.light === true, release: record?.priority === 'release',
-    waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(safeArgv(record?.argv)) }
+    waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(safeArgv(record?.argv)),
+    ...(ticket.reservation ? { reservation: ticket.reservation } : {}) }
 }
 
 export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0Counter, rankState) {
@@ -68,10 +69,19 @@ function queueLevel(entry) {
 }
 function queueKind(entry) {
   if (entry.release) return 'release'
-  return entry.light ? 'light' : 'exclusive'
+  if (entry.light) return 'light'
+  return entry.reservation?.mode === 'reservation' ? 'reserved' : 'exclusive'
 }
 function queueLine(entry) {
-  return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})${entry.reason?.line ? ', ' + entry.reason.line : ''}`
+  return `  ${finite(entry.position) ?? 'unknown'}. ${queueLevel(entry)} ${queueKind(entry)}${entry.stale ? ' stale' : ''}, pid ${pidNumber(entry.pid) ?? 'unknown'}, waiting ${formatSuiteLockDuration(entry.waitedMs)} (${displayText(entry.argv)})${entry.reason?.line ? ', ' + entry.reason.line : ''}${queueReservationLine(entry.reservation)}`
+}
+
+function queueReservationLine(reservation) {
+  if (!reservation) return ''
+  if (reservation.unknown) return `, reservation unknown (${displayText(reservation.unknown)})`
+  const cores = Number.isFinite(reservation.cores) ? reservation.cores.toFixed(2) : 'unknown'
+  const memory = Number.isFinite(reservation.memMiB) ? reservation.memMiB.toFixed(2) : 'unknown'
+  return `, ${reservation.mode === 'exclusive' ? 'exclusive ' : ''}reservation ${cores} cores, ${memory} MiB (${displayText(reservation.basis)})`
 }
 
 function parkedLine(entry) {
@@ -116,7 +126,15 @@ export function formatSuiteLockStatus(current, holderText, { resources = false }
   lines.push(...queue.map(queueLine))
   lines.push(...parkedStatusRows(current).map(parkedLine))
   if (resources) lines.push(...resourceClassLines(current.resourceClasses))
+  lines.push(...reservationStatusLines(current))
   return lines.map(displayText).join('\n') + '\n'
+}
+
+function reservationStatusLines(current) {
+  const lines = []
+  if (current.reservations?.holders.length) lines.push(`reservation holders: ${current.reservations.holders.length}; inspect wt-suite-lock status --json`)
+  if (current.reservations?.memory?.unknown) lines.push(`memory watchdog unknown: ${current.reservations.memory.unknown}; admission closed`)
+  return lines
 }
 
 function resourceClassLines(classes = {}) {
@@ -130,5 +148,10 @@ export function suiteLockStatusJson(current) {
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
     ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
     ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}), parked: safeValue(parkedStatusRows(current)),
-    ...(current.resourceClasses ? { resourceClasses: safeValue(current.resourceClasses) } : {}) }
+    ...optionalResourceStatus(current) }
+}
+
+function optionalResourceStatus(current) {
+  return { ...(current.resourceClasses ? { resourceClasses: safeValue(current.resourceClasses) } : {}),
+    ...(current.reservations ? { reservations: safeValue(current.reservations) } : {}) }
 }

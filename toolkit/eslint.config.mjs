@@ -253,6 +253,19 @@ export default tseslint.config(
     },
   },
   {
+    files: ['plugin/bin/lib/suite-lock.mjs', 'plugin/bin/lib/suite-lock-status.mjs',
+      'plugin/bin/lib/suite-lock-admission.mjs', 'plugin/bin/lib/host/suite-lock-{machine,reservations,watchdog,journal-append}.mjs',
+      '../plugin/bin/lib/suite-lock.mjs', '../plugin/bin/lib/suite-lock-status.mjs',
+      '../plugin/bin/lib/suite-lock-admission.mjs', '../plugin/bin/lib/host/suite-lock-{machine,reservations,watchdog,journal-append}.mjs',
+      'toolkit/test-support/suite-lock-admission*.selftest.mjs', 'test-support/suite-lock-admission*.selftest.mjs',
+      'toolkit/packages/build/test/suite-lock-admission.test.ts', 'packages/build/test/suite-lock-admission.test.ts'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+      '@typescript-eslint/no-explicit-any': 'error',
+    },
+  },
+  {
     // Warn-first areas use the same ceilings; a follow-up sets their warning ratchets.
     // Espree enforces JavaScript parse errors (the TypeScript parser permits top-level return).
     files: newAreaQualityFiles,

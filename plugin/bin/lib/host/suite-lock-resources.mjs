@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { readFile, readdir } from 'node:fs/promises'
+import { constants } from 'node:os'
 import { createProcfs } from './procfs.mjs'
 import { unknownSuiteResources } from '../suite-lock-resources.mjs'
 
@@ -28,7 +29,7 @@ function linuxStat(pid, stat, ticks) {
   const [ppid, user, system, birth, childUser, childSystem] = [fields[1], fields[11], fields[12], fields[19], fields[13], fields[14]].map(Number)
   if (fields.length < 20 || ![ppid, user, system, birth, childUser, childSystem].every(nonnegative)) throw new Error('invalid stat')
   return { pid: Number(pid), ppid, identity: `${pid}:${birth}`, cpuMs: (user + system + childUser + childSystem) / ticks * 1000,
-    childCpuMs: (childUser + childSystem) / ticks * 1000 }
+    childCpuMs: (childUser + childSystem) / ticks * 1000, zombie: fields[0] === 'Z' }
 }
 
 async function linuxRows(procfs, ticks, signal) {
@@ -59,44 +60,124 @@ function linuxClockTicks(run) {
   return clockTickReads.get(run)
 }
 
-function coherentRetainedRows(rows, missing, retained) {
-  const current = new Map(rows.map((row) => [row.identity, row]))
-  const previous = new Map([...retained.values()].map((row) => [row.pid, row]))
-  const transfers = new Map()
-  for (const [identity, before] of retained) {
-    if (missing.has(String(before.pid))) return false
-    const after = current.get(identity)
-    if (after) {
-      if (after.cpuMs < before.cpuMs || after.childCpuMs < before.childCpuMs) return false
-      continue
-    }
-    const parent = previous.get(before.ppid)
-    if (!parent || !current.has(parent.identity)) return false
-    transfers.set(parent.identity, (transfers.get(parent.identity) ?? 0) + before.cpuMs)
+function survivingAncestor(row, previous, current) {
+  const visited = new Set([row.pid])
+  let parent = previous.get(row.ppid)
+  while (parent && !visited.has(parent.pid)) {
+    if (parent.ignoresChildCpu || current.get(parent.identity)?.ignoresChildCpu) return undefined
+    if (current.has(parent.identity)) return parent.identity
+    visited.add(parent.pid)
+    parent = previous.get(parent.ppid)
   }
-  // Only observed child-counter transfers explain a vanished identity; own CPU does not.
-  return [...transfers].every(([identity, cpu]) => {
-    const transferred = current.get(identity).childCpuMs - retained.get(identity).childCpuMs
-    return transferred > 0 && transferred >= cpu
-  })
+  return undefined
 }
 
-async function linuxResourceTree(procfs, ticks, pid, retained, signal) {
-  const { rows, missing } = await linuxRows(procfs, ticks, signal)
-  // Separate stat reads cannot prove a coherent transfer to the parent's child counters.
-  if (!coherentRetainedRows(rows, missing, retained)) return unknown('census-incoherent')
-  const processes = selectFamily(rows, pid, retained)
-  for (const process of processes) {
-    const options = { encoding: 'utf8', signal }
-    const status = await procfs.readProcessStatus(process.pid, options)
-    const current = linuxStat(process.pid, await procfs.readProcessStat(process.pid, options), ticks)
-    if (current.identity !== process.identity) return unknown('pid-reused')
-    if (current.cpuMs < process.cpuMs || current.childCpuMs !== process.childCpuMs) return unknown('census-incoherent')
-    const rss = /^VmRSS:\s+(\d+)\s+kB\s*$/m.exec(status)
-    if (!rss) throw new Error('RSS unavailable')
-    process.memMiB = Number(rss[1]) / 1024
+function carryExitedCpu(current, retained, credits) {
+  const previous = new Map([...retained.values()].map((row) => [row.pid, row]))
+  const carried = new Map()
+  const add = (identity, cpu) => carried.set(identity, (carried.get(identity) ?? 0) + cpu)
+  for (const [identity, cpu] of credits) {
+    add(current.has(identity) ? identity : survivingAncestor(retained.get(identity) ?? {}, previous, current), cpu)
   }
-  return { processes }
+  for (const [identity, before] of retained) {
+    if (!current.has(identity)) add(survivingAncestor(before, previous, current), before.cpuMs)
+  }
+  return carried
+}
+
+function retainedCpuTotal(processes, retained, credits) {
+  const current = new Map(processes.map((row) => [row.identity, row]))
+  const carried = carryExitedCpu(current, retained, credits)
+  for (const row of processes) {
+    const before = retained.get(row.identity)
+    const transferred = before ? row.childCpuMs - before.childCpuMs : 0
+    carried.set(row.identity, Math.max(0, (carried.get(row.identity) ?? 0) - transferred))
+  }
+  credits.clear()
+  for (const [identity, cpu] of carried) if (cpu > 0) credits.set(identity, cpu)
+  // Difference whole-family own + reaped-child CPU, carrying already observed time
+  // until its ancestor's child counters absorb it. Unreconcilable exits (reparenting
+  // outside the tracked tree or SIGCHLD ignored) lose at most CPU consumed between
+  // their last sample and exit; their already sampled CPU is never discarded.
+  return processes.reduce((sum, row) => sum + row.cpuMs, 0) + [...credits.values()].reduce((sum, cpu) => sum + cpu, 0)
+}
+
+function emptyZombieStatus(status, zombie) {
+  return zombie && /^State:\s+Z\b/m.test(status) && !/^VmRSS:|^VmHWM:/m.test(status)
+}
+
+function linuxMemory(status, zombie) {
+  const rss = /^VmRSS:\s+(\d+)\s+kB\s*$/m.exec(status)
+  const hwm = /^VmHWM:\s+(\d+)\s+kB\s*$/m.exec(status)
+  if (!rss && emptyZombieStatus(status, zombie)) return 0 // Zombies have no resident address space.
+  if (!rss || (/^VmHWM:/m.test(status) && !hwm)) throw new Error('resident memory unavailable')
+  const sizes = [rss[1], hwm?.[1] ?? rss[1]].map(Number)
+  if (!sizes.every(nonnegative)) throw new Error('invalid resident memory')
+  return Math.max(...sizes) / 1024
+}
+
+function ignoresChildCpu(status) {
+  const ignored = /^SigIgn:\s+([\da-f]+)\s*$/im.exec(status)
+  if (!ignored) {
+    if (/^SigIgn:/m.test(status)) throw new Error('invalid ignored signals')
+    return false
+  }
+  return (BigInt(`0x${ignored[1]}`) & (1n << BigInt(constants.signals.SIGCHLD - 1))) !== 0n
+}
+
+async function linuxFamilyRow(procfs, ticks, before, signal) {
+  try {
+    const options = { encoding: 'utf8', signal }
+    const status = await procfs.readProcessStatus(before.pid, options)
+    const current = linuxStat(before.pid, await procfs.readProcessStat(before.pid, options), ticks)
+    if (current.identity !== before.identity) return unknown('pid-reused')
+    if (current.cpuMs < before.cpuMs || current.childCpuMs < before.childCpuMs) return unknown('census-incoherent')
+    return { ...current, memMiB: linuxMemory(status, current.zombie), ignoresChildCpu: ignoresChildCpu(status) }
+  } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes(error.code)) return null // Exit races are not unavailable sources.
+    throw error
+  }
+}
+
+function parentFirstFamily(family) {
+  const pids = new Set(family.map((row) => row.pid))
+  const children = new Map()
+  for (const row of family) {
+    if (!children.has(row.ppid)) children.set(row.ppid, [])
+    children.get(row.ppid).push(row)
+  }
+  const ordered = family.filter((row) => !pids.has(row.ppid))
+  for (let i = 0; i < ordered.length; i++) ordered.push(...children.get(ordered[i].pid) ?? [])
+  if (ordered.length !== family.length) throw new Error('cyclic process family')
+  return ordered
+}
+
+async function linuxResourceTree(procfs, ticks, pid, retained, credits, signal) {
+  const { rows } = await linuxRows(procfs, ticks, signal)
+  const previous = new Map(retained)
+  const previousPids = new Map([...previous.values()].map((row) => [row.pid, row.identity]))
+  if (rows.some((row) => previousPids.has(row.pid) && previousPids.get(row.pid) !== row.identity)) return unknown('pid-reused')
+  const family = parentFirstFamily(selectFamily(rows, pid, new Map(retained)))
+  const processes = []
+  // Parent-before-child reads cannot include both a reaped child's CPU and its
+  // transfer to the parent. A reap after the parent read is reconciled next time.
+  for (const before of family) {
+    const row = await linuxFamilyRow(procfs, ticks, before, signal)
+    if (row?.unknown) return row
+    if (!row) continue
+    const old = previous.get(row.identity)
+    if (retainedCountersRegressed(row, old)) return unknown('census-incoherent')
+    processes.push(row)
+  }
+  if (!processes.some((row) => row.pid === pid)) throw new Error('root missing')
+  const totalCpuMs = retainedCpuTotal(processes, previous, credits)
+  retained.clear()
+  for (const row of processes) retained.set(row.identity, row)
+  return { processes, totalCpuMs }
+}
+
+function retainedCountersRegressed(row, old) {
+  return old && (row.cpuMs < old.cpuMs || row.childCpuMs < old.childCpuMs)
 }
 
 function selectFamily(rows, pid, retained) {
@@ -147,20 +228,22 @@ function darwinResourceTree(rows, pid, retained) {
   return { processes: selectFamily(rows, pid, retained) }
 }
 
-/** Linux: procfs CPU ticks + VmRSS; macOS: bounded ps census; Windows: named unknown.
+/** Linux/WSL: procfs CPU ticks + max(VmRSS, VmHWM); macOS: ps instantaneous RSS
+ * (no per-process resident high-water mark); Windows: named unknown.
  * A missing/denied/malformed source is never replaced by a plausible zero.
  * @knipTestSeam Computed import in suite-lock-resources.selftest.mjs.
  */
 export function createSuiteResourceReader({ platform = process.platform, read = readFile, list = readdir, run = runResourceCommand } = {}) {
   const procfs = createProcfs({ platform, readFile: read, readdir: list })
   const retained = new Map()
+  const credits = new Map()
   return async (pid, { signal } = {}) => {
     if (!['linux', 'darwin'].includes(platform)) return unknown('unsupported-platform')
     try {
       if (platform === 'darwin') return darwinResourceTree(darwinRows(await run('/bin/ps', ['-S', '-axo', 'pid=,ppid=,rss=,time=,lstart='], { signal })), pid, retained)
       const ticks = await linuxClockTicks(run)
       if (!Number.isSafeInteger(ticks) || ticks <= 0) return unknown('clock-ticks-unavailable')
-      return await linuxResourceTree(procfs, ticks, pid, retained, signal)
+      return await linuxResourceTree(procfs, ticks, pid, retained, credits, signal)
     } catch { return unknown('source-unavailable') }
   }
 }
@@ -175,7 +258,7 @@ function sampleValues(state, snapshot, at) {
   }
   const memory = rows.reduce((sum, row) => sum + row.memMiB, 0)
   state.peakMemMiB = Math.max(state.peakMemMiB ?? memory, memory)
-  const total = rows.reduce((sum, row) => sum + row.cpuMs, 0)
+  const total = snapshot.totalCpuMs ?? rows.reduce((sum, row) => sum + row.cpuMs, 0)
   sampleCorePeak(state, rows, at, total)
   state.previous = { at, total, cpu: new Map(rows.map((row) => [row.identity, row.cpuMs])) }
 }

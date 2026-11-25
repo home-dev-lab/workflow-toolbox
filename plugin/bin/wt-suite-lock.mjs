@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
+import path from 'node:path'
+import { readQueueSnapshot } from './lib/host/suite-lock-queue.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTree } from './lib/host/suite-lock-host.mjs'
 import {
@@ -23,7 +25,8 @@ import {
 import { parseSuiteLockPriority } from './lib/suite-lock-priority.mjs'
 import { replaceQueuedCommand } from './lib/host/suite-lock-replace.mjs'
 import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-status.mjs'
-import { suiteLockJournalCli } from './lib/suite-lock-journal.mjs'
+import { suiteLockJournalCli, validSuiteJobClass } from './lib/suite-lock-journal.mjs'
+import { displayText } from './lib/suite-lock-display.mjs'
 import { staticLaneStatusLines } from './lib/suite-lock-static.mjs'
 import { acquireCliLease, cliInheritedLease, parseReplaceRun, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
 import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
@@ -34,9 +37,12 @@ import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
 import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
 import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mjs'
 import { suiteSignalExit, watchSuiteWaitSignals } from './lib/host/suite-lock-signals.mjs'
+import { commandEnvironment, maintainReservationWatchdog, reservationAdmissionSwitch, reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
+import { reservationHostSupported } from './lib/host/suite-lock-machine.mjs'
+import { reservationRetryOutcome } from './lib/host/suite-lock-memory-retry.mjs'
 
 const USAGE = `Usage:
-  node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs run [--job-class NAME] [--light] [--static] [--priority <release|P0|P1|P2>] [--size S|M|L] [--project NAME] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   Park/resume: run --park-dir <dir> --park-s <1..7200> --park-owner-pid <pid> [--yield-to-parked] -- <command> [args...]
   Replace queued command: run --replace <ticket-number> -- <command> [args...]
   Replacement keeps rank and uses the original waiter's cwd, environment, streams and exit recipient; refused once the waiter closes replacement acceptance before starting.
@@ -51,6 +57,8 @@ const USAGE = `Usage:
   in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
   V3 has no level aging: exclusive size S gains one level unless the project's last S exceeded 10 minutes; M/L gain none (default L).
   WT_SUITE_LOCK_SIZE and WT_SUITE_LOCK_PROJECT supply defaults; explicit options win. Equal ranks alternate projects.
+  --job-class / WT_SUITE_LOCK_JOB_CLASS identifies one stable workload; without qualifying class history a job stays exclusive.
+  Reservation admission is off by default; only <lock root>/admission-reservation.enabled enables it; WT_SUITE_LOCK_ADMISSION=exclusive overrides the marker.
   Release overrides project precedence, which overrides all priorities. The legacy order (with aging) applies while an older client's ticket waits.
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
@@ -92,6 +100,8 @@ function applyRunPriority(priority) {
 async function run(args) {
   const replacement = parseReplaceRun(args)
   if (replacement) return replaceRun(replacement)
+  const jobClass = parseJobClass(args)
+  const admission = reservationAdmissionSwitch(suiteLeaseDomain())
   const { command, staticRun, waitS, staleS, light, priority, park, project, size } = parseSuiteRunOptions(args,
     { parseSeconds, parsePriority: parseRunPriority, waitSeconds: suiteLockWaitSeconds, defaultStaleS: DEFAULT_SUITE_LOCK_STALE_S })
   const attempt = { outcome: 'not-parked\n' }
@@ -115,8 +125,31 @@ async function run(args) {
     if (inherited === 75) return 75
     if (inherited) return await spawnCommand(command, null, null, parkChildEnvironment(park))
     if (directLightRun({ light, staticRun, park, command })) return await runDirectCommand(() => spawnCommand(command, null, null, parkChildEnvironment(park)))
-    return await queueAndRun(command, { waitS, staleS, light, staticRun, priority, project, size, park, attempt })
+    return await runReservationRetries(command, { waitS, staleS, light, staticRun, priority, project, size, park, attempt, jobClass, admission })
   } finally { try { publishParkOutcome(park, attempt.outcome) } finally { releaseAttempt() } }
+}
+
+function parseJobClass(args) {
+  const separator = args.indexOf('--')
+  const index = args.slice(0, separator < 0 ? args.length : separator).indexOf('--job-class')
+  let value = process.env.WT_SUITE_LOCK_JOB_CLASS
+  if (index >= 0) {
+    value = index + 1 < separator ? args[index + 1] : undefined
+    args.splice(index, value === undefined ? 1 : 2)
+  }
+  if (validSuiteJobClass(value)) return value
+  if (index >= 0 || value !== undefined) process.stderr.write('wt-suite-lock: invalid job class; expected [A-Za-z0-9][A-Za-z0-9._:-]{0,63}; ignoring class\n')
+  return undefined
+}
+
+async function runReservationRetries(command, options) {
+  while (true) {
+    options.retry = null
+    const exit = await queueAndRun(command, options)
+    if (!options.retry) return exit
+    options.requeue = options.retry
+    process.stderr.write('wt-suite-lock: memory-pressure stop completed; requeued original ticket and rank\n')
+  }
 }
 
 function replaceRun({ ticket, argv }) {
@@ -135,15 +168,32 @@ async function queueAndRun(command, options) {
   if (scopeGuard.refused) return 2
   const waiting = watchSuiteWaitSignals()
   try {
-    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: !park && !light && !staticRun, light, static: staticRun, priority, project, size, signal: waiting.signal, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
+    const reservation = cliReservationRequested(park, staticRun, waitS, options.admission?.enabled)
+    warnUnsupportedReservation(options.admission)
+    const lease = await acquireCliLease(acquireParkCliLease(acquireSuiteLock, park), { waitS, staleS, argv: command, replaceable: replaceableCliRun(park, light, staticRun), light, static: staticRun, priority, project, size, reservation, jobClass: options.jobClass, requeue: options.requeue, signal: waiting.signal, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
     if (typeof lease === 'number') return lease
     if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
     const timing = {}
-    try { return await runLeasedCommand(lease.replacementArgv ?? command, lease, { light, staticRun, park, attempt, timing, waiting }) } finally { scopeGuard.end(timing.heldMs) }
+    try {
+      const exit = await runLeasedCommand(lease.replacementArgv ?? command, lease, { light, staticRun, park, attempt, timing, waiting })
+      if (shouldRetryReservation(timing)) options.retry = lease
+      return exit
+    } finally { scopeGuard.end(timing.heldMs) }
   } catch (error) {
     if (suiteSignalExit(waiting.signal.reason)) return suiteSignalExit(waiting.signal.reason)
     throw error
   } finally { waiting.close() }
+}
+
+// A fail-fast request cannot wait for a supervisor's first heartbeat. Its
+// exclusive attempt still respects both legacy holders and reservation fences.
+const cliReservationRequested = (park, staticRun, waitS, enabled) => enabled === true && waitS !== 0 && reservationHostSupported(undefined, true) && !park && !staticRun && !process.env.WT_SUITE_LOCK_BROKER && !staticAncestorLease()
+const staticAncestorLease = () => /\|static:[^|]+$/.test(process.env.WT_SUITE_LEASE ?? '')
+const replaceableCliRun = (park, light, staticRun) => !park && !light && !staticRun
+const shouldRetryReservation = (timing) => timing.requeue && !timing.stopUnconfirmed && !timing.releaseFailed
+
+function warnUnsupportedReservation(admission) {
+  if (admission?.enabled && !reservationHostSupported()) process.stderr.write('wt-suite-lock: memory watchdog unknown (unsupported-platform-memory-and-load); using exclusive protocol\n')
 }
 
 // A light request is checked for its scope before it queues; a nested run under an inherited lease takes no
@@ -176,8 +226,18 @@ export async function runLeasedCommand(command, lease, requested) {
     try {
       requested.attempt.outcome = finishParkRun(lease, requested.park, yielded)
       completed = requested.attempt.outcome === 'not-parked\n' && !yielded && timing.started === true && !timing.lost
-    } finally { releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs, ...timing.signalOutcome }) }
+    } finally {
+      if (timing.stopUnconfirmed && lease.reservationLease) process.stderr.write('wt-suite-lock: command group stop unconfirmed; reservation retained, inspect status --json\n')
+      else if (!releaseSuiteLock(lease, { exit, served: completed, heldMs: timing.heldMs, ...timing.signalOutcome, ...reservationRetryOutcome(lease, timing) })) {
+        recordReleaseFailure(lease, timing)
+      }
+    }
   }
+}
+
+function recordReleaseFailure(lease, timing) {
+  timing.releaseFailed = true
+  if (lease.reservationLease) process.stderr.write('wt-suite-lock: release unconfirmed; reservation retained, inspect wt-suite-lock status --json\n')
 }
 
 // The granted lease, not the request, decides. A static-lane grant never holds the exclusive mutex, so it
@@ -202,11 +262,41 @@ function recordedWaitSignal(requested, timing) {
   return exit
 }
 
-function spawnLeasedCommand(command, lease, requested, timing) {
+async function spawnLeasedCommand(command, lease, requested, timing) {
   const exit = recordedWaitSignal(requested, timing)
   if (exit) return exit
   timing.waiting = requested.waiting
-  return spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease), parkChildEnvironment(requested.park), timing)
+  timing.reservation = lease.reservationLease === true
+  const watcher = watchReservationStop(lease, timing)
+  try {
+    return await spawnCommand(command, lease.broker ? lease.lost : watcher.lost, suiteLeaseMarker(lease),
+      { ...parkChildEnvironment(requested.park), ...reservationEnvironment(lease) }, timing)
+  } finally { watcher.close() }
+}
+
+function watchReservationStop(lease, timing) {
+  if (!lease.reservationLease) return { lost: null, close: () => {} }
+  let timer
+  let warned = false
+  let lastCheck = 0
+  const lost = new Promise((resolve) => {
+    timer = setInterval(() => {
+      if (Date.now() - lastCheck >= 1000) {
+        lastCheck = Date.now()
+        if (maintainReservationWatchdog(lease) === false && !warned) {
+          warned = true
+          process.stderr.write('wt-suite-lock: supervision unavailable; keeping command running and helping watchdog election\n')
+        }
+      }
+      const reason = reservationStopReason(lease)
+      if (reason !== 'memory-pressure') return
+      clearInterval(timer)
+      timing.requeue = reason === 'memory-pressure'
+      timing.signalOutcome = { cause: reason }
+      resolve(reason)
+    }, 100)
+  })
+  return { lost, close: () => clearInterval(timer) }
 }
 
 function installCommandForwarding(forward, timing) {
@@ -215,27 +305,32 @@ function installCommandForwarding(forward, timing) {
   return stopSignals
 }
 
+function spawnOwnedCommand(command, marker, envOverrides, group, reservation) {
+  return spawn(command[0], command.slice(1), {
+    stdio: 'inherit',
+    ...spawnParkEnvironment(marker, envOverrides, commandEnvironment(reservation)),
+    // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
+    // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
+    shell: spawnNeedsShell(command[0]),
+    ...coveredCommandSpawnOptions({ broker: group }),
+  })
+}
+
 function spawnCommand(command, leaseLost = null, marker = null, envOverrides, timing = {}) {
   return new Promise((resolve, reject) => {
     const refusal = windowsShimArgumentRefusal(command)
     if (refusal) { reject(new Error(refusal)); return }
-    // A broker lease's command gets its own process group (POSIX), so losing the lease stops its whole tree.
+    // Broker and resource leases isolate their owned command groups on POSIX.
     const group = Boolean(leaseLost)
     const started = performance.now()
-    const child = spawn(command[0], command.slice(1), {
-      stdio: 'inherit',
-      ...spawnParkEnvironment(marker, envOverrides, process.env),
-      // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
-      // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
-      shell: spawnNeedsShell(command[0]),
-      ...coveredCommandSpawnOptions({ broker: group }),
-    })
+    const child = spawnOwnedCommand(command, marker, envOverrides, group, timing.reservation)
     let forwardedSignal = null
     let lockLost = false
     let treeStopped = null
     child.once('spawn', () => { timing.started = true })
     const forward = (signal) => {
       forwardedSignal = signal
+      recordForwardedCommand(timing, signal)
       if (marker) signalCoveredCommand(child, signal, { group })
       else child.kill(signal)
     }
@@ -245,17 +340,47 @@ function spawnCommand(command, leaseLost = null, marker = null, envOverrides, ti
       timing.lost = true
       process.stderr.write(`wt-suite-lock: suite lock lost (${reason || 'broker gone'}); command stopped\n`)
       // The lease is released (the broker socket closed, by the caller's finally) only once this resolves.
-      treeStopped = stopCoveredCommandTree(child, { group })
+      treeStopped = stopLeasedCommandTree(child, group, timing)
     })
     child.once('error', (error) => { stopSignals(); reject(error) })
-    child.once('exit', (code, signal) => {
+    child.once('exit', async (code, signal) => {
       timing.heldMs = performance.now() - started
       stopSignals()
       if (lockLost) { treeStopped.then(() => resolve(75)); return }
+      if (group && timing.reservation) await stopLeasedCommandTree(child, group, timing)
       if (code !== null) resolve(code)
       else resolve(parkSignalExit(signal ?? forwardedSignal))
     })
   })
+}
+
+function recordForwardedCommand(timing, signal) {
+  timing.requeue = false
+  if (timing.reservation) recordCommandSignal(timing, signal)
+}
+
+function recordCommandSignal(timing, signal) {
+  timing.stopUnconfirmed = true
+  timing.signalOutcome = { cause: 'signal', signal }
+}
+
+function stopLeasedCommandTree(child, group, timing) {
+  if (!timing.reservation) return stopCoveredCommandTree(child, { group })
+  // An error event can reject the command before the stop promise settles.
+  // Retain capacity from the first signal attempt until positive confirmation.
+  timing.stopUnconfirmed = true
+  try {
+    return Promise.resolve(stopCoveredCommandTree(child, { group })).then((stopped) => {
+      timing.stopUnconfirmed = stopped !== true
+      if (timing.stopUnconfirmed) process.stderr.write('wt-suite-lock: group-stop-unconfirmed; reservation retained\n')
+      return stopped === true
+    }, groupStopFailure)
+  } catch (error) { return Promise.resolve(groupStopFailure(error)) }
+}
+
+function groupStopFailure(error) {
+  process.stderr.write(`wt-suite-lock: group-stop-unavailable (${error?.code ?? 'unknown'}); reservation retained\n`)
+  return false
 }
 
 async function status(args) {
@@ -264,12 +389,62 @@ async function status(args) {
   if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`)
   const viaBroker = Boolean(process.env.WT_SUITE_LOCK_BROKER)
   const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLockStatus()
-  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(current), ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
-  else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder), { resources: args.includes('--resources') }))
+  const admission = reservationAdmissionSwitch(suiteLeaseDomain())
+  const additions = admissionStatusAdditions(current, admission, suiteLeaseDomain())
+  const visible = additions.admission ? current : legacyStatusSnapshot(current)
+  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(visible), ...additions, ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
+  else process.stdout.write(formatSuiteLockStatus(visible, formatSuiteLockHolder(current.holder), { resources: args.includes('--resources') }))
+  if (!json && additions.admission) process.stdout.write(admissionStatusLines(admission, additions.admission))
   if (!json) process.stdout.write(staticLaneStatusLines(current))
   return 0
 }
 
+function legacyStatusSnapshot(current) {
+  const queue = Array.isArray(current.queue) ? current.queue.map(({ reservation: _reservation, jobClass: _jobClass, ...entry }) => entry) : current.queue
+  return { ...current, queue, reservations: null }
+}
+
+function admissionStatusAdditions(current, admission, root) {
+  if (!admission.enabled && !current.reservations?.holders.length) return {}
+  const jobs = admissionStatusJobs(current, root)
+  return { queue: jobs.waiting, admission: { ...admission, ...jobs } }
+}
+
+function admissionStatusJobs(current, root) {
+  const holders = statusRunningHolders(current)
+  const classes = root.startsWith('broker:') ? new Map() : new Map(readQueueSnapshot(path.join(root, 'queue.d'), Date.now())
+    .map((ticket) => [ticket.number, ticket.holder.jobClass ?? ticket.holder.journal?.jobClass ?? null]))
+  const waiting = Array.isArray(current.queue) ? current.queue.map((entry) => ({ ...entry,
+    jobClass: entry.jobClass ?? classes.get(entry.number) ?? null,
+    reservation: entry.reservation ?? { mode: 'exclusive', basis: 'declared' } })) : null
+  const running = holders.map((holder) => ({ leaseId: holder.leaseId, jobClass: holder.jobClass ?? holder.journal?.jobClass ?? null,
+    reservation: holder.reservation ?? { mode: 'exclusive', basis: 'declared' } }))
+  const totals = running.reduce((sum, job) => ({ cores: reservationSum(sum.cores, job.reservation.cores),
+    memMiB: reservationSum(sum.memMiB, job.reservation.memMiB) }), { cores: 0, memMiB: 0 })
+  return { running, waiting, totals }
+}
+
+function statusRunningHolders(current) {
+  if (current.reservations?.holders.length) return current.reservations.holders
+  return current.held && current.holder && !current.holder.reservationProtocol ? [current.holder] : []
+}
+
+const reservationSum = (left, right) => Number.isFinite(left) && Number.isFinite(right) ? left + right : null
+const reservationNumber = (value) => Number.isFinite(value) ? value.toFixed(2) : 'unknown'
+
+function admissionStatusLines(admission, jobs) {
+  const lines = [`reservation admission: ${admission.enabled ? 'on' : 'off'} (${admission.source})`]
+  for (const [state, entries] of [['running', jobs.running], ['waiting', jobs.waiting ?? []]]) {
+    for (const entry of entries) lines.push(admissionJobLine(state, entry))
+  }
+  lines.push(`running reservation sum: ${reservationNumber(jobs.totals.cores)} cores, ${reservationNumber(jobs.totals.memMiB)} MiB`)
+  return lines.map(displayText).join('\n') + '\n'
+}
+
+function admissionJobLine(state, entry) {
+  const value = entry.reservation
+  return `${state} class ${entry.jobClass ?? 'none'}: ${value.mode ?? 'exclusive'} reservation ${reservationNumber(value.cores)} cores, ${reservationNumber(value.memMiB)} MiB (${value.basis ?? 'declared'})`
+}
 function release(args) {
   if (process.env.WT_SUITE_LOCK_BROKER?.trim()) {
     process.stderr.write('wt-suite-lock: release is not available inside a lane sandbox; the host operator releases the lock\n')
@@ -281,6 +456,10 @@ function release(args) {
   if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`)
   const result = operatorReleaseSuiteLock({ force, staleS })
   if (result.reason === 'live') {
+    if (result.holder?.reservationProtocol) {
+      process.stderr.write('wt-suite-lock: reservation fence retained; inspect wt-suite-lock status --json and allow owned holders to finish\n')
+      return 1
+    }
     process.stderr.write(`wt-suite-lock: refused to release live ${formatSuiteLockHolder(result.holder)}; pass --force to override\n`)
     return 1
   }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { constants, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -403,8 +403,8 @@ async function incoherentCensus() {
   fake.time(1000); await fake.sampler.sample()
   assert.ok(calls.indexOf('/proc/1/stat') < calls.indexOf('/proc/2/stat'), 'fixture must read the parent before the child disappears')
   const result = fake.sampler.stop()
-  assert.equal(result.peakCores, 'unknown', 'a child reaped between census reads must not look like zero CPU')
-  assert.ok(result.unknownReasons.includes('census-incoherent'), 'an unaccounted disappearing member must name census-incoherent')
+  assert.equal(result.peakCores, 0, 'already observed CPU transferred during the census must not be counted twice')
+  assert.deepEqual(result.unknownReasons, [], 'normal child reaping during a census must remain measurable')
 }
 
 async function reusedPidRss() {
@@ -483,12 +483,17 @@ async function retainedIdentityLoss() {
       return mode === 'regressed' ? procStat(2, 1, 50) : procStat(2, 9, 0, 99)
     }
     const reader = createSuiteResourceReader({ platform: 'linux', read, run: async () => '100',
-      list: async () => census && mode === 'absent' ? ['1'] : ['1', '2'] })
+      list: async () => census && ['absent', 'empty-transfer'].includes(mode) ? ['1'] : ['1', '2'] })
     const fake = await fakeSampler(reader)
     census++; fake.time(1000); await fake.sampler.sample()
     const result = fake.sampler.stop()
-    assert.equal(result.peakCores, 'unknown', `${mode}: unexplained retained identity loss must not yield plausible CPU`)
-    assert.ok(result.unknownReasons.includes('census-incoherent'), `${mode}: retained identity loss must name census-incoherent`)
+    if (['reused', 'regressed'].includes(mode)) {
+      assert.equal(result.peakCores, 'unknown', `${mode}: invalid identity or counter must remain unknown`)
+      assert.ok(result.unknownReasons.includes(mode === 'reused' ? 'pid-reused' : 'census-incoherent'))
+    } else {
+      assert.equal(result.peakCores, 1, `${mode}: disappearance must preserve observed CPU and the parent's own increment`)
+      assert.deepEqual(result.unknownReasons, [], `${mode}: no child-counter transfer is required for an exited process`)
+    }
   }
 }
 
@@ -518,6 +523,134 @@ async function observedReap() {
   const fake = await fakeSampler(reader)
   census++; fake.time(1000); await fake.sampler.sample()
   assert.equal(fake.sampler.stop().peakCores, 0.5, 'observed child-counter transfer must keep a coherent interval measurable')
+}
+
+async function vanishedSubtreeCpu() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const reaped of [false, true]) {
+    let census = 0
+    const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100',
+      list: async () => census ? ['1'] : ['1', '2', '3'],
+      read: async (file) => file.endsWith('/status') ? 'VmRSS: 2048 kB\n'
+        : file === '/proc/1/stat' ? procStat(1, 0, 100 + census * 10, 1, reaped && census ? 70 : 0)
+          : file === '/proc/2/stat' ? procStat(2, 1, 50) : procStat(3, 2, 20) })
+    const fake = await fakeSampler(reader)
+    census++; fake.time(1000); await fake.sampler.sample()
+    census++; fake.time(2000); await fake.sampler.sample()
+    const result = fake.sampler.stop()
+    assert.deepEqual(result.unknownReasons, [], 'a vanished multilevel subtree must retain all already observed CPU')
+    assert.equal(result.peakCores, 0.1, 'reaped or unreconciled subtree CPU must not be lost or counted twice')
+  }
+}
+
+async function deferredReapCpu() {
+  const { createSuiteResourceReader } = await hostModule()
+  let census = 0
+  const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100',
+    list: async () => census ? ['1'] : ['1', '2'],
+    read: async (file) => file.endsWith('/status') ? 'VmRSS: 2048 kB\n'
+      : file === '/proc/1/stat' ? procStat(1, 0, census * 10, 1, census > 1 ? 100 : 0) : procStat(2, 1, 100) })
+  const fake = await fakeSampler(reader)
+  for (census = 1; census <= 3; census++) { fake.time(census * 1000); await fake.sampler.sample() }
+  const result = fake.sampler.stop()
+  assert.deepEqual(result.unknownReasons, [], 'a deferred reap must reconcile previously retained CPU')
+  assert.equal(result.peakCores, 0.1, 'CPU carried across a census race must not be counted again on the later reap')
+}
+
+async function reapingDuringCensus() {
+  const { createSuiteResourceReader } = await hostModule()
+  let reads = 0
+  const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1'],
+    read: async (file) => file.endsWith('/status') ? 'VmRSS: 2048 kB\n' : procStat(1, 0, 100, 1, reads++ * 10) })
+  const result = await reader(1)
+  assert.equal(result.unknown, undefined, 'a growing child counter during a census is normal reaping, not incoherence')
+}
+
+async function linuxHighWaterMemory() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const status of ['VmRSS: 2048 kB\nVmHWM: 8192 kB\n', 'VmRSS: 8192 kB\nVmHWM: 2048 kB\n']) {
+    const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1'],
+      read: async (file) => file.endsWith('/status') ? status : procStat(1, 0, 100) })
+    assert.equal((await reader(1)).processes[0].memMiB, 8, 'Linux memory must cover both current RSS and the resident high-water mark')
+  }
+}
+
+async function malformedHighWaterMemory() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const status of ['VmRSS: 2048 kB\nVmHWM: invalid kB\n', 'VmRSS: 2048 kB\nVmHWM: -1 kB\n']) {
+    const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1'],
+      read: async (file) => file.endsWith('/status') ? status : procStat(1, 0, 100) })
+    assert.equal((await reader(1)).unknown, 'source-unavailable', 'a present malformed high-water source must remain named unknown')
+  }
+}
+
+async function exitDuringStatusRead() {
+  const { createSuiteResourceReader } = await hostModule()
+  let census = 0
+  const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1', '2'],
+    read: async (file) => {
+      if (census && file === '/proc/2/status') throw Object.assign(new Error('exited'), { code: 'ENOENT' })
+      if (file.endsWith('/status')) return 'VmRSS: 2048 kB\n'
+      return file === '/proc/1/stat' ? procStat(1, 0, census * 10) : procStat(2, 1, 100)
+    } })
+  const fake = await fakeSampler(reader)
+  census++; fake.time(1000); await fake.sampler.sample()
+  const result = fake.sampler.stop()
+  assert.deepEqual(result.unknownReasons, [], 'a confirmed exit during status reading must retain already observed CPU')
+  assert.equal(result.peakCores, 0.1)
+}
+
+async function zombieAndUnavailableStatus() {
+  const { createSuiteResourceReader } = await hostModule()
+  for (const status of ['State:\tZ (zombie)\n', '', new Error('denied')]) {
+    const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['1'],
+      read: async (file) => {
+        if (!file.endsWith('/status')) return procStat(1, 0, 100).replace(') S ', ') Z ')
+        if (status instanceof Error) throw Object.assign(status, { code: 'EACCES' })
+        return status
+      } })
+    const result = await reader(1)
+    if (status === 'State:\tZ (zombie)\n') assert.equal(result.processes[0].memMiB, 0, 'an explicitly observed zombie has no resident memory')
+    else assert.equal(result.unknown, 'source-unavailable', 'missing or denied status must not masquerade as a zero-memory zombie')
+  }
+}
+
+async function ignoredChildCpuStaysCarried() {
+  if (!Number.isInteger(constants.signals.SIGCHLD)) { console.log('SKIP ignored-child fixture requires a SIGCHLD constant'); return }
+  const { createSuiteResourceReader } = await hostModule()
+  let census = 0
+  const ignored = (1n << BigInt(constants.signals.SIGCHLD - 1)).toString(16)
+  const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100',
+    list: async () => census ? ['1'] : ['1', '2'],
+    read: async (file) => file.endsWith('/status') ? `VmRSS: 2048 kB\nSigIgn: ${census < 2 ? ignored : '0'}\n`
+      : file === '/proc/1/stat' ? procStat(1, 0, census * 10, 1, census > 1 ? 100 : 0) : procStat(2, 1, 100) })
+  const fake = await fakeSampler(reader)
+  census++; fake.time(1000); await fake.sampler.sample()
+  census++; fake.time(2000); await fake.sampler.sample()
+  const result = fake.sampler.stop()
+  assert.deepEqual(result.unknownReasons, [])
+  assert.equal(result.peakCores, 1.1, 'CPU of an auto-reaped child must stay carried when unrelated child CPU is later reaped')
+}
+
+async function parentBeforeChildCounters() {
+  const { createSuiteResourceReader } = await hostModule()
+  let childReads = 0
+  let reaped = false
+  const snapshots = []
+  const reader = createSuiteResourceReader({ platform: 'linux', run: async () => '100', list: async () => ['2', '1'],
+    read: async (file) => {
+      if (file.endsWith('/status')) return 'VmRSS: 2048 kB\n'
+      if (file === '/proc/1/stat') return procStat(1, 0, 0, 1, reaped ? 100 : 0)
+      if (reaped) throw Object.assign(new Error('reaped'), { code: 'ENOENT' })
+      if (++childReads === 2) reaped = true
+      return procStat(2, 1, 100)
+    } })
+  const fake = await fakeSampler(async (...args) => { const snapshot = await reader(...args); snapshots.push(snapshot); return snapshot })
+  assert.equal(snapshots[0].totalCpuMs, 1000, 'the first census must not include both a child and its reaped CPU transfer')
+  fake.time(1000); await fake.sampler.sample()
+  const result = fake.sampler.stop()
+  assert.deepEqual(result.unknownReasons, [], 'parent-before-child final reads must avoid counting both sides of a reap transfer')
+  assert.equal(result.peakCores, 0, 'a reap of already sampled CPU must not add another interval of work')
 }
 
 async function darwinRetainedIdentityLoss() {
@@ -653,11 +786,11 @@ export const resourceCases = [
   ['status CLI resource text requires an explicit flag', statusResourcesFlag],
   ['reaped child CPU transfers without double counting', reapedChildCpu],
   ['sampler stop errors cannot block file or broker release', samplerStopFailure],
-  ['non-atomic child reap is named census-incoherent', incoherentCensus],
+  ['non-atomic child reap preserves already observed CPU', incoherentCensus],
   ['PID reuse between stat and RSS drops the sample', reusedPidRss],
   ['acquisition defers platform commands and caches clock ticks', acquisitionDoesNotSpawn],
   ['held lease sampler timer never keeps the child alive', heldLeaseTimerExits],
-  ['retained identity reuse, disappearance and regression are incoherent', retainedIdentityLoss],
+  ['retained disappearance stays measurable; PID reuse and regression stay unknown', retainedIdentityLoss],
   ['observed reap into parent counters stays measurable', observedReap],
   ['failed clock lookups recover across readers', clockLookupRecovers],
   ['first census runs asynchronously before the one-second tick', firstCensusIsImmediate],
@@ -665,6 +798,15 @@ export const resourceCases = [
   ['telemetry serialization failure preserves terminal release and its reason', telemetrySerializationFailure],
   ['malformed sampler schemas become named unknown and hooks are stripped', malformedResourceSchema],
   ['macOS retained identity loss is named incoherent', darwinRetainedIdentityLoss],
+  ['vanished multilevel subtree retains observed CPU', vanishedSubtreeCpu],
+  ['deferred reap reconciles retained CPU without double counting', deferredReapCpu],
+  ['child CPU growth during a census remains measurable', reapingDuringCensus],
+  ['Linux memory includes process high-water marks and current RSS', linuxHighWaterMemory],
+  ['malformed high-water memory is named unavailable', malformedHighWaterMemory],
+  ['exit during the status read preserves observed CPU', exitDuringStatusRead],
+  ['explicit zombies have no RSS; unavailable status remains unknown', zombieAndUnavailableStatus],
+  ['SIGCHLD-ignored CPU remains carried across unrelated later reaps', ignoredChildCpuStaysCarried],
+  ['parent-before-child reads prevent mixed-time CPU double counting', parentBeforeChildCounters],
 ]
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

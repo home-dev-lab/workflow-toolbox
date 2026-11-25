@@ -97,6 +97,13 @@ export async function status(cli, f) {
   return JSON.parse(result.stdout)
 }
 
+function soleCommandHolder(current) {
+  const holders = current.reservations?.holders ?? (current.holder ? [current.holder] : [])
+  assert.equal(holders.length, 1, 'queued command must own exactly one live lease')
+  if (current.reservations) assert.equal(current.holder.reservationProtocol, current.reservations.version)
+  return holders[0]
+}
+
 function requests(f) {
   const path = join(f.root, 'journal.jsonl')
   return existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean)
@@ -145,7 +152,9 @@ export async function assertTwoFiles(cli, spawnProcess) {
     await started(f)
     const current = await status(cli, f)
     assert.equal(current.held, true, 'L2: two files still hold a ticket')
-    assert.equal(current.holder.light, true)
+    const holder = soleCommandHolder(current)
+    assert.equal(holder.light, true)
+    assert.deepEqual(holder.argv, one.concat('b.test.mjs'))
     release(f); release(f, 'b')
     assert.equal((await completed(run)).code, 0)
     for (const name of ['a', 'b']) assert(existsSync(join(f.work, `${name}.ran`)))
@@ -195,8 +204,9 @@ if (child.status !== 0) throw new Error('nested run failed: ' + child.status)
     await started(f, 'nested')
     const current = await status(cli, f)
     assert.equal(current.held, true, 'L5: nested exclusive work must take its own ticket')
-    assert.notEqual(current.holder.light, true)
-    assert.deepEqual(current.holder.argv, ['node', 'nested.test.mjs'])
+    const holder = soleCommandHolder(current)
+    assert.notEqual(holder.light, true)
+    assert.deepEqual(holder.argv, ['node', 'nested.test.mjs'])
     release(f, 'nested')
     assert.equal((await completed(run)).code, 0)
   } finally { await cleanup(f) }

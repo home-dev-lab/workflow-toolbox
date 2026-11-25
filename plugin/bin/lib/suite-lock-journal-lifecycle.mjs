@@ -117,7 +117,8 @@ export async function acquireJournalLease(acquire, options, domain, covered, inh
     const resourceStarted = performance.now()
     const resourceSampler = startSuiteResourceSampler(options)
     if (lease.broker) return { ...lease, resourceSampler, resourceStarted }
-    suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel })
+    suiteJournalEvent(context.journal, 'grant', { project: lease.holder.project, rankLevel: lease.rankLevel,
+      ...(lease.holder.reservation ? { reservation: lease.holder.reservation } : {}) })
     return { ...lease, resourceSampler, resourceStarted, journal: context.journal, staticDomain: options.staticDomain }
   } catch (error) {
     const failure = deadline.failure(error)
