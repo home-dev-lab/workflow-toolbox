@@ -1,14 +1,20 @@
 import { isInvokedDirectly } from './entry-guard.mjs'
-import { readSuiteMachine } from './suite-lock-machine.mjs'
+import { isWsl, readSuiteMachine, startWindowsMemoryReader } from './suite-lock-machine.mjs'
 import { readReservationState, watchReservationMemory } from './suite-lock-reservations.mjs'
 import { RECLAIM_BUSY } from './suite-lock-section.mjs'
 
-async function main(root, generation) {
+async function main(root, generation, reader = startWindowsMemoryReader) {
+  if (!watchdogOwns(readReservationState(root), generation)) return
+  const windows = isWsl() ? reader() : null
+  try { await supervise(root, generation, windows) } finally { windows?.close() }
+}
+
+async function supervise(root, generation, windows) {
   let unknown
   while (true) {
     const state = readReservationState(root)
     if (!watchdogOwns(state, generation)) return
-    const machine = readSuiteMachine()
+    const machine = readSuiteMachine({ windowsMemory: windows?.sample() })
     if (machine.unknown && machine.unknown !== unknown) {
       process.stderr.write(`wt-suite-lock: memory watchdog unknown (${machine.unknown}); reservation admission closed\n`)
       unknown = machine.unknown

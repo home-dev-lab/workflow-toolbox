@@ -34,7 +34,7 @@ import { guardLightRun, lightScopeCli } from './lib/suite-lock-light-scope.mjs'
 import { lightScopeLog, readLightScopeFirings } from './lib/host/suite-lock-light-scope-log.mjs'
 import { directLightRun, runDirectCommand } from './lib/suite-lock-direct-run.mjs'
 import { suiteSignalExit, watchSuiteWaitSignals } from './lib/host/suite-lock-signals.mjs'
-import { reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
+import { maintainReservationWatchdog, reservationEnvironment, reservationStopReason } from './lib/host/suite-lock-reservations.mjs'
 import { reservationHostSupported } from './lib/host/suite-lock-machine.mjs'
 import { reservationRetryOutcome } from './lib/host/suite-lock-memory-retry.mjs'
 
@@ -249,10 +249,19 @@ async function spawnLeasedCommand(command, lease, requested, timing) {
 function watchReservationStop(lease, timing) {
   if (!lease.reservationLease) return { lost: null, close: () => {} }
   let timer
+  let warned = false
+  let lastCheck = 0
   const lost = new Promise((resolve) => {
     timer = setInterval(() => {
+      if (Date.now() - lastCheck >= 1000) {
+        lastCheck = Date.now()
+        if (maintainReservationWatchdog(lease) === false && !warned) {
+          warned = true
+          process.stderr.write('wt-suite-lock: supervision unavailable; keeping command running and helping watchdog election\n')
+        }
+      }
       const reason = reservationStopReason(lease)
-      if (!reason) return
+      if (reason !== 'memory-pressure') return
       clearInterval(timer)
       timing.requeue = reason === 'memory-pressure'
       timing.signalOutcome = { cause: reason }

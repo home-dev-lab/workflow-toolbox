@@ -1,5 +1,6 @@
 // Admission uses raw observations, never the rounded status catalogue.
 import { SUITE_RESOURCE_MIN_RUNS as MIN_RUNS, validSuiteResources } from './suite-lock-resources.mjs'
+import { selectMemoryVictim } from './suite-lock-safety-net.mjs'
 
 const ADMISSION_HISTORY_RUNS = 10
 /** @knipTestSeam Standalone admission selftest imports this through an OS-temp copy. */
@@ -53,22 +54,8 @@ export function admissionPlan(queue, holders, capacity, bypasses) {
   return { admit, blocked }
 }
 
-export function watchdogDecision(holders, memory) {
-  if (!finite(memory?.availableMiB) || memory.availableMiB >= memory.floorMiB || holders.some((holder) => holder.stop)) return null
-  const ordinary = holders.filter((holder) => holder.priority !== 'release')
-  const candidates = ordinary.length ? ordinary : [...holders]
-  return candidates.sort((left, right) => watchdogPriority(right, 0) - watchdogPriority(left, 0)
-    || watchdogPriority(right, 1) - watchdogPriority(left, 1)
-    || youngestFirst(left, right))[0] ?? null
-}
-
-function youngestFirst(left, right) {
-  if (Number.isFinite(left.admittedSequence) && Number.isFinite(right.admittedSequence)) return right.admittedSequence - left.admittedSequence
-  return right.startedAtMs - left.startedAtMs
-}
-
-function watchdogPriority(holder, index) {
-  return holder.watchdogPriority?.[index] ?? (index === 0 ? 2 : holder.level ?? 1)
+export function watchdogDecision(holders, memory, options) {
+  return selectMemoryVictim(holders, memory, options)
 }
 
 export function releaseOverlaps(holder, now) {
