@@ -5,17 +5,26 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.203.0] - 2026-11-25
+
 ### Added
+
 - Suite lock: resource-reservation admission ships switched off. When the marker file admission-reservation.enabled exists in the lock root, jobs that carry a --job-class (or WT_SUITE_LOCK_JOB_CLASS) reserve the cores and memory their past runs measurably used, and several run at once while the sum fits; without the marker the queue keeps its exclusive behaviour unchanged. See docs/public/suite-lock-admission.md.
 
 ### Changed
+
 - Suite lock journal: the per-job CPU and memory figures changed meaning. CPU of a child that exited is no longer counted a second time when its parent reaps it, and memory is now the sum of each live process's resident high-water mark, so it can read higher than before. A process caught while it exits, after it has released its memory, counts as zero and no longer turns the whole measurement into an unknown. Rows written before and after this release are not directly comparable.
-- Suite lock journal: the per-job CPU and memory figures changed meaning. CPU of a child that exited is no longer counted a second time when its parent reaps it, and memory is now the sum of each live process's resident high-water mark, so it can read higher than before. Rows written before and after this release are not directly comparable.
+
 ### Fixed
 
 - The artifact server, its session holder and the Observatory server set distinct runtime process titles
   (`wt-artifact-srv`, `wt-artifact-hol` and `wt-observe-srv`), allowing Linux memory-pressure tools to
   distinguish them from other Node processes without renaming their children.
+
+### Known issues
+
+- Windows: the three `quota-watch-account-cache` cases listed in 0.202.0 still fail on native Windows, and the new `suite-lock-resources` case "a process past its address space release counts zero resident memory" fails there too. Linux is unaffected.
+- macOS (GitHub-hosted runner only): the two `lifecycle-owned-lanes` "pending stop permits extend/abandon of the lifecycle own lane" cases listed in 0.202.0 still fail on the `macos-latest` runner. The full suite passes on a real Mac for the release candidate (0 failures in 19323 tests).
 
 ## [0.202.0] - 2026-11-24
 
